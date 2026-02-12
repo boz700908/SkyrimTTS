@@ -2,3 +2,6 @@
 	path = lib/commonlibsse-ng
 	url = https://github.com/alandtse/CommonLibVR.git
 	branch = ng
+[submodule "lib/SRAL"]
+	path = lib/SRAL
+	url = https://github.com/m1maker/SRAL.git
