@@ -33,5 +33,6 @@ private:
 
     // Menu tracking
     bool m_startMenuOpen = false;
+    bool m_journalMenuOpen = false;
     bool m_inputHandlerRegistered = false;
 };

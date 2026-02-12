@@ -85,6 +85,7 @@ void StartMenuHook::ResetState()
     m_lastSelection = -1;
     m_lastConfirmText.clear();
     m_menuNameAnnounced = false;
+    m_queueNextAnnouncement = false;
 }
 
 void StartMenuHook::HookedAdvanceMovie(RE::IMenu* a_this, float a_interval, std::uint32_t a_currentTime)
@@ -166,7 +167,9 @@ void StartMenuHook::OnMainState(RE::IMenu* a_menu)
         if (menuName == "MAIN MENU") {
             menuName = "Main Menu";  // Use mixed case for better speech
         }
-        SpeakText(menuName);
+        SpeakText(menuName, true);
+        // Queue the next announcement (initial selection) so it follows the menu name
+        m_queueNextAnnouncement = true;
     }
 
     // Announce current selection
@@ -206,7 +209,13 @@ void StartMenuHook::CheckMainListSelection(RE::IMenu* a_menu)
         m_lastSelection = currentSelection;
         auto text = GetSelectedItemText(a_menu, currentSelection);
         if (!text.empty()) {
-            SpeakText(LocalizationHelper::Translate(text));
+            // Get total count from entryList
+            std::int32_t totalCount = GetEntryListSize(a_menu);
+            std::string announcement = LocalizationHelper::Translate(text);
+            if (totalCount > 0) {
+                announcement += ", " + std::to_string(currentSelection + 1) + " of " + std::to_string(totalCount);
+            }
+            SpeakText(announcement);
         }
     }
 }
@@ -224,6 +233,21 @@ std::int32_t StartMenuHook::GetSelectedIndex(RE::IMenu* a_menu)
         if (indexValue.IsNumber()) {
             return static_cast<std::int32_t>(indexValue.GetNumber());
         }
+    }
+
+    return -1;
+}
+
+std::int32_t StartMenuHook::GetEntryListSize(RE::IMenu* a_menu)
+{
+    if (!a_menu || !a_menu->uiMovie) {
+        return -1;
+    }
+
+    std::string entryListPath = std::string(MAIN_LIST) + ".entryList";
+    RE::GFxValue entryList;
+    if (a_menu->uiMovie->GetVariable(&entryList, entryListPath.c_str()) && entryList.IsArray()) {
+        return static_cast<std::int32_t>(entryList.GetArraySize());
     }
 
     return -1;
@@ -274,7 +298,14 @@ std::string StartMenuHook::GetConfirmText(RE::IMenu* a_menu)
     return "";
 }
 
-void StartMenuHook::SpeakText(const std::string& a_text)
+void StartMenuHook::SpeakText(const std::string& a_text, bool a_interrupt)
 {
-    SpeechManager::GetSingleton()->Speak(a_text);
+    // When m_queueNextAnnouncement is set, force queue mode (interrupt=false)
+    // so the announcement follows the previous one (e.g. initial selection after menu name)
+    if (m_queueNextAnnouncement) {
+        m_queueNextAnnouncement = false;
+        SpeechManager::GetSingleton()->Speak(a_text, false);
+    } else {
+        SpeechManager::GetSingleton()->Speak(a_text, a_interrupt);
+    }
 }

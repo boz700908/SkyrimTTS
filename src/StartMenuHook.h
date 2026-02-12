@@ -44,10 +44,15 @@ private:
 
     // Scaleform helpers
     std::int32_t GetSelectedIndex(RE::IMenu* a_menu);
+    std::int32_t GetEntryListSize(RE::IMenu* a_menu);
     std::string GetSelectedItemText(RE::IMenu* a_menu, std::int32_t a_index);
     std::string GetConfirmText(RE::IMenu* a_menu);
 
-    void SpeakText(const std::string& a_text);
+    // Speech output
+    // a_interrupt = true for navigation (interrupts current speech)
+    // a_interrupt = false for queued speech (e.g. initial selection after menu name)
+    // m_queueNextAnnouncement overrides to false for the first selection after a menu/state announcement
+    void SpeakText(const std::string& a_text, bool a_interrupt = true);
 
     // State
     bool m_installed = false;
@@ -56,13 +61,15 @@ private:
     std::int32_t m_lastSelection = -1;
     std::string m_lastConfirmText;
     bool m_menuNameAnnounced = false;
+    bool m_queueNextAnnouncement = false;
 
     // Scaleform paths (derived from extracted StartMenu.as)
-    static constexpr const char* MENU_ROOT = "root.MenuHolder.Menu_mc";
-    static constexpr const char* MAIN_LIST = "root.MenuHolder.Menu_mc.MainListHolder.List_mc";
-    static constexpr const char* CONFIRM_PANEL = "root.MenuHolder.Menu_mc.ConfirmPanel_mc";
-    static constexpr const char* CONFIRM_TEXT = "root.MenuHolder.Menu_mc.ConfirmPanel_mc.textField.text";
-    static constexpr const char* STATE_PATH = "root.MenuHolder.Menu_mc.strCurrentState";
+    // Note: Skyrim uses _root. prefix (AS2 standard), unlike FO4 which uses root.
+    static constexpr const char* MENU_ROOT = "_root.MenuHolder.Menu_mc";
+    static constexpr const char* MAIN_LIST = "_root.MenuHolder.Menu_mc.MainListHolder.List_mc";
+    static constexpr const char* CONFIRM_PANEL = "_root.MenuHolder.Menu_mc.ConfirmPanel_mc";
+    static constexpr const char* CONFIRM_TEXT = "_root.MenuHolder.Menu_mc.ConfirmPanel_mc.textField.text";
+    static constexpr const char* STATE_PATH = "_root.MenuHolder.Menu_mc.strCurrentState";
 
     // Original function pointer (saved during runtime vtable hook)
     using AdvanceMovieFn = void(*)(RE::IMenu*, float, std::uint32_t);
