@@ -1,6 +1,8 @@
 #include "MenuAccessibility.h"
 #include "StartMenuHook.h"
 #include "JournalMenuHook.h"
+#include "RaceSexMenuHook.h"
+#include "MessageBoxMenuHook.h"
 #include "SpeechManager.h"
 
 MenuAccessibility* MenuAccessibility::GetSingleton()
@@ -43,7 +45,7 @@ bool MenuAccessibility::CanProcess(RE::InputEvent* a_event)
     if (!a_event) return false;
 
     // Only handle events when a tracked menu is open
-    return m_startMenuOpen || m_journalMenuOpen;
+    return m_startMenuOpen || m_journalMenuOpen || m_raceSexMenuOpen || m_messageBoxMenuOpen;
 }
 
 bool MenuAccessibility::ProcessButton(RE::ButtonEvent* a_event)
@@ -131,6 +133,18 @@ void MenuAccessibility::OnMenuOpened(const RE::BSFixedString& a_menuName)
         JournalMenuHook::GetSingleton()->Install();
         JournalMenuHook::GetSingleton()->ResetState();
         JournalMenuHook::GetSingleton()->SetMenuOpen(true);
+    } else if (a_menuName == "RaceSex Menu"sv) {
+        m_raceSexMenuOpen = true;
+        logs::info("RaceSex Menu opened");
+        RaceSexMenuHook::GetSingleton()->Install();
+        RaceSexMenuHook::GetSingleton()->ResetState();
+        RaceSexMenuHook::GetSingleton()->SetMenuOpen(true);
+    } else if (a_menuName == "MessageBoxMenu"sv) {
+        m_messageBoxMenuOpen = true;
+        logs::info("MessageBoxMenu opened");
+        MessageBoxMenuHook::GetSingleton()->Install();
+        MessageBoxMenuHook::GetSingleton()->ResetState();
+        MessageBoxMenuHook::GetSingleton()->SetMenuOpen(true);
     }
 }
 
@@ -144,5 +158,13 @@ void MenuAccessibility::OnMenuClosed(const RE::BSFixedString& a_menuName)
         m_journalMenuOpen = false;
         logs::info("Journal Menu closed");
         JournalMenuHook::GetSingleton()->SetMenuOpen(false);
+    } else if (a_menuName == "RaceSex Menu"sv) {
+        m_raceSexMenuOpen = false;
+        logs::info("RaceSex Menu closed");
+        RaceSexMenuHook::GetSingleton()->SetMenuOpen(false);
+    } else if (a_menuName == "MessageBoxMenu"sv) {
+        m_messageBoxMenuOpen = false;
+        logs::info("MessageBoxMenu closed");
+        MessageBoxMenuHook::GetSingleton()->SetMenuOpen(false);
     }
 }
