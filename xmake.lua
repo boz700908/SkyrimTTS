@@ -70,3 +70,6 @@ target("skyrim-access")
     add_headerfiles("src/**.h")
     add_includedirs("src")
     set_pcxxheader("src/pch.h")
+
+    -- system libraries
+    add_syslinks("xinput")

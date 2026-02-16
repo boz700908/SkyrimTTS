@@ -5,52 +5,33 @@
 #include <algorithm>
 #include <cmath>
 
-// Provide missing definitions for VR virtual functions declared in PlayerInputHandler
-#ifdef ENABLE_SKYRIM_VR
-namespace RE
-{
-    void PlayerInputHandler::Unk_05() {}
-    void PlayerInputHandler::Unk_06() {}
-}
-#endif
-
 ObjectScanner* ObjectScanner::GetSingleton()
 {
     static ObjectScanner singleton;
     return &singleton;
 }
 
-ObjectScanner::ObjectScanner()
-{
-    inputEventHandlingEnabled = true;
-}
-
 void ObjectScanner::Register()
 {
-    auto* playerControls = RE::PlayerControls::GetSingleton();
-    if (!playerControls) {
-        logs::error("ObjectScanner: PlayerControls not available");
+    auto* inputDeviceManager = RE::BSInputDeviceManager::GetSingleton();
+    if (!inputDeviceManager) {
+        logs::error("ObjectScanner: BSInputDeviceManager not available");
         return;
     }
 
-    playerControls->handlers.push_back(this);
+    inputDeviceManager->AddEventSink(this);
     m_registered = true;
-    logs::info("ObjectScanner: Registered as PlayerInputHandler");
+    logs::info("ObjectScanner: Registered as input event sink (non-consuming)");
 }
 
-bool ObjectScanner::CanProcess(RE::InputEvent* a_event)
+RE::BSEventNotifyControl ObjectScanner::ProcessEvent(RE::InputEvent* const* a_event,
+                                                      [[maybe_unused]] RE::BSTEventSource<RE::InputEvent*>* a_source)
 {
-    // Per-frame update for AutoWalk
+    // Always update AutoWalk each frame we get input events
     AutoWalk::GetSingleton()->Update();
 
     if (!a_event) {
-        return false;
-    }
-
-    // Only process when game is not paused (no menus open)
-    auto* ui = RE::UI::GetSingleton();
-    if (ui && ui->GameIsPaused()) {
-        return false;
+        return RE::BSEventNotifyControl::kContinue;
     }
 
     // Auto-rescan if player moved enough
@@ -58,19 +39,28 @@ bool ObjectScanner::CanProcess(RE::InputEvent* a_event)
         ScanObjects();
     }
 
-    return true;
+    // Walk the linked list of input events
+    for (auto* event = *a_event; event; event = event->next) {
+        if (event->eventType.get() != RE::INPUT_EVENT_TYPE::kButton) {
+            continue;
+        }
+
+        auto* buttonEvent = static_cast<RE::ButtonEvent*>(event);
+        if (buttonEvent->IsDown() && buttonEvent->GetDevice() == RE::INPUT_DEVICE::kKeyboard) {
+            // Only process when game is not paused
+            auto* ui = RE::UI::GetSingleton();
+            if (!ui || !ui->GameIsPaused()) {
+                HandleButtonEvent(buttonEvent);
+            }
+        }
+    }
+
+    // Always return kContinue so we never consume events
+    return RE::BSEventNotifyControl::kContinue;
 }
 
-void ObjectScanner::ProcessButton(RE::ButtonEvent* a_event, [[maybe_unused]] RE::PlayerControlsData* a_data)
+void ObjectScanner::HandleButtonEvent(RE::ButtonEvent* a_event)
 {
-    if (!a_event || !a_event->IsDown()) {
-        return;
-    }
-
-    if (a_event->GetDevice() != RE::INPUT_DEVICE::kKeyboard) {
-        return;
-    }
-
     auto* settings = Settings::GetSingleton();
     auto scanCode = static_cast<std::uint32_t>(a_event->GetIDCode());
 
@@ -207,7 +197,6 @@ bool ObjectScanner::IsValidReference(RE::TESObjectREFR* a_ref) const
 bool ObjectScanner::MatchesCategory(RE::TESObjectREFR* a_ref) const
 {
     if (m_currentCategory == ScanCategory::All) {
-        // In "All" mode, only show the supported types
         auto* actor = a_ref->As<RE::Actor>();
         if (actor && !actor->IsDead()) {
             return true;
@@ -277,11 +266,9 @@ bool ObjectScanner::MatchesSubcategory(RE::TESObjectREFR* a_ref) const
     switch (m_currentCategory) {
     case ScanCategory::Doors: {
         if (m_currentSubcategory == ScanSubcategory::TypeA) {
-            // Locked doors only
             auto* lock = a_ref->GetLock();
             return lock && lock->IsLocked();
         } else if (m_currentSubcategory == ScanSubcategory::TypeB) {
-            // Cell doors only (has teleport data)
             auto* extraTeleport = a_ref->extraList.GetByType<RE::ExtraTeleport>();
             return extraTeleport && extraTeleport->teleportData;
         }

@@ -2,6 +2,7 @@
 
 #include "pch.h"
 #include <functional>
+#include <vector>
 
 class AutoWalk
 {
@@ -23,16 +24,25 @@ private:
     AutoWalk& operator=(const AutoWalk&) = delete;
     AutoWalk& operator=(AutoWalk&&) = delete;
 
+    void FaceNextWaypoint();
+    void AdvanceWaypoint();
     void CheckArrival();
+    void CheckStuck();
     bool IsMovementKeyPressed() const;
-    bool DispatchPapyrusCall(const char* a_functionName, RE::BSScript::IFunctionArguments* a_args);
-    bool DispatchPapyrusStop();
 
     RE::TESObjectREFR* m_targetRef = nullptr;
     float m_stopDistance = 100.0f;
     std::function<void()> m_onArrival;
-    RE::TESQuest* m_quest = nullptr;
-    RE::VMHandle m_questHandle = 0;
+    bool m_wasAutoMoving = false;
     bool m_initialized = false;
-    bool m_espAvailable = false;
+
+    // Navmesh waypoint path
+    std::vector<RE::NiPoint3> m_waypoints;
+    std::size_t m_currentWaypoint = 0;
+    float m_waypointReachDist = 64.0f;
+
+    // Stuck detection
+    RE::NiPoint3 m_lastPosition;
+    float m_stuckTimer = 0.0f;
+    bool m_hasRepathed = false;
 };

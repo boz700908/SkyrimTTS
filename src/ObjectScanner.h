@@ -31,24 +31,22 @@ struct ScannedObject
     float zDifference = 0.0f;
 };
 
-class ObjectScanner : public RE::PlayerInputHandler
+class ObjectScanner : public RE::BSTEventSink<RE::InputEvent*>
 {
 public:
     static ObjectScanner* GetSingleton();
 
     void Register();
 
-    // PlayerInputHandler overrides
-    bool CanProcess(RE::InputEvent* a_event) override;
-    void ProcessButton(RE::ButtonEvent* a_event, RE::PlayerControlsData* a_data) override;
-#ifdef ENABLE_SKYRIM_VR
-    void Unk_05() override {}
-    void Unk_06() override {}
-#endif
+    // BSTEventSink override — observes input without consuming it
+    RE::BSEventNotifyControl ProcessEvent(RE::InputEvent* const* a_event,
+                                          RE::BSTEventSource<RE::InputEvent*>* a_source) override;
 
 private:
-    ObjectScanner();
+    ObjectScanner() = default;
     ~ObjectScanner() override = default;
+
+    void HandleButtonEvent(RE::ButtonEvent* a_event);
 
     // Scanning
     void ScanObjects();
