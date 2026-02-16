@@ -1,0 +1,119 @@
+Creating skyrim-access.esp in Creation Kit
+==========================================
+
+This ESP provides the Papyrus quest script needed for the auto-walk feature.
+Without it, the object scanner and crosshair feedback still work, but
+pressing the walk-to key will say "Auto-walk requires skyrim-access.esp".
+
+
+STEP 1: Open Creation Kit
+--------------------------
+1. Launch Creation Kit (Skyrim SE version)
+2. When it asks to load a plugin, check Skyrim.esm and click OK
+3. Wait for it to finish loading
+
+
+STEP 2: Create the Quest
+--------------------------
+1. In the Object Window (left panel), navigate to: Character > Quest
+2. Right-click in the quest list and select New
+3. Fill in these fields:
+   - ID: SA_AutoWalkQuest
+     (IMPORTANT: This must be exact - the C++ code looks it up by this name)
+   - Name: leave blank or type "Skyrim Access AutoWalk"
+   - Check "Start Game Enabled"
+   - Priority: 0
+   - You do NOT need any quest stages
+4. Click OK to save the quest
+
+
+STEP 3: Compile the Papyrus Script
+------------------------------------
+The script source file is in this repo at:
+  scripts/source/SA_AutoWalkScript.psc
+
+Option A - Compile via Creation Kit:
+  1. Copy SA_AutoWalkScript.psc to: Data/Source/Scripts/SA_AutoWalkScript.psc
+  2. In Creation Kit, open the quest (SA_AutoWalkQuest)
+  3. Go to the Scripts tab, click Add, type SA_AutoWalkScript
+  4. Creation Kit will compile the script automatically
+
+Option B - Compile from command line:
+  1. Copy SA_AutoWalkScript.psc to: Data/Source/Scripts/SA_AutoWalkScript.psc
+  2. Run:
+     "Data/Papyrus Compiler/PapyrusCompiler.exe" ^
+       "Data/Source/Scripts/SA_AutoWalkScript.psc" ^
+       -f="TESV_Papyrus_Flags.flg" ^
+       -i="Data/Source/Scripts" ^
+       -o="Data/Scripts"
+  3. Verify Data/Scripts/SA_AutoWalkScript.pex was created
+
+
+STEP 4: Attach the Script to the Quest
+----------------------------------------
+1. In Creation Kit, double-click SA_AutoWalkQuest to open it
+2. Go to the Scripts tab (or Papyrus Scripts)
+3. Click Add
+4. Type: SA_AutoWalkScript
+5. Click OK on the script dialog
+6. Click OK on the quest dialog
+
+
+STEP 5: Save as ESP
+---------------------
+1. File > Save (or Ctrl+S)
+2. Save as: skyrim-access.esp
+3. The file is saved to your Data/ folder
+
+
+STEP 6: Deploy
+---------------
+Make sure these files are in your Skyrim SE install directory:
+
+  Data/skyrim-access.esp                    (the plugin you just created)
+  Data/Scripts/SA_AutoWalkScript.pex        (compiled Papyrus script)
+  Data/SKSE/Plugins/skyrim-access.dll       (the SKSE plugin DLL)
+  Data/SKSE/Plugins/skyrim-access.json      (auto-created on first game launch)
+
+
+STEP 7: Enable the ESP
+------------------------
+Add skyrim-access.esp to your load order using one of:
+  - Mod Organizer 2: Enable it in the right panel (Plugins tab)
+  - Vortex: Enable it in the plugins section
+  - Manual: Add "skyrim-access.esp" to Data/plugins.txt
+
+Load order does not matter - it has no masters besides Skyrim.esm.
+
+
+VERIFICATION
+-------------
+1. Launch Skyrim SE via SKSE
+2. Check Data/SKSE/Plugins/skyrim-access.log for:
+   "AutoWalk: Initialized with quest handle XXXX"
+   (If you see "SA_AutoWalkQuest not found" the ESP is not loaded)
+3. In-game: scan for an object, navigate to it, press the walk-to key
+4. The player should start walking to the target automatically
+5. Press WASD, Space, or Escape to cancel the walk
+
+
+DEFAULT KEY BINDINGS
+---------------------
+These can be changed in Data/SKSE/Plugins/skyrim-access.json
+
+  Numpad 5     Scan nearby objects
+  Page Down    Next object in results
+  Page Up      Previous object in results
+  Numpad 6     Next category (All/NPCs/Doors/Containers/Items)
+  Numpad 4     Previous category
+  Home         Look at selected object (rotate player to face it)
+  End          Walk to selected object (auto-walk)
+  Delete       Cycle subcategory filter (e.g. Locked doors, Cell doors)
+
+
+TROUBLESHOOTING
+----------------
+- "Auto-walk requires skyrim-access.esp": ESP not loaded or quest ID is wrong
+- No speech output: Make sure NVDA or JAWS is running
+- No scan results: You may be in an empty area, try indoors
+- Walk stops immediately: Check that no movement keys are pressed
