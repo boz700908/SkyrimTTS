@@ -16,15 +16,17 @@ Function OnWalkToTarget(int aiFormID, float afStopDistance)
         return
     endif
 
-    ; Let the AI take control of player movement
-    Game.SetPlayerAIDriven(true)
+    ; Stop any existing translation first
+    player.StopTranslation()
 
-    ; Use the game's navmesh pathfinding to walk to target
-    ; afStopDistance is used as walk/run percent (1.0 = full run)
-    player.PathToReference(targetRef, 1.0)
+    ; Smoothly move the player toward the target
+    ; Speed ~300 units/sec is roughly walking pace
+    ; This does NOT block player input
+    player.TranslateToRef(targetRef, 300.0)
 EndFunction
 
-; Called by C++ when walk is cancelled (WASD/Esc) or arrival detected
+; Called by C++ when walk is cancelled (movement keys/gamepad) or arrival detected
 Function OnStopWalking()
-    Game.SetPlayerAIDriven(false)
+    Actor player = Game.GetPlayer()
+    player.StopTranslation()
 EndFunction
