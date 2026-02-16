@@ -43,6 +43,7 @@ package("sral")
 package_end()
 
 add_requires("sral", {configs = {shared = false}})
+add_requires("nlohmann_json")
 
 -- Mod Organizer 2 installation path (override with XSE_TES5_MODS_PATH env var)
 local MO2_MODS_PATH = os.getenv("XSE_TES5_MODS_PATH") or ""
@@ -53,6 +54,7 @@ target("skyrim-access")
     -- add dependencies to target
     add_deps("commonlibsse-ng")
     add_packages("sral")
+    add_packages("nlohmann_json")
     add_defines("SRAL_STATIC")
     add_includedirs("lib/SRAL/Include")
 
