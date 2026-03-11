@@ -1,0 +1,24 @@
+# Build output
+build/
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+
+# Compiled
+*.dll
+*.pdb
+*.exp
+*.lib
+*.ilk
+*.obj
+
+# vcpkg
+vcpkg_installed/
+
+# Claude memory
+.claude/
+
+# Logs
+*.log
