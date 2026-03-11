@@ -1,161 +1,161 @@
-# SkyrimNVDA — Guide du joueur
+# SkyrimNVDA — Player Guide
 
-Plugin d'accessibilité pour Skyrim Special/Anniversary Edition. Vocalise automatiquement les menus du jeu via NVDA.
+Accessibility plugin for Skyrim Special/Anniversary Edition. Automatically vocalizes game menus via NVDA.
 
 ---
 
-## Prérequis
+## Requirements
 
-- Skyrim Special Edition ou Anniversary Edition
+- Skyrim Special Edition or Anniversary Edition
 - SKSE64
-- NVDA (actif avant de lancer le jeu)
+- NVDA (running before launching the game)
 
 ---
 
-## Démarrage — Création du personnage
+## Getting Started — Character Creation
 
-À l'ouverture du jeu, après la cinématique d'introduction, vous arrivez sur le **menu de création de personnage**.
+When you start the game, after the intro cinematic, you arrive at the **character creation menu**.
 
-NVDA annonce : *"Character creation"*
+NVDA announces: *"Character creation"*
 
-### Navigation dans la création de personnage
+### Navigating character creation
 
-| Touche | Action |
-|--------|--------|
-| Pavé numérique 5 / 8 | Changer d'onglet (Race, Sexe, Apparence…) |
-| Haut / Bas | Naviguer dans les options de l'onglet |
-| Gauche / Droite | Modifier la valeur d'un curseur |
-| R | Confirmer / valider |
-
----
-
-## Menu en croix (Touche Tab)
-
-NVDA annonce : *"Cross menu"*
-
-| Touche | Destination |
-|--------|-------------|
-| Haut | Magie |
-| Bas | Inventaire |
-| Gauche | Menu compétences |
-| Droite | Journal |
+| Key | Action |
+|-----|--------|
+| Numpad 5 / 8 | Switch tab (Race, Sex, Appearance…) |
+| Up / Down | Navigate options within a tab |
+| Left / Right | Adjust a slider value |
+| R | Confirm / validate |
 
 ---
 
-## Inventaire
+## Tween Menu (Tab key)
 
-NVDA annonce : *"Inventory open"*
+NVDA announces: *"Cross menu"*
 
-- Navigation haut/bas : change d'objet → nom, valeur, poids vocalisés
-- Navigation gauche/droite (ou Q/E) : change de catégorie
-- **H** : annonce l'or en poche et le poids transporté / maximum
-
----
-
-## Conteneur (coffre, corps…)
-
-NVDA annonce : *"Container open"*
-
-- Navigation haut/bas : change d'objet
-- Navigation gauche/droite : bascule entre votre inventaire et le conteneur
-- **H** : annonce l'or et le poids
+| Key | Destination |
+|-----|-------------|
+| Up | Magic |
+| Down | Inventory |
+| Left | Skills |
+| Right | Journal |
 
 ---
 
-## Menu Magie
+## Inventory
 
-NVDA annonce : *"Magic menu open"*
+NVDA announces: *"Inventory open"*
 
-- Navigation haut/bas : change de sort → nom, effets, coût vocalisés
-- Navigation gauche/droite : change de catégorie (Destruction, Guérison…)
-
----
-
-## Journal (Touche J)
-
-NVDA annonce : *"Journal open"*
-
-- Navigation haut/bas : change de quête ou d'entrée
-- **Pavé numérique 5 / 8** : change d'onglet (Quêtes, Inventaire, Compétences, Magie)
+- Up/Down: change item → name, value, weight vocalized
+- Left/Right (or Q/E): change category
+- **H**: announces gold and current carry weight / maximum
 
 ---
 
-## Menu Compétences (depuis le menu en croix)
+## Container (chest, body…)
 
-- Navigation haut/bas/gauche/droite : navigue dans l'arbre des compétences
-- La description de la compétence sélectionnée est vocalisée automatiquement
-- Les atouts (perks) de la branche sont vocalisés avec leur description et prérequis
+NVDA announces: *"Container open"*
+
+- Up/Down: change item
+- Left/Right: switch between your inventory and the container
+- **H**: announces gold and carry weight
 
 ---
 
-## Menu Favoris (Touche Q)
+## Magic Menu
 
-NVDA annonce : *"Favorites"*
+NVDA announces: *"Magic menu open"*
 
-- Navigation haut/bas : change d'objet ou de sort favori
+- Up/Down: change spell → name, effects, cost vocalized
+- Left/Right: change category (Destruction, Restoration…)
+
+---
+
+## Journal (J key)
+
+NVDA announces: *"Journal open"*
+
+- Up/Down: change quest or entry
+- **Numpad 5 / 8**: switch tab (Quests, Inventory, Skills, Magic)
+
+---
+
+## Skills Menu (from the Tween menu)
+
+- Up/Down/Left/Right: navigate the skill tree
+- The selected skill description is vocalized automatically
+- Perks are vocalized with their description and requirements
+
+---
+
+## Favorites (Q key)
+
+NVDA announces: *"Favorites"*
+
+- Up/Down: change item or spell
 
 ---
 
 ## Dialogue
 
-La ligne de dialogue du PNJ est vocalisée automatiquement.
-Navigation haut/bas pour choisir votre réponse.
+The NPC's dialogue line is vocalized automatically.
+Up/Down to choose your response.
 
 ---
 
-## HUD (en jeu)
+## HUD (in game)
 
-| Situation | Vocalisation |
+| Situation | Vocalization |
 |-----------|-------------|
-| Objet/PNJ/porte en vue | Nom + action (ex: "Ouvrir porte") vocalisé automatiquement |
-| Notification (quête, niveau…) | Vocalisée automatiquement |
-| Sous-titre | Vocalisé automatiquement |
-| Nouveau lieu découvert | Vocalisé automatiquement |
-| **H** (en jeu) | Santé / Magie / Endurance actuelles |
+| Object/NPC/door in crosshair | Name + action (e.g. "Open door") vocalized automatically |
+| Notification (quest, level…) | Vocalized automatically |
+| Subtitle | Vocalized automatically |
+| New location discovered | Vocalized automatically |
+| **H** (in game) | Current Health / Magicka / Stamina |
 
 ---
 
-## Menu principal
+## Main Menu
 
-NVDA annonce : *"Main menu open"*
+NVDA announces: *"Main menu open"*
 
-Navigation haut/bas pour Nouvelle partie, Continuer, Charger, Paramètres, Quitter.
-
----
-
-## Montée de niveau
-
-NVDA annonce : *"Level gained! Choose your improvement."*
-
-Navigation gauche/droite pour choisir entre Santé, Magie ou Endurance.
-**Entrée** pour confirmer.
+Up/Down to navigate New Game, Continue, Load, Settings, Quit.
 
 ---
 
-## Boîte de message
+## Level Up
 
-Les messages du jeu (confirmations, avertissements) sont vocalisés automatiquement.
-Navigation haut/bas pour choisir parmi les boutons, **Entrée** pour confirmer.
+NVDA announces: *"Level gained! Choose your improvement."*
 
----
-
-## Ce qui n'est pas encore vocalisé
-
-- Marchands (acheter/vendre)
-- Forges et tables d'enchantement (crafting)
-- Menu carte
+Left/Right to choose between Health, Magicka or Stamina.
+**Enter** to confirm.
 
 ---
 
-## Raccourcis clavier récapitulatif
+## Message Box
 
-| Touche | Action |
-|--------|--------|
-| H | Santé/Magie/Endurance (en jeu) ou Or/Poids (inventaire/conteneur) |
-| Tab | Ouvre/ferme le menu en croix |
+Game messages (confirmations, warnings) are vocalized automatically.
+Up/Down to navigate buttons, **Enter** to confirm.
+
+---
+
+## Not yet vocalized
+
+- Merchants (buy/sell)
+- Crafting stations (forge, enchanting table…)
+- Map menu
+
+---
+
+## Keyboard shortcuts summary
+
+| Key | Action |
+|-----|--------|
+| H | Health/Magicka/Stamina (in game) or Gold/Weight (inventory/container) |
+| Tab | Open/close the Tween menu |
 | J | Journal |
-| Q | Favoris |
+| Q | Favorites |
 
 ---
 
-*Plugin développé par Pyrhame. Nécessite NVDA.*
+*Plugin developed by Pyrhame. Requires NVDA.*
