@@ -1,105 +1,161 @@
-# SKSE "Hello, world!"
+# SkyrimNVDA — Guide du joueur
 
-Very simple C++ SKSE plugin for Skyrim!
+Plugin d'accessibilité pour Skyrim Special/Anniversary Edition. Vocalise automatiquement les menus du jeu via NVDA.
 
 ---
 
-- [SKSE "Hello, world!"](#skse-hello-world)
-- [What does it do?](#what-does-it-do)
-- [CommonLibSSE NG](#commonlibsse-ng)
-- [Requirements](#requirements)
-  - [Opening the project](#opening-the-project)
-- [Project setup](#project-setup)
-  - [Finding Your "`mods`" Folder](#finding-your-mods-folder)
-- [Setup your own repository](#setup-your-own-repository)
-- [Sharing is Caring](#sharing-is-caring)
+## Prérequis
 
-# What does it do?
+- Skyrim Special Edition ou Anniversary Edition
+- SKSE64
+- NVDA (actif avant de lancer le jeu)
 
-After running Skyrim, once at the Main Menu, press the `~` key to open the game console.
+---
 
-You will see that we printed `"Hello, world!"` to the console at the Main Menu 🐉
+## Démarrage — Création du personnage
 
-# CommonLibSSE NG
+À l'ouverture du jeu, après la cinématique d'introduction, vous arrivez sur le **menu de création de personnage**.
 
-Because this uses [CommonLibSSE NG](https://github.com/CharmedBaryon/CommonLibSSE-NG), it supports Skyrim SE, AE, GOG, and VR.
+NVDA annonce : *"Character creation"*
 
-[CommonLibSSE NG](https://github.com/CharmedBaryon/CommonLibSSE-NG) is a fork of the popular [powerof3 fork](https://github.com/powerof3/CommonLibSSE) of the _original_ `CommonLibSSE` library created by [Ryan McKenzie](https://github.com/Ryan-rsm-McKenzie) in [2018](https://github.com/Ryan-rsm-McKenzie/CommonLibSSE/commit/224773c424bdb8e36c761810cdff0fcfefda5f4a).
+### Navigation dans la création de personnage
 
-# Requirements
+| Touche | Action |
+|--------|--------|
+| Pavé numérique 5 / 8 | Changer d'onglet (Race, Sexe, Apparence…) |
+| Haut / Bas | Naviguer dans les options de l'onglet |
+| Gauche / Droite | Modifier la valeur d'un curseur |
+| R | Confirmer / valider |
 
-- [Visual Studio 2022](https://visualstudio.microsoft.com/) (_the free Community edition_)
-- [`vcpkg`](https://github.com/microsoft/vcpkg)
-  - 1. Clone the repository using git OR [download it as a .zip](https://github.com/microsoft/vcpkg/archive/refs/heads/master.zip)
-  - 2. Go into the `vcpkg` folder and double-click on `bootstrap-vcpkg.bat`
-  - 3. Edit your system or user Environment Variables and add a new one:
-    - Name: `VCPKG_ROOT`  
-      Value: `C:\path\to\wherever\your\vcpkg\folder\is`
+---
 
-<img src="https://raw.githubusercontent.com/SkyrimDev/Images/main/images/screenshots/Setting%20Environment%20Variables/VCPKG_ROOT.png" height="150">
+## Menu en croix (Touche Tab)
 
-## Opening the project
+NVDA annonce : *"Cross menu"*
 
-Once you have Visual Studio 2022 installed, you can open this folder in basically any C++ editor, e.g. [VS Code](https://code.visualstudio.com/) or [CLion](https://www.jetbrains.com/clion/) or [Visual Studio](https://visualstudio.microsoft.com/)
-- > _for VS Code, if you are not automatically prompted to install the [C++](https://marketplace.visualstudio.com/items?itemName=ms-vscode.cpptools) and [CMake Tools](https://marketplace.visualstudio.com/items?itemName=ms-vscode.cmake-tools) extensions, please install those and then close VS Code and then open this project as a folder in VS Code_
+| Touche | Destination |
+|--------|-------------|
+| Haut | Magie |
+| Bas | Inventaire |
+| Gauche | Menu compétences |
+| Droite | Journal |
 
-You may need to click `OK` on a few windows, but the project should automatically run CMake!
+---
 
-It will _automatically_ download [CommonLibSSE NG](https://github.com/CharmedBaryon/CommonLibSSE-NG) and everything you need to get started making your new plugin!
+## Inventaire
 
-# Project setup
+NVDA annonce : *"Inventory open"*
 
-By default, when this project compiles it will output a `.dll` for your SKSE plugin into the `build/` folder.
+- Navigation haut/bas : change d'objet → nom, valeur, poids vocalisés
+- Navigation gauche/droite (ou Q/E) : change de catégorie
+- **H** : annonce l'or en poche et le poids transporté / maximum
 
-If you want to configure this project to output your plugin files
-into your Skyrim Special Edition's "`Data`" folder:
+---
 
-- Set the `SKYRIM_FOLDER` environment variable to the path of your Skyrim installation  
-  e.g. `C:\Program Files (x86)\Steam\steamapps\common\Skyrim Special Edition`
+## Conteneur (coffre, corps…)
 
-<img src="https://raw.githubusercontent.com/SkyrimDev/Images/main/images/screenshots/Setting%20Environment%20Variables/SKYRIM_FOLDER.png" height="150">
+NVDA annonce : *"Container open"*
 
-If you want to configure this project to output your plugin files
-into your "`mods`" folder:  
-(_for Mod Organizer 2 or Vortex_)
+- Navigation haut/bas : change d'objet
+- Navigation gauche/droite : bascule entre votre inventaire et le conteneur
+- **H** : annonce l'or et le poids
 
-- Set the `SKYRIM_MODS_FOLDER` environment variable to the path of your mods folder:  
-  e.g. `C:\Users\<user>\AppData\Local\ModOrganizer\Skyrim Special Edition\mods`  
-  e.g. `C:\Users\<user>\AppData\Roaming\Vortex\skyrimse\mods`
+---
 
-<img src="https://raw.githubusercontent.com/SkyrimDev/Images/main/images/screenshots/Setting%20Environment%20Variables/SKYRIM_MODS_FOLDER.png" height="150">
+## Menu Magie
 
-## Finding Your "`mods`" Folder
+NVDA annonce : *"Magic menu open"*
 
-In Mod Organizer 2:
+- Navigation haut/bas : change de sort → nom, effets, coût vocalisés
+- Navigation gauche/droite : change de catégorie (Destruction, Guérison…)
 
-> Click the `...` next to "Mods" to get the full folder path
+---
 
-<img src="https://raw.githubusercontent.com/SkyrimDev/Images/main/images/screenshots/MO2/MO2SettingsModsFolder.png" height="150">
+## Journal (Touche J)
 
-In Vortex:
+NVDA annonce : *"Journal open"*
 
-<img src="https://raw.githubusercontent.com/SkyrimDev/Images/main/images/screenshots/Vortex/VortexSettingsModsFolder.png" height="150">
+- Navigation haut/bas : change de quête ou d'entrée
+- **Pavé numérique 5 / 8** : change d'onglet (Quêtes, Inventaire, Compétences, Magie)
 
-# Setup your own repository
+---
 
-If you clone this template on GitHub, please:
+## Menu Compétences (depuis le menu en croix)
 
-- Go into `LICENSE` and change the year and change `<YOUR NAME HERE>` to your name.
-- Go into `CODE_OF_CONDUCT.md` and change `<YOUR CONTACT INFO HERE>` to your contact information.
+- Navigation haut/bas/gauche/droite : navigue dans l'arbre des compétences
+- La description de la compétence sélectionnée est vocalisée automatiquement
+- Les atouts (perks) de la branche sont vocalisés avec leur description et prérequis
 
-The `LICENSE` defaults to using the [MIT License](https://choosealicense.com/licenses/mit/), a permissive license which is used by many popular Skyrim mods (_including [CommonLibSSE](https://github.com/Ryan-rsm-McKenzie/CommonLibSSE)_).
+---
 
-The `CODE_OF_CONDUCT.md` defaults to using the [Contributor Covenant](https://www.contributor-covenant.org/), the most popular code of conduct for open source communities.
+## Menu Favoris (Touche Q)
 
-If you'd like to know more about open source licenses, see:
-- [Licensing a repository](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/licensing-a-repository)
-- [Choose an open source license](https://choosealicense.com/)
+NVDA annonce : *"Favorites"*
 
-# Sharing is Caring
+- Navigation haut/bas : change d'objet ou de sort favori
 
-**If you use this template, PLEASE release your project as a public open source project.** 💖
+---
 
-**Please do not release your SKSE plugin on Nexus/etc without making the source code available** \*
+## Dialogue
 
-> \* _You do you. But please help our community by sharing your source `<3`_
+La ligne de dialogue du PNJ est vocalisée automatiquement.
+Navigation haut/bas pour choisir votre réponse.
+
+---
+
+## HUD (en jeu)
+
+| Situation | Vocalisation |
+|-----------|-------------|
+| Objet/PNJ/porte en vue | Nom + action (ex: "Ouvrir porte") vocalisé automatiquement |
+| Notification (quête, niveau…) | Vocalisée automatiquement |
+| Sous-titre | Vocalisé automatiquement |
+| Nouveau lieu découvert | Vocalisé automatiquement |
+| **H** (en jeu) | Santé / Magie / Endurance actuelles |
+
+---
+
+## Menu principal
+
+NVDA annonce : *"Main menu open"*
+
+Navigation haut/bas pour Nouvelle partie, Continuer, Charger, Paramètres, Quitter.
+
+---
+
+## Montée de niveau
+
+NVDA annonce : *"Level gained! Choose your improvement."*
+
+Navigation gauche/droite pour choisir entre Santé, Magie ou Endurance.
+**Entrée** pour confirmer.
+
+---
+
+## Boîte de message
+
+Les messages du jeu (confirmations, avertissements) sont vocalisés automatiquement.
+Navigation haut/bas pour choisir parmi les boutons, **Entrée** pour confirmer.
+
+---
+
+## Ce qui n'est pas encore vocalisé
+
+- Marchands (acheter/vendre)
+- Forges et tables d'enchantement (crafting)
+- Menu carte
+
+---
+
+## Raccourcis clavier récapitulatif
+
+| Touche | Action |
+|--------|--------|
+| H | Santé/Magie/Endurance (en jeu) ou Or/Poids (inventaire/conteneur) |
+| Tab | Ouvre/ferme le menu en croix |
+| J | Journal |
+| Q | Favoris |
+
+---
+
+*Plugin développé par Pyrhame. Nécessite NVDA.*
