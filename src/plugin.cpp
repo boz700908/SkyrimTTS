@@ -14,6 +14,8 @@
 #include "menu_tutorial.h"
 #include "menu_favorites.h"
 #include "menu_uilistmenu.h"
+#include "scanner.h"
+#include "autowalk.h"
 
 // ---------------- Menu open/close listener ----------------
 
@@ -470,6 +472,58 @@ public:
                 }
             }
 
+            // Scanner + AutoWalk (seulement hors menus)
+            {
+                bool anyMenuOpen = g_invOpen.load() || g_containerOpen.load() ||
+                                   g_journalOpen.load() || g_magicOpen.load() ||
+                                   g_mainOpen.load() || g_dialogueOpen.load() ||
+                                   g_raceSexOpen.load() || g_tweenOpen.load() ||
+                                   g_statsOpen.load() || g_favOpen.load() ||
+                                   g_msgBoxOpen.load() || g_uiListMenuOpen.load();
+                if (!anyMenuOpen) {
+                    bool shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+
+                    // Numpad5 = scanner les objets
+                    if (code == RE::BSKeyboardDevice::Keys::kKP_5) {
+                        DoScan();
+                        continue;
+                    }
+                    // PageDown = objet suivant, Shift+PageDown = catégorie suivante
+                    if (code == RE::BSKeyboardDevice::Keys::kPageDown) {
+                        if (shift) ScannerNextCategory();
+                        else ScannerNextObject();
+                        continue;
+                    }
+                    // PageUp = objet précédent, Shift+PageUp = catégorie précédente
+                    if (code == RE::BSKeyboardDevice::Keys::kPageUp) {
+                        if (shift) ScannerPrevCategory();
+                        else ScannerPrevObject();
+                        continue;
+                    }
+                    // Home = annoncer objet courant, Shift+Home = toggle autowalk
+                    if (code == RE::BSKeyboardDevice::Keys::kHome) {
+                        if (shift) ToggleAutoWalk();
+                        else ScannerAnnounceCurrent();
+                        continue;
+                    }
+                    // X = verrouiller l'ennemi le plus proche
+                    if (code == RE::BSKeyboardDevice::Keys::kX) {
+                        LockNearestEnemy();
+                        continue;
+                    }
+                    // Stop autowalk si on marche et qu'on appuie sur une touche de mouvement
+                    if (g_autoWalking.load()) {
+                        if (code == RE::BSKeyboardDevice::Keys::kW ||
+                            code == RE::BSKeyboardDevice::Keys::kA ||
+                            code == RE::BSKeyboardDevice::Keys::kS ||
+                            code == RE::BSKeyboardDevice::Keys::kD) {
+                            Speak(L"Stopping");
+                            StopAutoWalk();
+                        }
+                    }
+                }
+            }
+
             // H = stats contextuelles (en jeu: vitals, en inventaire: or/poids)
             if (code == RE::BSKeyboardDevice::Keys::kH) {
                 if (g_invOpen.load(std::memory_order_relaxed)) {
@@ -545,6 +599,12 @@ SKSEPluginLoad(const SKSE::LoadInterface* skse) {
 
         if (msg->type == SKSE::MessagingInterface::kInputLoaded) {
             RegisterInputListener();
+        }
+
+        // Après chargement d'une sauvegarde : remettre SpeedMult à 100
+        if (msg->type == SKSE::MessagingInterface::kPostLoadGame) {
+            AutoWalkSafetyReset();
+            LOG("kPostLoadGame: autowalk safety reset");
         }
     });
 

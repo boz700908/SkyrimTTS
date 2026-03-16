@@ -153,11 +153,12 @@ static bool ReadInventorySnapshot(InventorySnapshot& snap) {
 
 // --- Formatters ---
 static std::wstring FormatEquipState(int state) {
+    // InventoryDefines.as: ES_NONE=0, ES_EQUIPPED=1, ES_LEFT=2, ES_RIGHT=3, ES_BOTH=4
     switch (state) {
         case 1: return L"equipped";
         case 2: return L"left hand";
-        case 4: return L"right hand";
-        case 6: return L"both hands";
+        case 3: return L"right hand";
+        case 4: return L"both hands";
         default: return L"";
     }
 }

@@ -177,10 +177,15 @@ static bool ReadJournalSnapshot(JournalSnapshot& snap) {
                         if (GetGFxNumber(movie, (eb + ".value").c_str(), v))
                             valStr = std::to_wstring(static_cast<int>(v * 100.0 + 0.5)) + L"%";
                     } else if (mtype == 1) {
-                        // Stepper: read current label from OptionStepper_mc.textField.text
-                        std::string s;
-                        if (GetGFxString(movie, (eb + ".OptionStepper_mc.textField.text").c_str(), s) && !s.empty())
-                            valStr = ResolveUIString(movie, s);
+                        // Stepper: read options[value] from the data object
+                        double v = 0.0;
+                        if (GetGFxNumber(movie, (eb + ".value").c_str(), v)) {
+                            int idx = static_cast<int>(v);
+                            std::string optPath = eb + ".options." + std::to_string(idx);
+                            std::string s;
+                            if (GetGFxString(movie, optPath.c_str(), s) && !s.empty())
+                                valStr = ResolveUIString(movie, s);
+                        }
                     } else if (mtype == 2) {
                         // Checkbox: value 0=off, 1=on
                         double v = 0.0;
@@ -245,7 +250,19 @@ static bool ReadJournalSnapshot(JournalSnapshot& snap) {
                 snap.systemItem = std::move(msg);
                 break;
             }
-            case 6:  itemSuffix = "InputMappingPanel.List_mc.selectedEntry.text"; break;
+            case 6: {
+                // Controls: read action name + mapped key
+                const std::string eb = std::string(SYS_PREFIX) + "InputMappingPanel.List_mc.selectedEntry";
+                std::string actionStr, keyStr;
+                if (GetGFxString(movie, (eb + ".text").c_str(), actionStr) && !actionStr.empty()) {
+                    std::wstring label = ResolveUIString(movie, actionStr);
+                    if (GetGFxString(movie, (eb + ".buttonName").c_str(), keyStr) && !keyStr.empty())
+                        snap.systemItem = label + L": " + Utf8ToWString(keyStr);
+                    else
+                        snap.systemItem = label;
+                }
+                break;
+            }
             case 8:  itemSuffix = "PCQuitPanel.List_mc.selectedEntry.text"; break;
             case 13: itemSuffix = "HelpListPanel.List_mc.selectedEntry.text"; break;
             case 2: case 5: case 7: case 9: case 10:
