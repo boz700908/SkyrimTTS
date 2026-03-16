@@ -69,4 +69,18 @@ if(DEFINED OUTPUT_FOLDER)
             VERBATIM
         )
     endif()
+
+    # Deploy AutoWalk ESP + PEX to Skyrim Data folder
+    add_custom_command(
+        TARGET "${PROJECT_NAME}"
+        POST_BUILD
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+                "${CMAKE_SOURCE_DIR}/autowalk/SkyrimTTS_AutoWalk.esp"
+                "${OUTPUT_FOLDER}/SkyrimTTS_AutoWalk.esp"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${OUTPUT_FOLDER}/Scripts"
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+                "${CMAKE_SOURCE_DIR}/autowalk/SkyrimTTS_AutoWalk.pex"
+                "${OUTPUT_FOLDER}/Scripts/SkyrimTTS_AutoWalk.pex"
+        VERBATIM
+    )
 endif()

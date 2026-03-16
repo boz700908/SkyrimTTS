@@ -165,6 +165,13 @@ static void QueueXxxRead() {
 
 `NormalizeForSpeech()` convertit les caracteres typographiques (guillemets courbes, tirets longs, ellipses) en ASCII standard. Ne pas supprimer les apostrophes — NVDA les gere nativement en wchar_t.
 
+## Agents disponibles
+
+- **commonlibsse-api-analyst** : Utiliser quand on a besoin de comprendre une classe ou fonction de CommonLibSSE-NG (RE::, SKSE::). Fouille les headers dans `build/debug/vcpkg_installed/`.
+- **skyrim-ui-explorer** : Utiliser quand on doit trouver des chemins GFx dans un menu SWF. Analyse les fichiers ActionScript decompiles dans `UI/`.
+- **accessibility-reviewer** : Utiliser pour relire le code avant un commit ou apres avoir code un nouveau menu. Verifie les regles Speak/SpeakQueue, flood protection, GFx safety, etc.
+- **log-analyzer** : Utiliser pour analyser en profondeur le fichier `SkyrimNVDA.log` quand un probleme survient.
+
 ## Log
 
 Le plugin ecrit dans `Data\SKSE\SkyrimNVDA.log`. Les menus geres (inventaire, magie, etc.) sont exclus du log generique des events pour eviter le spam. Seuls les menus non-geres sont logges.

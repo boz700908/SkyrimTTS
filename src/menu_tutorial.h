@@ -2,8 +2,11 @@
 
 // TUTORIALMENU - DEBUT
 
-static constexpr const char* TUTO_TITLE   = "_root.Menu_mc.TitleText.text";
-static constexpr const char* TUTO_CONTENT = "_root.Menu_mc.HelpText.textField.text";
+static constexpr const char* TUTO_TITLE        = "_root.Menu_mc.TitleText.text";
+static constexpr const char* TUTO_CONTENT_TEXT  = "_root.Menu_mc.HelpText.textField.text";
+static constexpr const char* TUTO_CONTENT_HTML  = "_root.Menu_mc.HelpText.textField.htmlText";
+
+// ReplaceImgTagsWithKeyNames is in common.h
 
 static void AnnounceTutorialImpl() {
     auto ui = RE::UI::GetSingleton();
@@ -15,17 +18,29 @@ static void AnnounceTutorialImpl() {
 
     std::string title, content;
     GetGFxString(movie, TUTO_TITLE, title);
-    GetGFxString(movie, TUTO_CONTENT, content);
+
+    // Try htmlText first (contains <img src='KeyName.png'> for keybinds)
+    GetGFxString(movie, TUTO_CONTENT_HTML, content);
+    bool fromHtml = !content.empty() && content.find("<img") != std::string::npos;
+    if (!fromHtml) {
+        content.clear();
+        GetGFxString(movie, TUTO_CONTENT_TEXT, content);
+    }
 
     std::wstring text;
     if (!title.empty())
         text += StripMarkupForSpeech(Utf8ToWString(title));
     if (!content.empty()) {
         if (!text.empty()) text += L". ";
-        text += StripMarkupForSpeech(Utf8ToWString(content));
+        std::wstring contentW = Utf8ToWString(content);
+        if (fromHtml)
+            contentW = ReplaceImgTagsWithKeyNames(contentW);
+        text += StripMarkupForSpeech(contentW);
     }
-    if (!text.empty())
+    if (!text.empty()) {
+        LOG("TUTO speech='{}' (fromHtml={})", WStringToUtf8(text), fromHtml);
         Speak(text);
+    }
 }
 
 static void QueueTutorialRead() {

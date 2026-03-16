@@ -443,6 +443,52 @@ static std::wstring StripMarkupForSpeech(const std::wstring& s) {
     return result;
 }
 
+// Replaces <img src='KeyName.png'> tags with readable key names for speech
+static std::wstring ReplaceImgTagsWithKeyNames(const std::wstring& html) {
+    std::wstring out;
+    out.reserve(html.size());
+    size_t i = 0;
+    while (i < html.size()) {
+        if (i + 4 < html.size() && html[i] == L'<' &&
+            (html[i+1] == L'i' || html[i+1] == L'I') &&
+            (html[i+2] == L'm' || html[i+2] == L'M') &&
+            (html[i+3] == L'g' || html[i+3] == L'G')) {
+            size_t tagEnd = html.find(L'>', i);
+            if (tagEnd == std::wstring::npos) tagEnd = html.size();
+            std::wstring tag = html.substr(i, tagEnd - i + 1);
+            std::wstring keyName;
+            size_t srcPos = tag.find(L"src=");
+            if (srcPos == std::wstring::npos) srcPos = tag.find(L"SRC=");
+            if (srcPos != std::wstring::npos) {
+                srcPos += 4;
+                wchar_t quote = (srcPos < tag.size()) ? tag[srcPos] : L'\0';
+                if (quote == L'\'' || quote == L'"') {
+                    ++srcPos;
+                    size_t end = tag.find(quote, srcPos);
+                    if (end != std::wstring::npos)
+                        keyName = tag.substr(srcPos, end - srcPos);
+                }
+            }
+            if (keyName.size() > 4) {
+                std::wstring ext = keyName.substr(keyName.size() - 4);
+                if (ext == L".png" || ext == L".PNG")
+                    keyName = keyName.substr(0, keyName.size() - 4);
+            }
+            if (!keyName.empty()) {
+                if (keyName.substr(0, 4) == L"360_")
+                    keyName = keyName.substr(4) + L" button";
+                else if (keyName.substr(0, 4) == L"PS3_")
+                    keyName = keyName.substr(4) + L" button";
+                out += keyName;
+            }
+            i = tagEnd + 1;
+        } else {
+            out += html[i++];
+        }
+    }
+    return out;
+}
+
 // --- Shared numeric/text formatters (used by inventory, container, etc.) ---
 
 // Strips non-numeric glyph prefixes (e.g. septim icon "000" + "99" → "99")

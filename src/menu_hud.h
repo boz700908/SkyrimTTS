@@ -63,7 +63,8 @@ static constexpr const char* HUD_SUBTITLE  = "_root.HUDMovieBaseInstance.Subtitl
 // Nom de lieu (SetLocationName, HUDMenu.as ligne 375)
 static constexpr const char* HUD_LOCATION  = "_root.HUDMovieBaseInstance.LocationLockBase.LocationNameBase.LocationTextBase.LocationTextInstance.text";
 // Tutoriel (ShowTutorialHintText, HUDMenu.as ligne 147)
-static constexpr const char* HUD_TUTORIAL  = "_root.HUDMovieBaseInstance.TutorialLockInstance.TutorialHintsInstance.FadeHolder.TutorialHintsTextInstance.text";
+static constexpr const char* HUD_TUTORIAL      = "_root.HUDMovieBaseInstance.TutorialLockInstance.TutorialHintsInstance.FadeHolder.TutorialHintsTextInstance.text";
+static constexpr const char* HUD_TUTORIAL_HTML = "_root.HUDMovieBaseInstance.TutorialLockInstance.TutorialHintsInstance.FadeHolder.TutorialHintsTextInstance.htmlText";
 
 // Original AdvanceMovie function pointer (saved before hook)
 using AdvanceMovie_t = void(RE::IMenu*, float, std::uint32_t);
@@ -110,10 +111,36 @@ static void HUDAdvanceMovie_Hook(RE::IMenu* a_this, float a_interval, std::uint3
     }
 
     // Tutoriel (hints de début de jeu / nouveaux joueurs)
+    // Try htmlText first to capture <img src='KeyName.png'> keybind icons
     std::string tutorial;
-    if (GetGFxString(movie, HUD_TUTORIAL, tutorial) && !tutorial.empty() && tutorial != g_hudPrevTutorial) {
+    bool tutoFromHtml = false;
+    std::string htmlRaw;
+    if (GetGFxString(movie, HUD_TUTORIAL_HTML, htmlRaw) && !htmlRaw.empty()) {
+        if (htmlRaw.find("<img") != std::string::npos || htmlRaw.find("<IMG") != std::string::npos) {
+            tutorial = htmlRaw;
+            tutoFromHtml = true;
+        } else {
+            // htmlText exists but no <img> — log it to see what's there
+            static std::string lastLoggedHtml;
+            if (htmlRaw != lastLoggedHtml) {
+                LOG("HUD tutorial htmlText (no img)='{}'", htmlRaw);
+                lastLoggedHtml = htmlRaw;
+            }
+        }
+    }
+    if (!tutoFromHtml) {
+        tutorial.clear();
+        GetGFxString(movie, HUD_TUTORIAL, tutorial);
+    }
+    if (!tutorial.empty() && tutorial != g_hudPrevTutorial) {
         g_hudPrevTutorial = tutorial;
-        Speak(StripMarkupForSpeech(Utf8ToWString(tutorial)));
+        std::wstring tutoW = Utf8ToWString(tutorial);
+        if (tutoFromHtml)
+            tutoW = ReplaceImgTagsWithKeyNames(tutoW);
+        tutoW = StripMarkupForSpeech(tutoW);
+        LOG("HUD tutorial speech='{}' (fromHtml={})", WStringToUtf8(tutoW), tutoFromHtml);
+        if (!tutoW.empty())
+            Speak(tutoW);
     }
 }
 
