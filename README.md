@@ -7,8 +7,45 @@ Accessibility plugin for Skyrim Special/Anniversary Edition. Automatically vocal
 ## Requirements
 
 - Skyrim Special Edition or Anniversary Edition
-- SKSE64
-- NVDA (running before launching the game)
+- SKSE64 (Skyrim Script Extender)
+- NVDA screen reader (must be running before launching the game)
+
+---
+
+## Installation
+
+Your Skyrim installation folder is usually located at:
+C:\Program Files (x86)\Steam\steamapps\common\Skyrim Special Edition\
+
+### Step 1: Install SKSE64
+
+If you haven't already, download and install SKSE64 from https://skse.silverlock.org/. Follow its installation instructions. You must launch the game through skse64_loader.exe instead of the normal Skyrim launcher.
+
+### Step 2: Copy the plugin files
+
+From the release archive, copy the following files to the correct locations inside your Skyrim installation folder:
+
+- SkyrimNVDA.dll: copy to Data\SKSE\Plugins\SkyrimNVDA.dll
+- nvdaControllerClient.dll: copy to Data\SKSE\Plugins\nvdaControllerClient.dll
+- SkyrimTTS_AutoWalk.esp: copy to Data\SkyrimTTS_AutoWalk.esp
+- SkyrimTTS_AutoWalk.pex: copy to Data\Scripts\SkyrimTTS_AutoWalk.pex
+
+If the folders SKSE\Plugins\ or Scripts\ do not exist inside Data\, create them.
+
+### Step 3: Activate the ESP
+
+The file SkyrimTTS_AutoWalk.esp must be activated in your load order. You can do this in two ways:
+
+Using a mod manager (Vortex, Mod Organizer 2): the ESP should appear in your plugin list. Make sure it is enabled (checked).
+
+Manually: open the file Data\plugins.txt (or %LOCALAPPDATA%\Skyrim Special Edition\plugins.txt) and add the line:
+*SkyrimTTS_AutoWalk.esp
+
+### Step 4: Launch the game
+
+1. Start NVDA
+2. Launch the game through skse64_loader.exe (not the normal Skyrim launcher)
+3. NVDA should start reading menus automatically
 
 ---
 
