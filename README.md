@@ -66,10 +66,10 @@ NVDA announces: "Character creation"
 
 NVDA announces: "Cross menu"
 
-- Up: Magic
-- Down: Inventory
-- Left: Skills
-- Right: Journal
+- Up: Skills
+- Down: Map
+- Left: Magic
+- Right: Inventory
 
 ---
 
