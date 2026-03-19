@@ -94,11 +94,7 @@ Function CheckArrival()
         return
     endIf
 
-    if PlayerRef.IsInCombat()
-        Debug.Trace("SkyrimTTS:AutoWalk - Combat detected, stopping")
-        StopWalkingInternal(true)
-        return
-    endIf
+    ; Combat check handled by C++ (hostile enemies only, not foxes/rabbits)
 
     float dist = PlayerRef.GetDistance(CurrentTarget)
     Debug.Trace("SkyrimTTS:AutoWalk - Check: dist=" + dist)

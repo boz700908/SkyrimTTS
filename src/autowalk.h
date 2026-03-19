@@ -92,24 +92,6 @@ static void StartAutoWalkMonitor() {
             auto* player = RE::PlayerCharacter::GetSingleton();
             if (!player) continue;
 
-            // Annuler si le joueur est en combat
-            if (player->IsInCombat()) {
-                Speak(L"Combat, stopping");
-                g_autoWalking.store(false);
-                LOG("AutoWalk: cancelled by combat");
-                auto* taskIf = SKSE::GetTaskInterface();
-                if (taskIf) {
-                    taskIf->AddTask([]() {
-                        auto* p = RE::PlayerCharacter::GetSingleton();
-                        if (p) {
-                            p->SetAIDriven(false);
-                            p->EvaluatePackage();
-                        }
-                    });
-                }
-                break;
-            }
-
             auto* targetForm = RE::TESForm::LookupByID(g_autoWalkTargetID);
             if (!targetForm) {
                 Speak(L"Target lost");
@@ -180,6 +162,24 @@ static void StartAutoWalk(RE::FormID targetFormID, float stopDistance = 100.0f) 
     g_autoWalkStopDist = stopDistance;
 
     task->AddTask([targetFormID, stopDistance]() {
+        // Forcer l'initialisation du mouvement avant de lancer l'IA
+        // (corrige le bug de vitesse lente si autowalk lancé sans marcher après un chargement)
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        if (player) {
+            auto* avo = player->AsActorValueOwner();
+            if (avo) {
+                float base = avo->GetBaseActorValue(RE::ActorValue::kSpeedMult);
+                float current = avo->GetActorValue(RE::ActorValue::kSpeedMult);
+                if (base > 0 && current != base) {
+                    avo->SetActorValue(RE::ActorValue::kSpeedMult, base);
+                    LOG("AutoWalk: pre-start SpeedMult fix {} -> {}", current, base);
+                }
+            }
+            // S'assurer que l'IA est bien désactivée avant de la réactiver
+            player->SetAIDriven(false);
+            player->EvaluatePackage();
+        }
+
         auto* quest = RE::TESForm::LookupByEditorID<RE::TESQuest>("SkyrimTTS_AutoWalkQuest");
         if (!quest) {
             LOG("AutoWalk: quest SkyrimTTS_AutoWalkQuest not found");
@@ -251,6 +251,15 @@ static void StopAutoWalk() {
         if (player) {
             player->SetAIDriven(false);
             player->EvaluatePackage();
+
+            // Restaurer SpeedMult à sa valeur de base
+            auto* avo = player->AsActorValueOwner();
+            if (avo) {
+                float base = avo->GetBaseActorValue(RE::ActorValue::kSpeedMult);
+                avo->SetActorValue(RE::ActorValue::kSpeedMult, base);
+                LOG("AutoWalk: restored SpeedMult to base={}", base);
+            }
+
             LOG("AutoWalk: C++ safety reset AIDriven=false");
         }
 
@@ -283,6 +292,50 @@ static void StopAutoWalk() {
 }
 
 // Toggle autowalk vers l'objet sélectionné dans le scanner
+// Créer un XMarker temporaire à une position donnée pour l'autowalk
+// Retourne le FormID du marqueur créé, ou 0 en cas d'échec
+static RE::FormID g_autoWalkTempMarker{0};
+
+static RE::FormID CreateTempMarkerAt(const RE::NiPoint3& pos) {
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    if (!player) return 0;
+
+    // XMarkerHeading FormID = 0x10
+    auto* xmarkerBase = RE::TESForm::LookupByID(0x10);
+    if (!xmarkerBase) {
+        LOG("AutoWalk: XMarkerHeading (0x10) not found");
+        return 0;
+    }
+
+    auto* factory = RE::IFormFactory::GetConcreteFormFactoryByType<RE::TESObjectREFR>();
+    if (!factory) {
+        LOG("AutoWalk: no form factory for TESObjectREFR");
+        return 0;
+    }
+
+    auto* marker = factory->Create();
+    if (!marker) {
+        LOG("AutoWalk: failed to create marker");
+        return 0;
+    }
+
+    marker->SetObjectReference(static_cast<RE::TESBoundObject*>(xmarkerBase));
+    marker->data.location = pos;
+
+    // Placer dans la cellule du joueur
+    auto* cell = player->GetParentCell();
+    if (cell) {
+        // Utiliser MoveTo pour placer correctement
+        marker->MoveTo(player);
+        marker->data.location = pos;
+    }
+
+    LOG("AutoWalk: created temp marker FormID={:08X} at ({:.0f}, {:.0f}, {:.0f})",
+        marker->GetFormID(), pos.x, pos.y, pos.z);
+
+    return marker->GetFormID();
+}
+
 static void ToggleAutoWalk() {
     if (g_autoWalking.load()) {
         Speak(L"Stopping");
@@ -299,8 +352,188 @@ static void ToggleAutoWalk() {
     std::wstring targetName = ScannerGetCurrentName();
     if (targetName.empty()) targetName = L"target";
     g_autoWalkTarget = targetName;
-    Speak(L"Walking to " + targetName);
 
+    // Si FormID dynamique (FF*), la cible est dans un intérieur non chargé.
+    // On utilise la boussole pour trouver la porte d'entrée correcte.
+    if ((targetID >> 24) == 0xFF) {
+        LOG("AutoWalk: dynamic FormID {:08X}, searching for entrance door via compass", targetID);
+
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        if (!player) { Speak(L"Cannot walk to this target"); return; }
+        auto playerPos = player->GetPosition();
+
+        // 1) Lire le heading de la boussole pour les marqueurs de quête
+        float compassHeading = -1.0f;
+        auto* ui = RE::UI::GetSingleton();
+        if (ui) {
+            auto hudMenu = ui->GetMenu(RE::HUDMenu::MENU_NAME);
+            if (hudMenu && hudMenu->uiMovie) {
+                // Lire CompassTargetDataA depuis le HUD
+                RE::GFxValue hudRoot;
+                if (hudMenu->uiMovie->GetVariable(&hudRoot, "_root.HUDMovieBaseInstance") && hudRoot.IsObject()) {
+                    RE::GFxValue dataArr;
+                    if (hudRoot.GetMember("CompassTargetDataA", &dataArr) && dataArr.IsArray()) {
+                        uint32_t arrSize = dataArr.GetArraySize();
+                        LOG("AutoWalk: CompassTargetDataA size={}", arrSize);
+
+                        // Lire les types de marqueurs de la boussole
+                        RE::GFxValue questTypeVal, questDoorTypeVal;
+                        float questType = -1, questDoorType = -1;
+                        if (hudRoot.GetMember("CompassMarkerQuest", &questTypeVal) && questTypeVal.IsNumber())
+                            questType = static_cast<float>(questTypeVal.GetNumber());
+                        if (hudRoot.GetMember("CompassMarkerQuestDoor", &questDoorTypeVal) && questDoorTypeVal.IsNumber())
+                            questDoorType = static_cast<float>(questDoorTypeVal.GetNumber());
+
+                        LOG("AutoWalk: quest marker types: quest={:.0f} questDoor={:.0f}", questType, questDoorType);
+
+                        // Stride = 4 : heading, alpha, type, scale
+                        for (uint32_t i = 0; i + 3 < arrSize; i += 4) {
+                            RE::GFxValue headingVal, typeVal;
+                            dataArr.GetElement(i, &headingVal);      // heading
+                            dataArr.GetElement(i + 2, &typeVal);     // type
+
+                            if (!typeVal.IsNumber()) continue;
+                            float type = static_cast<float>(typeVal.GetNumber());
+
+                            if (type == questType || type == questDoorType) {
+                                if (headingVal.IsNumber()) {
+                                    compassHeading = static_cast<float>(headingVal.GetNumber());
+                                    LOG("AutoWalk: found compass quest marker heading={:.1f} type={:.0f}", compassHeading, type);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if (compassHeading < 0) {
+            LOG("AutoWalk: no compass quest marker found, cannot determine entrance");
+            Speak(L"No quest marker on compass");
+            return;
+        }
+
+        // 2) Convertir le compass heading (degrés, 0=nord) en radians pour comparer
+        float compassRad = compassHeading * 3.14159265f / 180.0f;
+
+        // 3) Chercher la porte d'entrée qui correspond au heading de la boussole
+        // La cible est dans une cellule intérieure — chercher les portes qui y mènent
+        RE::TESObjectREFR* bestDoor = nullptr;
+        float bestHeadingDiff = 999.0f;
+
+        // Obtenir la cellule cible via le scanner
+        RE::TESObjectCELL* targetCell = nullptr;
+        if (g_scanIndex >= 0 && g_scanIndex < static_cast<int>(g_scannedFiltered.size())) {
+            auto& obj = *g_scannedFiltered[g_scanIndex];
+            // Chercher la ref via CreateRefHandleByAliasID pour obtenir sa cellule
+            auto* form = RE::TESForm::LookupByID(obj.formID);
+            if (form) {
+                auto* ref = form->AsReference();
+                if (ref) targetCell = ref->GetParentCell();
+            }
+            // Si LookupByID échoue (FF*), utiliser la position en cache
+            // et chercher toutes les portes dont le heading correspond
+        }
+
+        auto searchDoors = [&](RE::TESObjectCELL* cell) {
+            if (!cell) return;
+            for (auto& refHandle : cell->GetRuntimeData().references) {
+                auto refPtr = refHandle.get();
+                if (!refPtr) continue;
+                auto* base = refPtr->GetBaseObject();
+                if (!base || base->GetFormType() != RE::FormType::Door) continue;
+                auto* extraTele = refPtr->extraList.GetByType<RE::ExtraTeleport>();
+                if (!extraTele || !extraTele->teleportData) continue;
+                auto linkedDoor = extraTele->teleportData->linkedDoor.get();
+                if (!linkedDoor) continue;
+                auto* destCell = linkedDoor->GetParentCell();
+                if (!destCell) continue;
+
+                // Calculer le heading de cette porte depuis le joueur
+                auto doorPos = refPtr->GetPosition();
+                float dx = doorPos.x - playerPos.x;
+                float dy = doorPos.y - playerPos.y;
+                float doorAngle = std::atan2(dx, dy);  // radians, 0=nord
+                if (doorAngle < 0) doorAngle += 2.0f * 3.14159265f;
+
+                // Comparer avec le heading de la boussole
+                float diff = std::abs(doorAngle - compassRad);
+                if (diff > 3.14159265f) diff = 2.0f * 3.14159265f - diff;
+
+                float doorDist = std::sqrt(dx * dx + dy * dy);
+
+                LOG("AutoWalk: door '{}' FormID={:08X} -> '{}' heading={:.1f}° diff={:.1f}° dist={:.0f}",
+                    refPtr->GetDisplayFullName() ? refPtr->GetDisplayFullName() : "?",
+                    refPtr->GetFormID(),
+                    destCell->GetName() ? destCell->GetName() : "?",
+                    doorAngle * 180.0f / 3.14159265f,
+                    diff * 180.0f / 3.14159265f,
+                    doorDist);
+
+                if (diff < bestHeadingDiff) {
+                    bestHeadingDiff = diff;
+                    bestDoor = refPtr;
+                }
+            }
+        };
+
+        // Chercher dans la cellule du joueur (intérieur ou extérieur)
+        auto* playerCell = player->GetParentCell();
+        if (playerCell) {
+            searchDoors(playerCell);
+        }
+
+        // En extérieur, chercher aussi dans les cellules voisines et persistante
+        if (playerCell && !playerCell->IsInteriorCell()) {
+            auto* tes = RE::TES::GetSingleton();
+            if (tes && tes->gridCells) {
+                for (uint32_t gx = 0; gx < tes->gridCells->length; gx++) {
+                    for (uint32_t gy = 0; gy < tes->gridCells->length; gy++) {
+                        auto* cell = tes->gridCells->GetCell(gx, gy);
+                        if (cell && cell->IsAttached() && cell != playerCell) searchDoors(cell);
+                    }
+                }
+            }
+            auto* ws = player->GetWorldspace();
+            if (ws && ws->persistentCell) {
+                searchDoors(ws->persistentCell);
+            }
+        }
+
+        if (bestDoor) {
+            targetID = bestDoor->GetFormID();
+            LOG("AutoWalk: best door match '{}' FormID={:08X} (heading diff={:.1f}°)",
+                bestDoor->GetDisplayFullName() ? bestDoor->GetDisplayFullName() : "?",
+                targetID, bestHeadingDiff * 180.0f / 3.14159265f);
+        } else {
+            LOG("AutoWalk: no matching door found, using XMarker fallback");
+            // Fallback : créer un XMarker dans la direction de la boussole
+            if (g_scanIndex >= 0 && g_scanIndex < static_cast<int>(g_scannedFiltered.size())) {
+                auto& obj = *g_scannedFiltered[g_scanIndex];
+                if (obj.lastKnownPos.x != 0 || obj.lastKnownPos.y != 0) {
+                    RE::NiPoint3 targetPos = obj.lastKnownPos;
+                    targetPos.z = playerPos.z;
+                    RE::FormID markerID = CreateTempMarkerAt(targetPos);
+                    if (markerID != 0) {
+                        g_autoWalkTempMarker = markerID;
+                        targetID = markerID;
+                    } else {
+                        Speak(L"Cannot walk to this target");
+                        return;
+                    }
+                } else {
+                    Speak(L"Cannot walk to this target");
+                    return;
+                }
+            } else {
+                Speak(L"Cannot walk to this target");
+                return;
+            }
+        }
+    }
+
+    Speak(L"Walking to " + targetName);
     StartAutoWalk(targetID, 100.0f);
 }
 

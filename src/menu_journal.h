@@ -1,5 +1,8 @@
 #pragma once
 
+// Forward declaration (défini dans scanner.h)
+static void ReadActiveQuestsFromJournal();
+
 // VOCALISATION JOURNAL - DEBUT
 
 // --- Constantes d'onglet (questjournal.as : PAGE_QUEST=0, PAGE_STATS=1, PAGE_SYSTEM=2) ---
@@ -20,6 +23,7 @@ static std::jthread     g_journalPollThread;
 static int              g_lastJournalTab{-1};
 static std::wstring     g_lastJournalTitle;
 static std::wstring     g_lastJournalDesc;
+static int              g_lastQuestActive{-1};  // -1=unknown, 0=inactive, 1=active
 static int              g_lastSystemState{-1};
 static std::wstring     g_lastSystemItem;
 static std::wstring     g_lastStatsCategory;
@@ -336,6 +340,7 @@ static void AnnounceJournalChangeImpl() {
             if (firstRead) SpeakQueue(announce); else Speak(announce);
             g_lastJournalTitle = snap.questTitle;
             g_lastJournalDesc.clear();
+            g_lastQuestActive = snap.questActive ? 1 : 0;
 
             // Objectifs : s'enchaînent après le titre
             for (const auto& obj : snap.objectives) {
@@ -345,11 +350,20 @@ static void AnnounceJournalChangeImpl() {
                 else if (obj.failed)   objLine += L", failed";
                 SpeakQueue(objLine);
             }
+        } else {
+            // Détecter activation/désactivation sans changer de quête (touche Entrée)
+            int curActive = snap.questActive ? 1 : 0;
+            if (g_lastQuestActive >= 0 && curActive != g_lastQuestActive) {
+                Speak(snap.questActive ? L"active" : L"inactive");
+            }
+            g_lastQuestActive = curActive;
         }
         if (!snap.questDesc.empty() && snap.questDesc != g_lastJournalDesc) {
             SpeakQueue(snap.questDesc); // s'enchaîne après titre + objectifs
             g_lastJournalDesc = snap.questDesc;
         }
+        // Mettre à jour la liste des quêtes actives à chaque tick sur l'onglet quêtes
+        ReadActiveQuestsFromJournal();
     }
 }
 

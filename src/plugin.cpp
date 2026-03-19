@@ -14,6 +14,7 @@
 #include "menu_tutorial.h"
 #include "menu_favorites.h"
 #include "menu_uilistmenu.h"
+#include "menu_map.h"
 #include "scanner.h"
 #include "autowalk.h"
 
@@ -118,6 +119,14 @@ public:
                 QueueJournalRead();
                 StartJournalPolling();
             } else {
+                LOG("Journal CLOSE");
+                // Lire les quêtes actives via UITask (le movie est encore vivant dans la UITask)
+                auto* closeTask = SKSE::GetTaskInterface();
+                if (closeTask) {
+                    closeTask->AddUITask([]() {
+                        ReadActiveQuestsFromJournal();
+                    });
+                }
                 g_journalOpen.store(false);
                 StopJournalPolling();
             }
@@ -158,7 +167,9 @@ public:
             if (e->opening) {
                 g_tweenForeground.store(false);
                 Speak(L"Map");
+                OnMapOpen();
             } else {
+                OnMapClose();
                 if (g_tweenOpen.load()) g_tweenForeground.store(true);
             }
         }
@@ -472,6 +483,31 @@ public:
                 }
             }
 
+            // Map menu (quand la carte est ouverte)
+            if (g_mapOpen.load(std::memory_order_relaxed)) {
+                if (code == RE::BSKeyboardDevice::Keys::kPageDown) {
+                    MapNextMarker();
+                    continue;
+                }
+                if (code == RE::BSKeyboardDevice::Keys::kPageUp) {
+                    MapPrevMarker();
+                    continue;
+                }
+                if (code == RE::BSKeyboardDevice::Keys::kHome) {
+                    bool shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+                    if (shift) {
+                        MapSetReference();
+                    } else {
+                        MapAnnounceDetails();
+                    }
+                    continue;
+                }
+                if (code == RE::BSKeyboardDevice::Keys::kEnd) {
+                    MapCycleFilter();
+                    continue;
+                }
+            }
+
             // Scanner + AutoWalk (seulement hors menus)
             {
                 bool anyMenuOpen = g_invOpen.load() || g_containerOpen.load() ||
@@ -479,7 +515,8 @@ public:
                                    g_mainOpen.load() || g_dialogueOpen.load() ||
                                    g_raceSexOpen.load() || g_tweenOpen.load() ||
                                    g_statsOpen.load() || g_favOpen.load() ||
-                                   g_msgBoxOpen.load() || g_uiListMenuOpen.load();
+                                   g_msgBoxOpen.load() || g_uiListMenuOpen.load() ||
+                                   g_mapOpen.load();
                 if (!anyMenuOpen) {
                     bool shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
 
@@ -504,6 +541,11 @@ public:
                     if (code == RE::BSKeyboardDevice::Keys::kHome) {
                         if (shift) ToggleAutoWalk();
                         else ScannerAnnounceCurrent();
+                        continue;
+                    }
+                    // End = cycler les sous-catégories
+                    if (code == RE::BSKeyboardDevice::Keys::kEnd) {
+                        ScannerCycleSubcategory();
                         continue;
                     }
                     // X = verrouiller l'ennemi le plus proche
@@ -564,6 +606,140 @@ static void RegisterInputListener() {
     }
 }
 
+// ---------------- Activate Listener (piliers puzzle) ----------------
+class ActivateListener : public RE::BSTEventSink<RE::TESActivateEvent> {
+public:
+    RE::BSEventNotifyControl ProcessEvent(const RE::TESActivateEvent* e,
+        RE::BSTEventSource<RE::TESActivateEvent>*) override {
+        if (!e || !e->objectActivated || !e->actionRef) return RE::BSEventNotifyControl::kContinue;
+
+        // Seulement si le joueur active
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        if (e->actionRef.get() != player) return RE::BSEventNotifyControl::kContinue;
+
+        auto* ref = e->objectActivated.get();
+        if (!ref) return RE::BSEventNotifyControl::kContinue;
+
+        // Vérifier si c'est un pilier ou anneau puzzle
+        auto* vm = RE::SkyrimVM::GetSingleton();
+        if (!vm || !vm->impl) return RE::BSEventNotifyControl::kContinue;
+        auto* policy = vm->impl->GetObjectHandlePolicy();
+        if (!policy) return RE::BSEventNotifyControl::kContinue;
+
+        auto handle = policy->GetHandleForObject(
+            static_cast<RE::VMTypeID>(RE::FormType::Reference), ref);
+
+        RE::BSTSmartPointer<RE::BSScript::Object> scriptObj;
+        std::string foundScript;
+        const char* puzzleScripts[] = {"defaultPuzzlePillarScript", "HallofStoriesDiskScript"};
+        for (auto* sName : puzzleScripts) {
+            if (vm->impl->FindBoundObject(handle, sName, scriptObj) && scriptObj) {
+                foundScript = sName;
+                break;
+            }
+        }
+        if (foundScript.empty()) return RE::BSEventNotifyControl::kContinue;
+
+        LOG("ActivateListener: puzzle '{}' activated FormID={:08X}", foundScript, ref->GetFormID());
+
+        // Le state actuel va changer vers le suivant (cycle 01→02→03→01)
+        std::string currentState = scriptObj->currentState.c_str();
+        int nextPos = 0;
+        if (currentState == "position01") nextPos = 2;
+        else if (currentState == "position02") nextPos = 3;
+        else if (currentState == "position03") nextPos = 1;
+
+        if (nextPos == 0) return RE::BSEventNotifyControl::kContinue;
+
+        // Déterminer le symbole
+        std::wstring symbol = L"Position " + std::to_wstring(nextPos);
+
+        if (foundScript == "defaultPuzzlePillarScript") {
+            // Piliers : toujours Eagle/Snake/Whale
+            if (nextPos == 1) symbol = L"Eagle";
+            else if (nextPos == 2) symbol = L"Snake";
+            else if (nextPos == 3) symbol = L"Whale";
+        } else if (foundScript == "HallofStoriesDiskScript") {
+            // Anneaux : chercher via le linkedRef (serrure)
+            auto* linkedRef = ref->GetLinkedRef(nullptr);
+            if (linkedRef) {
+                RE::FormID keyholeID = linkedRef->GetFormID();
+                struct DS { RE::FormID id; const wchar_t* s1; const wchar_t* s2; const wchar_t* s3; };
+                static const DS table[] = {
+                    {0x0004E2B9, L"Bear", L"Moth", L"Owl"},
+                    {0x000DB883, L"Moth", L"Owl", L"Wolf"},
+                    {0x000F3986, L"Wolf", L"Hawk", L"Wolf"},
+                    {0x000E4ECE, L"Hawk", L"Hawk", L"Dragon"},
+                    {0x000B89F2, L"Bear", L"Whale", L"Snake"},
+                    {0x000A46D6, L"Wolf", L"Moth", L"Dragon"},
+                    {0x0007C536, L"Fox", L"Owl", L"Snake"},
+                    {0x000B634C, L"Snake", L"Wolf", L"Moth"},
+                    {0x000FC2DC, L"Fox", L"Moth", L"Dragon"},
+                };
+                for (auto& ds : table) {
+                    if (ds.id == keyholeID) {
+                        if (nextPos == 1) symbol = ds.s1;
+                        else if (nextPos == 2) symbol = ds.s2;
+                        else if (nextPos == 3) symbol = ds.s3;
+                        break;
+                    }
+                }
+            }
+        }
+
+        SpeakQueue(symbol);
+
+        return RE::BSEventNotifyControl::kContinue;
+    }
+};
+
+static void RegisterActivateListener() {
+    auto* source = RE::ScriptEventSourceHolder::GetSingleton();
+    if (source) {
+        static ActivateListener listener;
+        source->AddEventSink(&listener);
+        LOG("ActivateListener registered");
+    }
+}
+
+// ---------------- Death listener (son de kill) ----------------
+
+class DeathListener : public RE::BSTEventSink<RE::TESDeathEvent> {
+public:
+    RE::BSEventNotifyControl ProcessEvent(const RE::TESDeathEvent* e,
+        RE::BSTEventSource<RE::TESDeathEvent>*) override {
+        if (!e || !e->dead) return RE::BSEventNotifyControl::kContinue;
+
+        // Seulement si le joueur a tué
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        if (!e->actorKiller || e->actorKiller.get() != player) return RE::BSEventNotifyControl::kContinue;
+
+        auto* victim = e->actorDying ? e->actorDying->As<RE::Actor>() : nullptr;
+        if (!victim) return RE::BSEventNotifyControl::kContinue;
+
+        const char* name = victim->GetDisplayFullName();
+        LOG("DeathListener: killed '{}'", name ? name : "?");
+
+        // Son de kill : 3 bips descendants dans un thread séparé
+        std::thread([]() {
+            Beep(1500, 100);
+            Beep(1000, 100);
+            Beep(600, 200);
+        }).detach();
+
+        return RE::BSEventNotifyControl::kContinue;
+    }
+};
+
+static void RegisterDeathListener() {
+    auto* source = RE::ScriptEventSourceHolder::GetSingleton();
+    if (source) {
+        static DeathListener listener;
+        source->AddEventSink(&listener);
+        LOG("DeathListener registered");
+    }
+}
+
 // ---------------- Plugin load ----------------
 
 SKSEPluginLoad(const SKSE::LoadInterface* skse) {
@@ -592,7 +768,10 @@ SKSEPluginLoad(const SKSE::LoadInterface* skse) {
             LoadTranslationFile(); // fallback pour les clés absentes du BSScaleformTranslator
             RegisterMenuListener();
             RegisterCrosshairListener();
+            RegisterActivateListener();
+            RegisterDeathListener();
             InstallHUDAdvanceMovieHook();
+            StartBowAutoAimPolling();
             Speak(L"Plugin loaded");
             LOG("kDataLoaded: listeners registered");
         }
