@@ -1,0 +1,2 @@
+RequestCharacterListLoad();
+stop();

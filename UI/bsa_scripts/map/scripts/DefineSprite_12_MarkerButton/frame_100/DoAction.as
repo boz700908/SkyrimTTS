@@ -1,0 +1,2 @@
+this.visible = false;
+stop();

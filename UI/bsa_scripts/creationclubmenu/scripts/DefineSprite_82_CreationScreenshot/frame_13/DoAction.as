@@ -1,0 +1,2 @@
+FrameLabel = "ToSmall";
+StartUpdatingTextAlignment();

@@ -1,0 +1,2 @@
+FrameLabel = "ToLarge";
+StartUpdatingTextAlignment();

@@ -1,0 +1,1 @@
+this.ZoomButton.visible = false;

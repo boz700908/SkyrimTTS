@@ -165,6 +165,10 @@ static void ReadActiveQuestsFromJournal() {
     LOG("Scanner: {} active quests read from journal, misc={}", g_activeQuestFormIDs.size(), g_miscQuestsActive);
 }
 
+static bool IsDragon(RE::Actor* actor) {
+    return actor && actor->HasKeywordString("ActorTypeDragon");
+}
+
 // --- Déterminer la catégorie d'une référence ---
 static ScanCategory CategorizeRef(RE::TESObjectREFR& ref) {
     // Acteur ?
@@ -404,6 +408,18 @@ static void ScanCell(RE::TESObjectCELL* cell, RE::PlayerCharacter* player, const
             auto* base = ref.GetBaseObject();
             if (!base) continue;
 
+            // Log dragons pour diagnostic
+            if (auto* actor = ref.As<RE::Actor>()) {
+                if (IsDragon(actor)) {
+                    auto dPos = ref.GetPosition();
+                    auto dDiff = playerPos - dPos;
+                    LOG("Scanner: DRAGON found '{}' FormID={:08X} dist={:.0f} z={:.0f} dead={} disabled={} 3D={}",
+                        ref.GetDisplayFullName() ? ref.GetDisplayFullName() : "?",
+                        ref.GetFormID(), dDiff.Length(), dPos.z - playerPos.z,
+                        actor->IsDead(), actor->IsDisabled(), actor->Is3DLoaded());
+                }
+            }
+
             // Distance
             auto refPos = ref.GetPosition();
             auto diff = playerPos - refPos;
@@ -553,6 +569,16 @@ static void ScanCell(RE::TESObjectCELL* cell, RE::PlayerCharacter* player, const
                             const char* destName = destCell->GetName();
                             if (destName && *destName) {
                                 doorDest = Utf8ToWString(destName);
+                            }
+                        }
+                        // Fallback : si la cellule n'est pas chargée, essayer le worldspace
+                        if (doorDest.empty()) {
+                            auto* ws = linkedDoorPtr->GetWorldspace();
+                            if (ws) {
+                                const char* wsName = ws->GetName();
+                                if (wsName && *wsName) {
+                                    doorDest = Utf8ToWString(wsName);
+                                }
                             }
                         }
                     }
@@ -1078,8 +1104,8 @@ static void RefreshFilteredList() {
         }
 
         // Re-catégoriser (un PNJ vivant peut être mort maintenant)
-        // Ne pas écraser kCatQuests — les objectifs de quête restent dans leur catégorie
-        if (obj.category != kCatQuests) {
+        // Ne pas écraser kCatQuests ni kCatLocations — ces catégories sont gérées séparément
+        if (obj.category != kCatQuests && obj.category != kCatLocations) {
             obj.category = CategorizeRef(*ref);
         }
 
@@ -1253,6 +1279,10 @@ static void ScannerPrevCategoryImpl() {
 }
 
 // --- Annoncer l'objet courant (avec distance recalculée en temps réel) ---
+// Forward declarations
+static RE::NiPoint3 GetActorCenter(RE::Actor* actor);
+static void AimAtPosition(RE::PlayerCharacter* player, const RE::NiPoint3& targetPos, bool compensateGravity, const RE::NiPoint3* targetVelocity);
+
 static void ScannerAnnounceCurrent() {
     if (g_scannedFiltered.empty() || g_scanIndex < 0) {
         Speak(L"No object selected");
@@ -1358,31 +1388,84 @@ static void ScannerAnnounceCurrent() {
     auto* player = RE::PlayerCharacter::GetSingleton();
     if (player) {
         auto playerPos = player->GetPosition();
+
+        // Pour les quêtes avec cible dans une autre cellule, utiliser lastKnownPos
+        // (position de la porte redirigée) + boussole pour l'orientation
+        if (obj.category == kCatQuests && ref->GetParentCell() != player->GetParentCell()) {
+            auto diff = playerPos - obj.lastKnownPos;
+            obj.distance = diff.Length();
+            obj.zDiff = obj.lastKnownPos.z - playerPos.z;
+
+            // Orientation via la boussole
+            bool usedCompass = false;
+            auto* ui = RE::UI::GetSingleton();
+            if (ui) {
+                auto hudMenu = ui->GetMenu(RE::HUDMenu::MENU_NAME);
+                if (hudMenu && hudMenu->uiMovie) {
+                    RE::GFxValue hudRoot;
+                    if (hudMenu->uiMovie->GetVariable(&hudRoot, "_root.HUDMovieBaseInstance") && hudRoot.IsObject()) {
+                        RE::GFxValue dataArr;
+                        if (hudRoot.GetMember("CompassTargetDataA", &dataArr) && dataArr.IsArray()) {
+                            RE::GFxValue questTypeVal;
+                            if (hudRoot.GetMember("CompassMarkerQuest", &questTypeVal) && questTypeVal.IsNumber()) {
+                                float questType = static_cast<float>(questTypeVal.GetNumber());
+                                for (uint32_t i = 0; i < dataArr.GetArraySize(); i++) {
+                                    RE::GFxValue entry;
+                                    if (!dataArr.GetElement(i, &entry) || !entry.IsObject()) continue;
+                                    RE::GFxValue typeVal;
+                                    if (!entry.GetMember("type", &typeVal) || !typeVal.IsNumber()) continue;
+                                    if (static_cast<float>(typeVal.GetNumber()) != questType) continue;
+                                    RE::GFxValue headingVal;
+                                    if (!entry.GetMember("heading", &headingVal) || !headingVal.IsNumber()) continue;
+                                    float heading = static_cast<float>(headingVal.GetNumber());
+                                    float yaw = player->GetAngleZ() + heading;
+                                    player->SetRotationZ(yaw);
+                                    player->SetRotationX(0.0f);
+                                    auto* camera = RE::PlayerCamera::GetSingleton();
+                                    if (camera) {
+                                        auto* state = camera->cameraStates[RE::CameraState::kThirdPerson].get();
+                                        if (state) {
+                                            auto* tps = static_cast<RE::ThirdPersonState*>(state);
+                                            tps->freeRotation = {0.f, 0.f};
+                                        }
+                                    }
+                                    usedCompass = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if (!usedCompass) {
+                float dx = obj.lastKnownPos.x - playerPos.x;
+                float dy = obj.lastKnownPos.y - playerPos.y;
+                float yaw = std::atan2(dx, dy);
+                player->SetRotationZ(yaw);
+                player->SetRotationX(0.0f);
+            }
+            Speak(FormatObjectAnnounce(obj));
+            return;
+        }
+
+        // Pour les objets proches, viser le centre (meilleur pour le crosshair)
         auto targetPos = ref->GetPosition();
+        auto* actor = ref->As<RE::Actor>();
+        if (actor) {
+            targetPos = GetActorCenter(actor);
+        } else {
+            // Pour les objets non-acteurs, ajuster la hauteur vers le centre des bounds
+            auto boundMin = ref->GetBoundMin();
+            auto boundMax = ref->GetBoundMax();
+            targetPos.z += (boundMin.z + boundMax.z) * 0.5f;
+        }
+
         auto diff = playerPos - targetPos;
         obj.distance = diff.Length();
         obj.zDiff = targetPos.z - playerPos.z;
 
-        // Rotation caméra vers l'objet (Look at)
-        float dx = targetPos.x - playerPos.x;
-        float dy = targetPos.y - playerPos.y;
-        float dz = targetPos.z - playerPos.z;
-        float yaw = std::atan2(dx, dy);  // radians
-        float hDist = std::sqrt(dx * dx + dy * dy);
-        float pitch = -std::atan2(dz, hDist);  // négatif car axe X inversé
-
-        player->SetRotationZ(yaw);
-        player->SetRotationX(pitch);
-
-        // En troisième personne, réinitialiser le free-look de la caméra
-        auto* camera = RE::PlayerCamera::GetSingleton();
-        if (camera) {
-            auto* state = camera->cameraStates[RE::CameraState::kThirdPerson].get();
-            if (state) {
-                auto* tps = static_cast<RE::ThirdPersonState*>(state);
-                tps->freeRotation = {0.f, 0.f};
-            }
-        }
+        // Rotation caméra vers l'objet depuis les yeux (précis pour le crosshair)
+        AimAtPosition(player, targetPos, false, nullptr);
     }
 
     Speak(FormatObjectAnnounce(obj));
@@ -1535,62 +1618,77 @@ static void AimAtPosition(RE::PlayerCharacter* player, const RE::NiPoint3& targe
     }
 }
 
-// Chercher l'ennemi le plus proche avec score (distance + pénalité LOS)
-static RE::Actor* FindNearestEnemy(RE::PlayerCharacter* player, float& outDist) {
+// Chercher l'ennemi le plus proche via ProcessLists (trouve les dragons en vol)
+static RE::Actor* FindNearestEnemy(RE::PlayerCharacter* player, float& outDist, bool prioritizeDragons = false) {
     auto playerPos = player->GetPosition();
     RE::Actor* best = nullptr;
     float bestScore = 999999.0f;
     float bestDist = 999999.0f;
+    bool bestIsDragon = false;
 
-    auto searchCell = [&](RE::TESObjectCELL* cell) {
-        if (!cell) return;
-        for (auto& refHandle : cell->GetRuntimeData().references) {
-            auto refPtr = refHandle.get();
-            if (!refPtr) continue;
+    auto checkActor = [&](RE::Actor* actor) {
+        if (!actor) return;
+        if (actor == player) return;
+        if (actor->IsDead()) return;
+        if (actor->IsDisabled()) return;
+        if (actor->IsDeleted()) return;
+        if (!actor->Is3DLoaded()) return;
+        if (actor->IsPlayerTeammate()) return;
+        if (!actor->IsHostileToActor(player)) return;
 
-            auto* actor = refPtr->As<RE::Actor>();
-            if (!actor) continue;
-            if (actor == player) continue;
-            if (actor->IsDead()) continue;
-            if (actor->IsDisabled()) continue;
-            if (actor->IsDeleted()) continue;
-            if (!actor->Is3DLoaded()) continue;
-            if (actor->IsPlayerTeammate()) continue;
-            if (!actor->IsHostileToActor(player)) continue;
+        auto diff = playerPos - actor->GetPosition();
+        float dist = diff.Length();
 
-            auto diff = playerPos - actor->GetPosition();
-            float dist = diff.Length();
+        bool isDragonActor = IsDragon(actor);
+        bool dragon = prioritizeDragons && isDragonActor;
 
-            // Score = distance, pénalisé x3 si pas de ligne de vue
-            float score = dist;
-            bool losOk = false;
-            (void)actor->HasLineOfSight(player, losOk);
-            if (!losOk) score *= 3.0f;
+        if (prioritizeDragons) {
+            const char* n = actor->GetDisplayFullName();
+            LOG("FindEnemy: '{}' dist={:.0f} isDragon={} hostile=true",
+                n ? n : "?", dist, isDragonActor);
+        }
 
-            if (score < bestScore) {
-                bestScore = score;
-                bestDist = dist;
-                best = actor;
-            }
+        // Si on priorise les dragons et qu'on en a déjà un, ignorer les non-dragons
+        if (prioritizeDragons && bestIsDragon && !dragon) return;
+        // Dragon à moins de 30000 unités → priorité absolue
+        if (dragon && dist > 30000.0f) dragon = false;
+
+        // Score = distance, pénalisé x3 si pas de ligne de vue
+        float score = dist;
+        bool losUnused = false;
+        bool losOk = actor->HasLineOfSight(player, losUnused);
+        if (!losOk) score *= 3.0f;
+
+        if (prioritizeDragons && isDragonActor) {
+            LOG("FindEnemy: DRAGON '{}' dist={:.0f} score={:.0f} LOS={} bestIsDragon={}",
+                actor->GetDisplayFullName() ? actor->GetDisplayFullName() : "?",
+                dist, score, losOk, bestIsDragon);
+        }
+
+        // Un dragon bat toujours un non-dragon
+        if (dragon && !bestIsDragon) {
+            bestScore = score;
+            bestDist = dist;
+            best = actor;
+            bestIsDragon = true;
+        } else if (dragon == bestIsDragon && score < bestScore) {
+            bestScore = score;
+            bestDist = dist;
+            best = actor;
+            bestIsDragon = dragon;
         }
     };
 
-    auto* playerCell = player->GetParentCell();
-    if (!playerCell) { outDist = 0; return nullptr; }
-
-    if (playerCell->IsInteriorCell()) {
-        searchCell(playerCell);
-    } else {
-        auto* tes = RE::TES::GetSingleton();
-        if (tes && tes->gridCells) {
-            for (uint32_t x = 0; x < tes->gridCells->length; x++) {
-                for (uint32_t y = 0; y < tes->gridCells->length; y++) {
-                    auto* cell = tes->gridCells->GetCell(x, y);
-                    if (cell && cell->IsAttached()) searchCell(cell);
-                }
-            }
-        } else {
-            searchCell(playerCell);
+    // Utiliser ProcessLists pour trouver TOUS les acteurs actifs (y compris dragons en vol)
+    auto* procLists = RE::ProcessLists::GetSingleton();
+    if (procLists) {
+        for (auto& handle : procLists->highActorHandles) {
+            auto actorPtr = handle.get();
+            if (actorPtr) checkActor(actorPtr.get());
+        }
+        for (auto& handle : procLists->middleHighActorHandles) {
+            auto actorPtr = handle.get();
+            if (actorPtr) checkActor(actorPtr.get());
         }
     }
 
@@ -1619,7 +1717,7 @@ static void StartAutoAimTracking() {
     g_autoAimThread = std::jthread([](std::stop_token st) {
         LOG("AutoAim: tracking thread started");
         while (!st.stop_requested() && g_autoAimTracking.load()) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(500));  // re-vise 2x par seconde
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));  // re-vise 10x par seconde
             if (!g_autoAimTracking.load() || st.stop_requested()) break;
 
             // Vérifier que la cible est toujours valide
@@ -1662,10 +1760,10 @@ static void StartAutoAimTracking() {
                     }
 
                     // Bip seulement si ligne de vue dégagée
-                    bool hasLOS = false;
-                    p->HasLineOfSight(t, hasLOS);
+                    bool losUnused = false;
+                    bool hasLOS = p->HasLineOfSight(t, losUnused);
                     if (hasLOS) {
-                        std::thread([]() { Beep(1000, 50); }).detach();
+                        std::thread([]() { Beep(1000, 30); }).detach();
                     }
                 });
             }
@@ -1674,7 +1772,73 @@ static void StartAutoAimTracking() {
     });
 }
 
-// Verrouiller l'ennemi le plus proche (touche X)
+// Chercher la cible de quête HUD la plus proche (même cellule, <2000 unités)
+// Retourne true si trouvée, remplit outPos, outName, outDist
+static bool FindNearestQuestTarget(RE::PlayerCharacter* player, RE::NiPoint3& outPos, std::wstring& outName, float& outDist) {
+    auto playerPos = player->GetPosition();
+    auto* playerCell = player->GetParentCell();
+    if (!playerCell) return false;
+
+    auto& objectives = REL::RelocateMemberIfNewer<RE::BSTArray<RE::BGSInstancedQuestObjective>>(
+        SKSE::RUNTIME_SSE_1_6_629, player, 0x580, 0x588);
+
+    float bestDist = 2000.0f;  // max 2000 unités
+    bool found = false;
+
+    for (auto& instObj : objectives) {
+        if (!instObj.Objective) continue;
+        if (instObj.InstanceState != RE::QUEST_OBJECTIVE_STATE::kDisplayed) continue;
+
+        auto* questObj = instObj.Objective;
+        auto* quest = questObj->ownerQuest;
+        if (!quest || !quest->IsActive()) continue;
+
+        // Seulement les quêtes affichées au HUD
+        auto rawFlags = quest->data.flags.underlying();
+        bool displayedInHUD = (rawFlags & 0x20) != 0;
+        if (!displayedInHUD) continue;
+
+        for (uint32_t t = 0; t < questObj->numTargets; t++) {
+            auto* target = questObj->targets[t];
+            if (!target) continue;
+
+            RE::ObjectRefHandle refHandle;
+            quest->CreateRefHandleByAliasID(refHandle, target->alias);
+            if (!refHandle) continue;
+
+            auto refSmartPtr = refHandle.get();
+            if (!refSmartPtr) continue;
+            auto* targetRef = refSmartPtr.get();
+
+            // Même cellule uniquement
+            auto* targetCell = targetRef->GetParentCell();
+            if (!targetCell || targetCell != playerCell) continue;
+
+            auto refPos = targetRef->GetPosition();
+            float dist = (playerPos - refPos).Length();
+
+            if (dist < bestDist) {
+                bestDist = dist;
+                outPos = refPos;
+                outDist = dist;
+                found = true;
+
+                // Nom : texte de l'objectif
+                if (questObj->displayText.size() > 0) {
+                    outName = Utf8ToWString(ResolveQuestAliases(questObj->displayText.c_str(), quest).c_str());
+                } else if (quest->GetFullName()) {
+                    outName = Utf8ToWString(quest->GetFullName());
+                } else {
+                    outName = L"Quest target";
+                }
+            }
+        }
+    }
+    return found;
+}
+
+// Verrouiller l'ennemi le plus proche (touche X) — tir unique
+// Fallback : cible de quête proche si pas d'ennemi
 static void LockNearestEnemy() {
     auto* player = RE::PlayerCharacter::GetSingleton();
     if (!player) {
@@ -1687,6 +1851,21 @@ static void LockNearestEnemy() {
     auto* nearest = FindNearestEnemy(player, dist);
 
     if (!nearest) {
+        // Pas d'ennemi → chercher une cible de quête proche
+        RE::NiPoint3 questPos;
+        std::wstring questName;
+        float questDist = 0;
+        if (FindNearestQuestTarget(player, questPos, questName, questDist)) {
+            auto playerPos = player->GetPosition();
+            LOG("AutoAim: quest target pos=({:.0f},{:.0f},{:.0f}) player pos=({:.0f},{:.0f},{:.0f}) dist={:.0f}",
+                questPos.x, questPos.y, questPos.z,
+                playerPos.x, playerPos.y, playerPos.z, questDist);
+            AimAtPosition(player, questPos);
+            std::wstring msg = questName + L", " + std::to_wstring(static_cast<int>(questDist)) + L" units";
+            Speak(msg);
+            return;
+        }
+
         Speak(L"No enemy nearby");
         StopAutoAim();
         return;
@@ -1703,6 +1882,162 @@ static void LockNearestEnemy() {
     Speak(msg);
 
     LOG("AutoAim: locked {} at distance {}", rawName ? rawName : "?", dist);
+}
+
+// --- Toggle lock-on continu (Shift+X) ---
+static std::atomic_bool g_toggleLockOn{false};
+static std::jthread g_toggleLockThread;
+
+static void StopToggleLockOn() {
+    g_toggleLockOn.store(false);
+    LOG("ToggleLock: stopped");
+}
+
+static void StartToggleLockOn() {
+    // Arrêter le thread précédent
+    g_toggleLockOn.store(false);
+    if (g_toggleLockThread.joinable()) {
+        g_toggleLockThread.request_stop();
+        g_toggleLockThread.join();
+    }
+    g_toggleLockOn.store(true);
+
+    g_toggleLockThread = std::jthread([](std::stop_token st) {
+        LOG("ToggleLock: tracking thread started");
+        while (!st.stop_requested() && g_toggleLockOn.load()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            if (!g_toggleLockOn.load() || st.stop_requested()) break;
+
+            auto* task = SKSE::GetTaskInterface();
+            if (task) {
+                task->AddTask([]() {
+                    if (!g_toggleLockOn.load()) return;
+                    auto* player = RE::PlayerCharacter::GetSingleton();
+                    if (!player) return;
+
+                    // Toujours chercher l'ennemi le plus proche (bascule auto)
+                    float dist = 0;
+                    auto* nearest = FindNearestEnemy(player, dist);
+                    if (!nearest) {
+                        Speak(L"No enemy nearby");
+                        g_toggleLockOn.store(false);
+                        LOG("ToggleLock: no more enemies");
+                        return;
+                    }
+
+                    auto targetCenter = GetActorCenter(nearest);
+                    AimAtPosition(player, targetCenter);
+                });
+            }
+        }
+        LOG("ToggleLock: tracking thread ended");
+    });
+}
+
+static void StartDragonFlightWatch();
+
+static void ToggleLockOnEnemy() {
+    if (g_toggleLockOn.load()) {
+        // Déjà actif → arrêter
+        StopToggleLockOn();
+        Speak(L"Lock off");
+        return;
+    }
+
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    if (!player) {
+        Speak(L"No enemy nearby");
+        return;
+    }
+
+    float dist = 0;
+    auto* nearest = FindNearestEnemy(player, dist);
+    if (!nearest) {
+        Speak(L"No enemy nearby");
+        return;
+    }
+
+    const char* rawName = nearest->GetDisplayFullName();
+    std::wstring name = rawName ? Utf8ToWString(rawName) : L"Enemy";
+    Speak(L"Lock on, " + name);
+    LOG("ToggleLock: locked {} at distance {}", rawName ? rawName : "?", dist);
+
+    // Démarrer la surveillance vol/sol si c'est un dragon
+    if (IsDragon(nearest)) StartDragonFlightWatch();
+
+    StartToggleLockOn();
+}
+
+// --- Surveillance de l'état de vol des dragons ---
+static std::jthread g_dragonWatchThread;
+static std::atomic_bool g_dragonWatchActive{false};
+static bool g_lastDragonFlying{false};
+
+static void StartDragonFlightWatch() {
+    if (g_dragonWatchActive.load()) return;  // déjà actif
+    g_dragonWatchActive.store(true);
+    g_lastDragonFlying = false;
+
+    g_dragonWatchThread = std::jthread([](std::stop_token st) {
+        LOG("DragonWatch: started");
+        while (!st.stop_requested() && g_dragonWatchActive.load()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            if (st.stop_requested() || !g_dragonWatchActive.load()) break;
+
+            auto* task = SKSE::GetTaskInterface();
+            if (task) {
+                task->AddTask([]() {
+                    if (!g_dragonWatchActive.load()) return;
+                    auto* player = RE::PlayerCharacter::GetSingleton();
+                    if (!player) return;
+
+                    // Chercher un dragon hostile vivant via ProcessLists
+                    auto* procLists = RE::ProcessLists::GetSingleton();
+                    if (!procLists) return;
+
+                    RE::Actor* dragon = nullptr;
+                    for (auto& handle : procLists->highActorHandles) {
+                        auto actorPtr = handle.get();
+                        if (!actorPtr) continue;
+                        auto* actor = actorPtr.get();
+                        if (!actor || actor->IsDead() || !actor->Is3DLoaded()) continue;
+                        if (!IsDragon(actor)) continue;
+                        if (!actor->IsHostileToActor(player)) continue;
+                        dragon = actor;
+                        break;
+                    }
+
+                    if (!dragon) {
+                        // Plus de dragon hostile → arrêter la surveillance
+                        g_dragonWatchActive.store(false);
+                        g_lastDragonFlying = false;
+                        LOG("DragonWatch: no more hostile dragon, stopping");
+                        return;
+                    }
+
+                    bool flying = dragon->AsActorState()->IsFlying();
+
+                    if (flying && !g_lastDragonFlying) {
+                        Speak(L"Dragon en vol");
+                        LOG("DragonWatch: dragon took off");
+                    } else if (!flying && g_lastDragonFlying) {
+                        Speak(L"Dragon au sol");
+                        LOG("DragonWatch: dragon landed");
+                    }
+                    g_lastDragonFlying = flying;
+                });
+            }
+        }
+        LOG("DragonWatch: ended");
+    });
+}
+
+static void StopDragonFlightWatch() {
+    g_dragonWatchActive.store(false);
+    if (g_dragonWatchThread.joinable()) {
+        g_dragonWatchThread.request_stop();
+        g_dragonWatchThread.join();
+    }
 }
 
 // Vérifier si l'arc est bandé (pour auto-aim automatique)
@@ -1733,24 +2068,29 @@ static void StartBowAutoAimPolling() {
                         if (!player) return;
 
                         float dist = 0;
-                        auto* nearest = FindNearestEnemy(player, dist);
+                        auto* nearest = FindNearestEnemy(player, dist, true);
                         if (!nearest) {
                             LOG("AutoAim(bow): no enemy found");
                             return;
                         }
 
                         auto targetCenter = GetActorCenter(nearest);
-                        AimAtPosition(player, targetCenter);
+                        AimAtPosition(player, targetCenter, true, nullptr);
 
                         g_autoAimTarget = nearest->GetHandle();
                         StartAutoAimTracking();
 
                         const char* rawName = nearest->GetDisplayFullName();
+                        bool dragon = IsDragon(nearest);
                         std::wstring name = rawName ? Utf8ToWString(rawName) : L"Enemy";
-                        std::wstring msg = name + L", " + std::to_wstring(static_cast<int>(dist)) + L" units";
+                        std::wstring msg = name + L", " + std::to_wstring(static_cast<int>(dist));
+                        if (dragon) msg += L", Dragon";
                         Speak(msg);
-                        LOG("AutoAim(bow): locked {} at distance {} center=({:.0f},{:.0f},{:.0f})",
-                            rawName ? rawName : "?", dist, targetCenter.x, targetCenter.y, targetCenter.z);
+                        LOG("AutoAim(bow): locked {} at distance {}{} center=({:.0f},{:.0f},{:.0f})",
+                            rawName ? rawName : "?", dist, dragon ? " [DRAGON]" : "", targetCenter.x, targetCenter.y, targetCenter.z);
+
+                        // Démarrer la surveillance vol/sol si c'est un dragon
+                        if (dragon) StartDragonFlightWatch();
                     });
                 }
             } else if (!bowDrawn && g_wasBowDrawn) {
@@ -1768,6 +2108,68 @@ static void StopBowAutoAimPolling() {
     if (g_bowAimThread.joinable()) {
         g_bowAimThread.request_stop();
         g_bowAimThread.join();
+    }
+}
+
+// --- Assistance cri : auto-valider les cibles de MQ105 (Grises-Barbes) ---
+
+class ShoutAnimListener : public RE::BSTEventSink<RE::BSAnimationGraphEvent> {
+public:
+    RE::BSEventNotifyControl ProcessEvent(const RE::BSAnimationGraphEvent* e,
+                                          RE::BSTEventSource<RE::BSAnimationGraphEvent>*) override {
+        if (!e) return RE::BSEventNotifyControl::kContinue;
+
+        std::string tag = e->tag.c_str();
+
+        // Logger tous les événements d'animation pour trouver le bon
+        if (tag.find("Voice") != std::string::npos ||
+            tag.find("shout") != std::string::npos ||
+            tag.find("Shout") != std::string::npos) {
+            LOG("ShoutAnim: tag='{}' payload='{}'", tag, e->payload.c_str());
+        }
+
+        // Détecter le cri du joueur (Voice_SpellFire_Event ou shoutStart)
+        if (tag != "Voice_SpellFire_Event" && tag != "shoutStart")
+            return RE::BSEventNotifyControl::kContinue;
+
+        // Vérifier que c'est bien le joueur
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        if (!player || e->holder != player) return RE::BSEventNotifyControl::kContinue;
+
+        // Pas besoin de vérifier le cri équipé — si MQ105 obj 40 est actif
+        // et que le joueur crie, on valide automatiquement
+        // Vérifier que MQ105 est active et que l'objectif 40 est affiché
+        auto* quest = RE::TESForm::LookupByEditorID<RE::TESQuest>("MQ105");
+        if (!quest || !quest->IsRunning()) return RE::BSEventNotifyControl::kContinue;
+
+        bool obj40Active = false;
+        for (auto* obj : quest->objectives) {
+            if (obj && obj->index == 40 &&
+                obj->state == RE::QUEST_OBJECTIVE_STATE::kDisplayed) {
+                obj40Active = true;
+                break;
+            }
+        }
+        if (!obj40Active) return RE::BSEventNotifyControl::kContinue;
+
+        // TODO: SetStage ne marche pas depuis le C++, en attente d'un script Papyrus
+        // En attendant, le joueur peut taper "setstage MQ105 90" dans la console (accessible avec NVDA)
+        LOG("ShoutAssist: MQ105 obj40 active — shout detected, use console: setstage MQ105 90");
+        Speak(L"Use console command: setstage MQ105 90");
+
+        return RE::BSEventNotifyControl::kContinue;
+    }
+};
+
+static ShoutAnimListener g_shoutAnimListener;
+
+static void RegisterShoutListener() {
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    if (player) {
+        player->AddAnimationGraphEventSink(&g_shoutAnimListener);
+        LOG("ShoutAnim listener registered on player");
+    } else {
+        LOG("WARNING: player not available for ShoutAnim listener");
     }
 }
 

@@ -1,0 +1,2 @@
+onFinishOpenMenuAnim();
+stop();

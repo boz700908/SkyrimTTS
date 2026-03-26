@@ -1,0 +1,3 @@
+onClipEvent(load){
+   rewind = false;
+}

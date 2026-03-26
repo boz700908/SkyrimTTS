@@ -20,6 +20,7 @@ struct ContainerSnapshot {
     std::wstring weaponDamageText;
     std::wstring apparelArmorText;
     std::wstring catText;
+    std::wstring soulLevelText;
     bool         isContainerSide{true};
     bool         atDivider{false};
 };
@@ -48,7 +49,7 @@ static bool ReadContainerSnapshot(ContainerSnapshot& snap) {
     // Determine if viewing container side or player inventory side
     double divider = -1.0, catIdx = -1.0;
     bool hasDivider = GetGFxNumber(movie, "_root.Menu_mc.InventoryLists_mc.CategoriesList.dividerIndex", divider);
-    bool hasCatIdx  = GetGFxNumber(movie, "_root.Menu_mc.iSelectedCategory", catIdx);
+    bool hasCatIdx  = GetGFxNumber(movie, "_root.Menu_mc.InventoryLists_mc.CategoriesList.selectedIndex", catIdx);
     if (hasDivider && hasCatIdx && divider > 0) {
         snap.isContainerSide = (catIdx < divider);
         snap.atDivider       = (catIdx == divider);
@@ -73,6 +74,7 @@ static bool ReadContainerSnapshot(ContainerSnapshot& snap) {
     readItemCard("ItemWeightText.text",    snap.weightText);
     readItemCard("WeaponDamageValue.text", snap.weaponDamageText);
     readItemCard("ApparelArmorValue.text", snap.apparelArmorText);
+    readItemCard("SoulLevel.text",        snap.soulLevelText);
 
     snap.valueText        = SanitizeNumericText(snap.valueText);
     snap.weightText       = SanitizeNumericText(snap.weightText);
@@ -90,14 +92,16 @@ static std::wstring BuildContainerItemAnnouncement(const ContainerSnapshot& snap
     const std::wstring eq = FormatEquipState(snap.equipState);
     if (!eq.empty())
         msg += L", " + eq;
-    if (!snap.valueText.empty())
-        msg += L", value " + snap.valueText;
-    if (!snap.weightText.empty() && snap.weightText != L"0")
-        msg += L", weight " + snap.weightText;
     if (!snap.weaponDamageText.empty() && snap.weaponDamageText != L"0")
         msg += L", damage " + snap.weaponDamageText;
     if (!snap.apparelArmorText.empty() && snap.apparelArmorText != L"0")
         msg += L", armor " + snap.apparelArmorText;
+    if (!snap.valueText.empty() && !isZero(snap.valueText))
+        msg += L", value " + snap.valueText;
+    if (!snap.weightText.empty() && !isZero(snap.weightText))
+        msg += L", weight " + snap.weightText;
+    if (!snap.soulLevelText.empty())
+        msg += L", " + snap.soulLevelText;
     return msg;
 }
 
@@ -109,8 +113,37 @@ static void AnnounceContainerChangeImpl() {
     const std::wstring side = snap.isContainerSide ? L"container" : L"inventory";
     const bool sideChanged = (side != g_lastContainerSide);
     const bool catChanged  = !snap.catText.empty() && (sideChanged || snap.catText != g_lastContainerCat);
+    // Log uniquement quand quelque chose change
+    if (sideChanged || catChanged || (!snap.itemText.empty() && snap.itemText != g_lastContainerItemName.c_str())) {
+        // Log les valeurs brutes du divider
+        auto ui2 = RE::UI::GetSingleton();
+        double rawDiv = -1, rawCatIdx = -1;
+        if (ui2) {
+            auto m2 = ui2->GetMenu(RE::ContainerMenu::MENU_NAME);
+            if (m2 && m2->uiMovie) {
+                GetGFxNumber(m2->uiMovie.get(), "_root.Menu_mc.InventoryLists_mc.CategoriesList.dividerIndex", rawDiv);
+                GetGFxNumber(m2->uiMovie.get(), "_root.Menu_mc.iSelectedCategory", rawCatIdx);
+            }
+        }
+        LOG("Container: side='{}' cat='{}' item='{}' dividerIdx={} catIdx={} isContainerSide={} sideChanged={} catChanged={}",
+            WStringToUtf8(side), WStringToUtf8(snap.catText), WStringToUtf8(snap.itemText),
+            rawDiv, rawCatIdx, snap.isContainerSide, sideChanged, catChanged);
+    }
     const std::wstring announce = BuildContainerItemAnnouncement(snap);
     const bool itemChanged = !announce.empty() && announce != g_lastContainerItemAnnounce;
+
+    // Si on est dans les catégories (pas d'item), reset pour forcer la relecture au retour
+    if (snap.itemText.empty() && !g_lastContainerItemAnnounce.empty()) {
+        g_lastContainerItemAnnounce.clear();
+        g_lastContainerItemName.clear();
+        g_lastContainerItemCount = 0;
+        g_lastContainerCat.clear();  // relire la catégorie quand on revient avec flèche gauche
+    }
+
+    // Si on change de côté, reset la catégorie pour forcer la relecture avec le bon préfixe
+    if (sideChanged) {
+        g_lastContainerCat.clear();
+    }
 
     const bool firstRead = g_lastContainerCat.empty() && g_lastContainerItemAnnounce.empty();
     if (catChanged) {

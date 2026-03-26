@@ -5,22 +5,24 @@
 //
 // Architecture:
 //   - Marker list built from persistentCell (C++ data, reliable)
-//   - Navigation is speech-only (no GFx visual selection - too fragile)
-//   - Tooltip polling reads MarkerDescription when game selects a marker
-//   - Fast travel uses the engine's native PlaceMarker + key simulation
+//   - Navigation is speech-only, camera moves for visual only
+//   - Fast travel via Papyrus Game.FastTravel() (bypasses fragile GFx selection)
+//   - Tooltip polling only for mouse hover (disabled during scanner navigation)
 
 // --- Filtres de la carte ---
 enum class MapFilter : int {
     All = 0,
     Discovered,
     Undiscovered,
+    QuestTargets,
     COUNT
 };
 
 static const wchar_t* g_mapFilterNames[] = {
     L"All",
     L"Discovered",
-    L"Undiscovered"
+    L"Undiscovered",
+    L"Quest Targets"
 };
 
 // --- Marqueur de carte ---
@@ -32,6 +34,7 @@ struct MapMarkerInfo {
     std::wstring  direction;
     bool          discovered{false};
     bool          canTravelTo{false};
+    bool          isQuestTarget{false};
     RE::NiPoint3  worldPos{0, 0, 0};  // position monde pour recalcul de distance
 };
 
@@ -44,7 +47,9 @@ static std::atomic_bool            g_mapOpen{false};
 static std::atomic_bool            g_mapReady{false};   // true quand BuildMapMarkerList terminé
 static std::string                 g_mapLastTooltip;    // dernier tooltip lu
 static std::atomic_bool            g_mapPolling{false};
+static std::atomic_bool            g_mapScannerActive{false};  // true = on navigue au scanner, supprime le polling tooltip
 static std::atomic_bool            g_mapPendingRead{false};  // flood protection
+static bool                        g_mapFastTravelConfirm{false};  // true = en attente de confirmation voyage rapide
 static bool                        g_mapUseReference{false};  // true = distances depuis le point de référence
 static RE::NiPoint3                g_mapReferencePos{0, 0, 0};
 static std::wstring                g_mapReferenceName;
@@ -117,6 +122,101 @@ static void StopMapPolling();
 
 // --- Construire la liste de marqueurs depuis la cellule persistante ---
 // MUST be called from AddUITask (UI thread) to be safe
+static void AddQuestTargetsToMap(RE::PlayerCharacter* player, const RE::NiPoint3& playerPos, int& questCount) {
+    if (!player) return;
+
+    auto& objectives = REL::RelocateMemberIfNewer<RE::BSTArray<RE::BGSInstancedQuestObjective>>(
+        SKSE::RUNTIME_SSE_1_6_629, player, 0x580, 0x588);
+
+    std::set<std::string> seenObjectives;  // éviter les doublons par texte d'objectif
+
+    for (uint32_t i = 0; i < objectives.size(); i++) {
+        auto& inst = objectives[i];
+        if (!inst.Objective) continue;
+        if (!inst.Objective->ownerQuest) continue;
+
+        // Seulement les objectifs actuellement affichés (pas complétés/échoués)
+        if (inst.InstanceState != RE::QUEST_OBJECTIVE_STATE::kDisplayed) continue;
+
+        auto* quest = inst.Objective->ownerQuest;
+        if (!quest->IsActive()) continue;
+
+        const char* objTextRaw = inst.Objective->displayText.c_str();
+        std::string objText = objTextRaw ? objTextRaw : "";
+
+        // Éviter les doublons par texte d'objectif
+        if (seenObjectives.count(objText)) continue;
+        seenObjectives.insert(objText);
+
+        for (uint32_t t = 0; t < inst.Objective->numTargets; t++) {
+            auto* tgt = inst.Objective->targets[t];
+            if (!tgt) continue;
+
+            RE::ObjectRefHandle rh;
+            quest->CreateRefHandleByAliasID(rh, tgt->alias);
+            if (!rh) continue;
+            auto sp = rh.get();
+            if (!sp) continue;
+            auto* ref = sp.get();
+            if (!ref) continue;
+
+            RE::FormID fid = ref->GetFormID();
+
+            auto rp = ref->GetPosition();
+
+            // Si la cible est dans un intérieur, chercher la porte de sortie
+            // pour obtenir une position monde valide sur la carte
+            auto* refCell = ref->GetParentCell();
+            if (refCell && refCell->IsInteriorCell()) {
+                // Chercher une porte dans cette cellule qui mène à l'extérieur
+                RE::TESObjectREFR* exitDoor = nullptr;
+                for (auto& doorHandle : refCell->GetRuntimeData().references) {
+                    auto doorPtr = doorHandle.get();
+                    if (!doorPtr) continue;
+                    auto* doorBase = doorPtr->GetBaseObject();
+                    if (!doorBase || doorBase->GetFormType() != RE::FormType::Door) continue;
+                    auto* extraTele = doorPtr->extraList.GetByType<RE::ExtraTeleport>();
+                    if (!extraTele || !extraTele->teleportData) continue;
+                    auto linkedDoor = extraTele->teleportData->linkedDoor.get();
+                    if (!linkedDoor) continue;
+                    auto* destCell = linkedDoor->GetParentCell();
+                    // La porte mène-t-elle à l'extérieur ?
+                    if (destCell && !destCell->IsInteriorCell()) {
+                        exitDoor = linkedDoor.get();
+                        break;
+                    }
+                    // Ou la porte liée a un worldspace ?
+                    if (linkedDoor->GetWorldspace()) {
+                        exitDoor = linkedDoor.get();
+                        break;
+                    }
+                }
+                if (exitDoor) {
+                    rp = exitDoor->GetPosition();
+                    LOG("MapMenu: quest '{}' redirected to exit door at ({:.0f},{:.0f},{:.0f})", objText, rp.x, rp.y, rp.z);
+                }
+            }
+
+            float dx = rp.x - playerPos.x;
+            float dy = rp.y - playerPos.y;
+
+            MapMarkerInfo m;
+            m.formID = fid;
+            m.name = Utf8ToWString(objText);
+            m.typeName = L"Quest Target";
+            m.distance = std::sqrt(dx * dx + dy * dy);
+            m.direction = GetDirectionString(dx, dy);
+            m.isQuestTarget = true;
+            m.worldPos = rp;
+
+            LOG("MapMenu: quest '{}' ref={:08X} pos=({:.0f},{:.0f},{:.0f}) dist={:.0f} state={}",
+                objText, fid, rp.x, rp.y, rp.z, m.distance, static_cast<int>(inst.InstanceState));
+            g_mapMarkers.push_back(std::move(m));
+            questCount++;
+        }
+    }
+}
+
 static void BuildMapMarkerList() {
     g_mapReady.store(false);
     g_mapMarkers.clear();
@@ -217,13 +317,18 @@ static void BuildMapMarkerList() {
         }
     }
 
+    // --- Ajouter les cibles de quête actives ---
+    int questCount = 0;
+    AddQuestTargetsToMap(player, playerPos, questCount);
+    LOG("MapMenu: {} quest targets added", questCount);
+
     // Sort by distance
     std::sort(g_mapMarkers.begin(), g_mapMarkers.end(),
         [](const MapMarkerInfo& a, const MapMarkerInfo& b) {
             return a.distance < b.distance;
         });
 
-    LOG("MapMenu: {} refs scanned, {} markers found across all worldspaces", totalRefs, markerCount);
+    LOG("MapMenu: {} refs scanned, {} markers + {} quests found", totalRefs, markerCount, questCount);
 
     ApplyMapFilter();
     g_mapReady.store(true);
@@ -243,7 +348,10 @@ static void ApplyMapFilter() {
                 if (m.discovered) g_mapFiltered.push_back(i);
                 break;
             case MapFilter::Undiscovered:
-                if (!m.discovered) g_mapFiltered.push_back(i);
+                if (!m.discovered && !m.isQuestTarget) g_mapFiltered.push_back(i);
+                break;
+            case MapFilter::QuestTargets:
+                if (m.isQuestTarget) g_mapFiltered.push_back(i);
                 break;
             default: break;
         }
@@ -273,9 +381,79 @@ static std::wstring FormatMapMarkerAnnounce(const MapMarkerInfo& m, bool fullDet
     return msg;
 }
 
+// --- Loguer l'état de la caméra ---
+static void LogMapCameraState(const char* context) {
+    auto* ui = RE::UI::GetSingleton();
+    if (!ui) return;
+    auto menuPtr = ui->GetMenu(RE::MapMenu::MENU_NAME);
+    if (!menuPtr) return;
+    auto* mapMenu = static_cast<RE::MapMenu*>(menuPtr.get());
+    if (!mapMenu) return;
+
+    auto& rd2 = mapMenu->GetRuntimeData2();
+    auto& cam = rd2.camera;
+    auto* camState = cam.currentState.get();
+
+    if (!camState) {
+        LOG("MapMenu[{}]: camera state is null", context);
+        return;
+    }
+
+    auto* worldState = skyrim_cast<RE::MapCameraStates::World*>(camState);
+    if (worldState) {
+        LOG("MapMenu[{}]: cam=World pos=({:.0f},{:.0f},{:.0f}) scroll=({:.0f},{:.0f},{:.0f})",
+            context,
+            worldState->currentPosition.x, worldState->currentPosition.y, worldState->currentPosition.z,
+            worldState->currentPositionScrollOffset.x, worldState->currentPositionScrollOffset.y, worldState->currentPositionScrollOffset.z);
+        if (worldState->mapData) {
+            LOG("MapMenu[{}]: mapBounds min=({:.0f},{:.0f}) max=({:.0f},{:.0f})",
+                context,
+                worldState->mapData->minimumCoordinates.x, worldState->mapData->minimumCoordinates.y,
+                worldState->mapData->maximumCoordinates.x, worldState->mapData->maximumCoordinates.y);
+        }
+    } else {
+        auto* transState = skyrim_cast<RE::MapCameraStates::Transition*>(camState);
+        if (transState) {
+            LOG("MapMenu[{}]: cam=Transition pos=({:.0f},{:.0f},{:.0f}) dest=({:.0f},{:.0f},{:.0f}) origin=({:.0f},{:.0f},{:.0f})",
+                context,
+                transState->currentPosition.x, transState->currentPosition.y, transState->currentPosition.z,
+                transState->zoomDestination.x, transState->zoomDestination.y, transState->zoomDestination.z,
+                transState->zoomOrigin.x, transState->zoomOrigin.y, transState->zoomOrigin.z);
+        } else {
+            LOG("MapMenu[{}]: cam=unknown state type", context);
+        }
+    }
+
+    // Log le worldspace affiché
+    if (rd2.worldSpace) {
+        LOG("MapMenu[{}]: worldSpace='{}'", context, rd2.worldSpace->GetName());
+    }
+
+    // Log le marqueur GFx sélectionné
+    auto& mapMenuGfx = rd2.unk30540;
+    if (mapMenuGfx.IsObject()) {
+        RE::GFxValue selMarker;
+        if (mapMenuGfx.GetMember("SelectedMarker", &selMarker) && selMarker.IsObject()) {
+            RE::GFxValue lbl, xv, yv, vis;
+            selMarker.GetMember("_label", &lbl);
+            selMarker.GetMember("_x", &xv);
+            selMarker.GetMember("_y", &yv);
+            selMarker.GetMember("_visible", &vis);
+            LOG("MapMenu[{}]: GFx selected='{}' x={:.1f} y={:.1f} visible={}",
+                context,
+                (lbl.IsString() ? lbl.GetString() : "?"),
+                (xv.IsNumber() ? xv.GetNumber() : -1),
+                (yv.IsNumber() ? yv.GetNumber() : -1),
+                (vis.IsNumber() || vis.IsBool()) ? (vis.IsNumber() ? (vis.GetNumber() != 0) : vis.GetBool()) : false);
+        } else {
+            LOG("MapMenu[{}]: GFx no marker selected", context);
+        }
+    }
+}
+
 // --- Centrer la carte sur un marqueur ---
-// Déplace la caméra de la carte vers la position monde du marqueur
-// et sélectionne le marqueur GFx s'il existe
+// Déplace la caméra C++ vers les coordonnées monde du marqueur (visuel uniquement)
+// Le voyage rapide est géré par MapFastTravel() via Papyrus, sans passer par GFx
 static void TryCenterMapOnMarker(const MapMarkerInfo& marker) {
     auto* ui = RE::UI::GetSingleton();
     if (!ui) return;
@@ -288,37 +466,29 @@ static void TryCenterMapOnMarker(const MapMarkerInfo& marker) {
 
     auto& rd2 = mapMenu->GetRuntimeData2();
 
-    // Sélectionner le marqueur GFx (si trouvé dans le tableau Markers)
-    auto& mapMenuGfx = rd2.unk30540;
-    if (!mapMenuGfx.IsObject()) return;
+    LOG("MapMenu: >>> TryCenterMapOnMarker '{}' type='{}' worldPos=({:.0f},{:.0f},{:.0f}) quest={}",
+        WStringToUtf8(marker.name), WStringToUtf8(marker.typeName),
+        marker.worldPos.x, marker.worldPos.y, marker.worldPos.z,
+        marker.isQuestTarget);
 
-    RE::GFxValue markersArr;
-    if (!mapMenuGfx.GetMember("Markers", &markersArr)) return;
+    // Désactiver le polling tooltip — le scanner gère la lecture
+    g_mapScannerActive.store(true);
 
-    uint32_t numMarkers = markersArr.GetArraySize();
-    std::string nameUtf8 = WStringToUtf8(marker.name);
-
-    for (uint32_t i = 0; i < numMarkers; i++) {
-        RE::GFxValue gfxMarker;
-        if (!markersArr.GetElement(i, &gfxMarker) || !gfxMarker.IsObject()) continue;
-
-        RE::GFxValue labelVal;
-        if (!gfxMarker.GetMember("_label", &labelVal) || !labelVal.IsString()) continue;
-
-        if (nameUtf8 == labelVal.GetString()) {
-            RE::GFxValue args[1];
-            args[0].SetNumber(static_cast<double>(i));
-            mapMenuGfx.Invoke("SetSelectedMarker", nullptr, args, 1);
-            LOG("MapMenu: selected '{}' gfxIdx={}", nameUtf8, i);
-            return;
+    // Déplacer la caméra vers la position monde du marqueur (visuel uniquement)
+    auto& cam = rd2.camera;
+    auto* camState = cam.currentState.get();
+    if (camState) {
+        auto* worldState = skyrim_cast<RE::MapCameraStates::World*>(camState);
+        if (worldState) {
+            worldState->currentPosition.x = marker.worldPos.x;
+            worldState->currentPosition.y = marker.worldPos.y;
         }
     }
-
-    LOG("MapMenu: camera moved but '{}' not in {} visible GFx markers", nameUtf8, numMarkers);
 }
 
 // --- Navigation : marqueur suivant ---
 static void MapNextMarker() {
+    g_mapFastTravelConfirm = false;  // annuler toute confirmation en cours
     if (!g_mapReady.load()) {
         Speak(L"Loading markers");
         return;
@@ -346,6 +516,7 @@ static void MapNextMarker() {
 
 // --- Navigation : marqueur précédent ---
 static void MapPrevMarker() {
+    g_mapFastTravelConfirm = false;  // annuler toute confirmation en cours
     if (!g_mapReady.load()) {
         Speak(L"Loading markers");
         return;
@@ -467,6 +638,80 @@ static void MapCycleFilter() {
     Speak(msg);
 }
 
+// --- Voyage rapide via Papyrus (bypass GFx) ---
+// Premier Entrée = demande confirmation, deuxième Entrée = confirme
+static void MapFastTravel() {
+    if (!g_mapReady.load() || g_mapFiltered.empty() || g_mapIndex < 0) {
+        Speak(L"No marker selected");
+        return;
+    }
+
+    int filteredIdx = g_mapFiltered[g_mapIndex];
+    if (filteredIdx < 0 || filteredIdx >= static_cast<int>(g_mapMarkers.size())) return;
+
+    auto& m = g_mapMarkers[filteredIdx];
+
+    if (!m.canTravelTo) {
+        Speak(L"Cannot fast travel here");
+        return;
+    }
+
+    if (m.formID == 0) {
+        Speak(L"No valid destination");
+        return;
+    }
+
+    // Premier appui : demander confirmation
+    if (!g_mapFastTravelConfirm) {
+        g_mapFastTravelConfirm = true;
+        Speak(L"Fast travel to " + m.name + L"? Press Enter to confirm");
+        return;
+    }
+
+    // Deuxième appui : confirmer et voyager
+    g_mapFastTravelConfirm = false;
+
+    LOG("MapMenu: fast travel to '{}' formID={:08X}", WStringToUtf8(m.name), m.formID);
+
+    auto* vm = RE::BSScript::Internal::VirtualMachine::GetSingleton();
+    if (!vm) {
+        LOG("MapMenu: VM not available");
+        Speak(L"Error: VM not available");
+        return;
+    }
+
+    auto* quest = RE::TESForm::LookupByEditorID<RE::TESQuest>("SkyrimTTS_AutoWalkQuest");
+    if (!quest) {
+        LOG("MapMenu: SkyrimTTS_AutoWalkQuest quest not found");
+        Speak(L"Error: autowalk quest not found");
+        return;
+    }
+
+    auto* handlePolicy = vm->GetObjectHandlePolicy();
+    RE::VMHandle questHandle = handlePolicy->GetHandleForObject(
+        quest->GetFormType(), quest);
+    if (questHandle == 0) {
+        LOG("MapMenu: failed to get quest handle");
+        Speak(L"Error: quest handle failed");
+        return;
+    }
+
+    RE::BSTSmartPointer<RE::BSScript::Object> questObj;
+    vm->FindBoundObject(questHandle, "SkyrimTTS_AutoWalk", questObj);
+    if (!questObj) {
+        LOG("MapMenu: SkyrimTTS_AutoWalk script not bound to quest");
+        Speak(L"Error: script not bound");
+        return;
+    }
+
+    auto* args = RE::MakeFunctionArguments((int)m.formID);
+    RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback;
+    RE::BSFixedString fnName("OnFastTravel");
+    vm->DispatchMethodCall(questObj, fnName, args, callback);
+
+    Speak(L"Traveling to " + m.name);
+}
+
 // --- Ouverture de la carte ---
 static void OnMapOpen() {
     g_mapOpen.store(true);
@@ -510,13 +755,13 @@ static void OnMapClose() {
     StopMapPolling();
     g_mapOpen.store(false);
     g_mapReady.store(false);
+    g_mapScannerActive.store(false);
     // Don't clear vectors here -- polling thread may still have a queued task.
     // The vectors will be cleared on next OnMapOpen().
 }
 
 // --- Polling du tooltip (survol souris) ---
 static void PollMapTooltip() {
-    // Double-check map is still open (task may have been queued before close)
     if (!g_mapOpen.load() || !g_mapPolling.load()) return;
 
     auto* ui = RE::UI::GetSingleton();
@@ -528,16 +773,17 @@ static void PollMapTooltip() {
     auto* mapMenu = static_cast<RE::MapMenu*>(menuPtr.get());
     if (!mapMenu || !mapMenu->uiMovie) return;
 
-    // Read the tooltip title from MarkerDescription
+    // Pas de polling tooltip quand on navigue au scanner
+    if (g_mapScannerActive.load()) return;
+
+    // Mode souris : lire le tooltip normalement
     RE::GFxValue titleVal;
     if (mapMenu->uiMovie->GetVariable(&titleVal,
             "_root.MarkerDescriptionHolder.Description.Title.text") &&
         titleVal.IsString()) {
         std::string title = titleVal.GetString();
-        // Ignore placeholder and empty
         if (!title.empty() && title != "Marker Name" && title != g_mapLastTooltip) {
             g_mapLastTooltip = title;
-            LOG("MapMenu: tooltip changed -> '{}'", title);
             Speak(Utf8ToWString(title.c_str()));
         }
     }
@@ -549,7 +795,6 @@ static void StartMapPolling() {
 
     std::thread([]() {
         while (g_mapPolling.load()) {
-            // Check map is still open
             if (!g_mapOpen.load()) break;
 
             auto* task = SKSE::GetTaskInterface();

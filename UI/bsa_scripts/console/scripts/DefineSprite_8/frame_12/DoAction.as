@@ -1,0 +1,2 @@
+Console.HideComplete();
+stop();

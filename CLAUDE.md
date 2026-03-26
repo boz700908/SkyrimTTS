@@ -6,7 +6,9 @@ Guide pour Claude Code sur le projet SkyrimNVDA.
 
 Plugin SKSE d'accessibilite pour Skyrim SE/AE/VR. Vocalise les menus du jeu via NVDA pour les joueurs aveugles. Utilise **nvdaController** (wchar_t natif) pour la synthese vocale.
 
-**Menus couverts :** inventaire, conteneur, journal, magie, menu principal, level up, messagebox, tween (croix), dialogue, racesex, stats, HUD, tutoriel.
+**Menus couverts :** inventaire, conteneur, marchand, journal, magie, menu principal, level up, messagebox, tween (croix), dialogue, racesex, stats, HUD, tutoriel, carte, crafting (forge, meule, tannerie, etabli).
+
+**Systemes couverts :** scanner d'objets (10 categories), autowalk, visee auto (arc), verrouillage ennemi, suivi de quetes, furtivite, puzzles (piliers/anneaux).
 
 ## Commandes de build
 
@@ -19,6 +21,32 @@ cmd.exe //c "C:\tmp\build_skyrim.bat"
 
 Utilisez `/deploy` pour build + deploiement en une etape.
 Utilisez `/check-logs` pour analyser les logs rapidement.
+
+```bash
+# Decompiler un SWF (extraire les scripts ActionScript)
+"C:/Program Files (x86)/FFDec/ffdec.bat" -export script "<dossier_sortie>" "<fichier.swf>"
+
+# Exemple :
+"C:/Program Files (x86)/FFDec/ffdec.bat" -export script "C:/Users/marcd/source/repos/SkyrimNVDA/UI/interface/sleepwaitmenu" "C:/Users/marcd/source/repos/SkyrimNVDA/UI/interface/sleepwaitmenu.swf"
+```
+
+```powershell
+# Extraire les SWF d'un fichier BSA (utilise Sharp.BSA.BA2.dll de BSA Browser)
+# Les SWF extraits vont dans UI/bsa_swf/
+powershell.exe -Command "
+[System.Reflection.Assembly]::LoadFrom('C:\Program Files (x86)\BSA Browser\Sharp.BSA.BA2.dll') | Out-Null
+\$bsa = New-Object SharpBSABA2.BSAUtil.BSA '<chemin_vers_fichier.bsa>'
+\$outDir = 'C:\Users\marcd\source\repos\SkyrimNVDA\UI\bsa_swf'
+foreach (\$f in \$bsa.Files) {
+    if (\$f.FullPath -match '\.swf$') {
+        \$name = [System.IO.Path]::GetFileName(\$f.FullPath)
+        \$stream = \$f.GetDataStream()
+        \$fs = [System.IO.File]::Create((Join-Path \$outDir \$name))
+        \$stream.CopyTo(\$fs); \$fs.Close(); \$stream.Close()
+    }
+}
+"
+```
 
 ## Architecture
 
@@ -171,6 +199,25 @@ static void QueueXxxRead() {
 - **skyrim-ui-explorer** : Utiliser quand on doit trouver des chemins GFx dans un menu SWF. Analyse les fichiers ActionScript decompiles dans `UI/`.
 - **accessibility-reviewer** : Utiliser pour relire le code avant un commit ou apres avoir code un nouveau menu. Verifie les regles Speak/SpeakQueue, flood protection, GFx safety, etc.
 - **log-analyzer** : Utiliser pour analyser en profondeur le fichier `SkyrimNVDA.log` quand un probleme survient.
+
+## Regles de travail
+
+### Toujours verifier avant de tester
+Apres chaque modification importante, relire le code pour verifier qu'il n'y a pas d'erreur avant de demander a l'utilisateur de tester. Ne pas envoyer du code non verifie.
+
+### Changelog
+Mettre a jour `CHANGELOG.md` apres chaque ajout ou correction significative. Ne pas inclure les corrections de bugs sur des fonctionnalites en cours de developpement — seulement sur des fonctionnalites deja livrees dans une version precedente. Exemple : si on ajoute le crafting dans la v1.1 et qu'on corrige un bug du crafting avant de sortir la v1.1, ne pas mettre cette correction dans le changelog — les joueurs n'ont jamais eu le crafting buggue.
+
+### Ne pas casser ce qui marche
+Quand on corrige un bug sur un atelier (meule, tannerie), verifier que la forge continue de fonctionner. Chaque atelier a son propre mode de lecture (forge = categories, meule = liste simple, tannerie = categories).
+
+### Crafting : deux modes
+- **Mode forge** (CategoryList) : forge, tannerie — avec categories et items. `ReadCraftingSnapshotForge()`.
+- **Mode simple** (ItemListTweener) : meule, etabli — liste d'items directe. `ReadCraftingSnapshotSimple()`.
+- Detection automatique via `CategoryList.currentState` au demarrage.
+
+### Furtivite
+Suspendre la vocalisation de la furtivite (Hidden/Detected/Caution) quand le Crafting Menu est ouvert pour ne pas couper les tutoriels et annonces.
 
 ## Log
 

@@ -506,6 +506,14 @@ static std::wstring SanitizeNumericText(const std::wstring& s) {
     return out;
 }
 
+// Check if a numeric text is zero (handles "0", "0.0", "000", etc.)
+static bool isZero(const std::wstring& s) {
+    for (auto c : s) {
+        if (c != L'0' && c != L'.' && c != L',') return false;
+    }
+    return true;
+}
+
 // Formats a weight value with one decimal, comma as separator
 static std::wstring FormatWeight(double w) {
     const double rounded = std::round(w * 10.0) / 10.0;

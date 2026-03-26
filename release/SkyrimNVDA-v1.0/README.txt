@@ -1,0 +1,314 @@
+SkyrimNVDA - Player Guide
+
+Accessibility plugin for Skyrim Special/Anniversary Edition. Automatically vocalizes game menus, adds an object scanner, autowalk, auto-aim, and quest tracking via NVDA.
+
+
+REQUIREMENTS
+
+- Skyrim Special Edition or Anniversary Edition
+- SKSE64 (Skyrim Script Extender)
+- NVDA screen reader (must be running before launching the game)
+
+
+INSTALLATION
+
+Your Skyrim installation folder is usually located at:
+C:\Program Files (x86)\Steam\steamapps\common\Skyrim Special Edition\
+
+Step 1: Install SKSE64
+
+If you haven't already, download and install SKSE64 from https://skse.silverlock.org/. Follow its installation instructions. You must launch the game through skse64_loader.exe instead of the normal Skyrim launcher.
+
+Step 2: Copy the plugin files
+
+From this archive, copy the Data folder into your Skyrim installation folder. It will place the files in the correct locations:
+
+- Data\SKSE\Plugins\SkyrimNVDA.dll
+- Data\SKSE\Plugins\nvdaControllerClient.dll
+- Data\Scripts\SkyrimTTS_AutoWalk.pex
+- Data\SkyrimTTS_AutoWalk.esp
+
+Alternatively, you can install this archive directly through Vortex or Mod Organizer 2 using "Install From File".
+
+Step 3: Activate the ESP
+
+The file SkyrimTTS_AutoWalk.esp must be activated in your load order. You can do this in two ways:
+
+Using a mod manager (Vortex, Mod Organizer 2): the ESP should appear in your plugin list. Make sure it is enabled (checked).
+
+Manually: open the file %LOCALAPPDATA%\Skyrim Special Edition\plugins.txt and add the line:
+*SkyrimTTS_AutoWalk.esp
+
+Step 4: Launch the game
+
+1. Start NVDA
+2. Launch the game through skse64_loader.exe (not the normal Skyrim launcher)
+3. NVDA should start reading menus automatically
+
+
+GETTING STARTED - CHARACTER CREATION
+
+When you start the game, after the intro cinematic, you arrive at the character creation menu.
+
+NVDA announces: "Character creation"
+
+Numpad 5 or 8: switch tab (Race, Sex, Appearance...)
+Up / Down: navigate options within a tab
+Left / Right: adjust a slider value
+R: confirm / validate
+
+
+TWEEN MENU (Tab key)
+
+NVDA announces: "Cross menu"
+
+Up: Skills
+Down: Map
+Left: Magic
+Right: Inventory
+
+
+INVENTORY
+
+NVDA announces: "Inventory open"
+
+Up / Down: change item (name, value, weight vocalized)
+Left / Right (or Q / E): change category
+H: announces gold and current carry weight / maximum
+
+
+CONTAINER (chest, body...)
+
+NVDA announces: "Container open"
+
+Up / Down: change item
+Left / Right: switch between your inventory and the container
+H: announces gold and carry weight
+
+
+MAGIC MENU
+
+NVDA announces: "Magic menu open"
+
+Up / Down: change spell (name, effects, cost vocalized)
+Left / Right: change category (Destruction, Restoration...)
+
+
+JOURNAL (J key)
+
+NVDA announces: "Journal open"
+
+Up / Down: change quest or entry
+Enter: activate or deactivate the selected quest (NVDA announces "active" or "inactive")
+Numpad 5 or 8: switch tab (Quests, System, etc.)
+
+When you activate or deactivate a quest in the journal, it is reflected in the scanner's Quests category.
+
+
+SKILLS MENU
+
+Up / Down / Left / Right: navigate the skill tree
+The selected skill description is vocalized automatically
+Perks are vocalized with their description and requirements
+
+
+FAVORITES (Q key)
+
+NVDA announces: "Favorites"
+
+Up / Down: change item or spell
+
+
+DIALOGUE
+
+The NPC's dialogue line is vocalized automatically.
+Up / Down to choose your response.
+
+
+HUD (in game)
+
+Object, NPC, or door in crosshair: name and action vocalized automatically (e.g. "Open door")
+Notifications (quest updates, level up...): vocalized automatically
+Subtitles: vocalized automatically
+New location discovered: vocalized automatically
+H: announces current Health / Magicka / Stamina
+
+
+MAIN MENU
+
+NVDA announces: "Main menu open"
+
+Up / Down to navigate New Game, Continue, Load, Settings, Quit.
+
+
+LEVEL UP
+
+NVDA announces: "Level gained! Choose your improvement."
+
+Left / Right to choose between Health, Magicka or Stamina. Enter to confirm.
+
+
+MESSAGE BOX
+
+Game messages (confirmations, warnings) are vocalized automatically.
+Up / Down to navigate buttons, Enter to confirm.
+
+
+OBJECT SCANNER
+
+The scanner lets you detect and navigate all objects around you: NPCs, doors, items, containers, quest targets, locations, and more.
+
+Scanner keyboard shortcuts (outside menus):
+
+Numpad 5: scan all objects around you
+Page Down: next object in the current category
+Page Up: previous object in the current category
+Shift + Page Down: next category
+Shift + Page Up: previous category
+Home: announce current object with distance and orient your camera toward it
+End: cycle subcategories (e.g. locked/unlocked doors, looted/unlooted corpses)
+
+Scanner categories:
+
+All: every detected object
+NPCs: living characters (friendly and hostile)
+Doors: all doors, with destination name for cell doors
+Containers: chests, barrels, etc. (shows "empty" if looted)
+Items: weapons, potions, books, gold, etc.
+Activators: levers, buttons, beds, ore veins, etc. (puzzle pillars show their current symbol)
+Corpses: dead bodies
+Companions: your followers
+Quests: active quest objectives with distance to the target (follows compass direction for targets in other cells)
+Locations: nearby discovered map markers with their type (City, Cave, Fort, Nordic Ruins...)
+
+Puzzle support:
+
+When scanning puzzle pillars or dragon claw door rings, the scanner shows the current symbol in parentheses (e.g. "Pillar (Snake)", "Inner ring (Bear)"). For pillars, the direction (north, south...) is also shown to help identify which pillar is which.
+
+When you activate a pillar or ring, NVDA automatically announces the new symbol.
+
+
+AUTOWALK
+
+Autowalk lets you walk automatically toward a selected scanner object or quest target.
+
+Autowalk keyboard shortcuts:
+
+Shift + Home: start autowalk toward the selected scanner object
+Shift + Home again: stop autowalk
+W / A / S / D / Escape / Space: stop autowalk immediately
+
+How it works:
+
+The player automatically runs toward the target using the game's AI pathfinding system.
+For quest objectives in another cell (e.g. inside a dungeon), the autowalk follows the compass to find the correct entrance door.
+If the player gets stuck for 20 seconds, autowalk stops with "Can't reach target".
+Autowalk stops automatically when you arrive within 200 units of the target.
+
+
+ENEMY LOCK (X key)
+
+Press X to rotate your camera toward the nearest hostile enemy. NVDA announces the enemy name and distance.
+
+Works only during combat.
+Ignores dead enemies, companions, and disabled actors.
+Targets the center of the enemy's body for accurate melee fighting.
+
+
+AUTO-AIM (BOW)
+
+When you draw your bow (hold the attack button), the plugin automatically:
+
+1. Finds the nearest hostile enemy
+2. Locks onto it and aims at the center of its body
+3. Compensates for arrow gravity based on distance (uses real projectile physics data from the game)
+4. Predicts enemy movement to aim where the target will be when the arrow arrives
+5. Plays a beep sound (1000 Hz) when you have line of sight to the target
+6. Re-aims every 500ms to track moving targets
+
+When you release the bow, tracking stops. When any enemy is killed by the player (bow, melee, magic), a kill sound plays (3 descending beeps).
+
+
+MAP MENU (M key)
+
+The map is fully accessible with keyboard navigation.
+
+Map keyboard shortcuts:
+
+Page Down: next map marker
+Page Up: previous map marker
+Home: announce full details of current marker (type, distance, direction, fast travel availability)
+Shift + Home: set current marker as reference point (all distances recalculated from this marker instead of the player). Press again to clear the reference.
+End: cycle filters (All, Discovered, Undiscovered)
+
+Map features:
+
+All map markers are listed with name, type (City, Cave, Fort...), distance and direction (north, south, east...).
+Mouse hover: when you move the mouse over a marker on the map, NVDA reads its name.
+Filters let you see only discovered or undiscovered locations.
+Reference point: set any marker as reference to measure distances between locations.
+
+
+QUEST TRACKING
+
+Quest objectives appear in the scanner's Quests category. Only quests activated in your journal are shown.
+
+How it works:
+
+Activate or deactivate quests in the journal (J key, then Enter on a quest).
+Active quests appear in the Quests category of the scanner with distance and direction.
+For targets in another cell (dungeon, building), the scanner follows the compass direction and shows the distance to the door you need to take.
+Use Home to orient toward the quest target.
+Use Shift + Home to autowalk toward the quest target.
+
+Word Walls:
+
+Word Walls (where you learn dragon shouts) appear in the Activators category of the scanner. Walk near them to learn the word automatically.
+
+
+RECOMMENDED MODS FOR ACCESSIBILITY
+
+Puzzle Pillar Auto-Solve: https://www.nexusmods.com/skyrimspecialedition/mods/125875
+All pillars are pre-solved, just pull the lever.
+
+Dragon Claws Auto-Unlock: https://www.nexusmods.com/skyrimspecialedition/mods/47329
+Claw doors open automatically when you have the claw.
+
+
+KEYBOARD SHORTCUTS SUMMARY
+
+In game (no menu open):
+
+H: Health / Magicka / Stamina
+Numpad 5: scan objects
+Page Down: next object
+Page Up: previous object
+Shift + Page Down: next category
+Shift + Page Up: previous category
+Home: announce current object and orient camera
+Shift + Home: start / stop autowalk
+End: cycle subcategories
+X: lock nearest enemy (combat only)
+Draw bow: auto-aim activates automatically
+
+In inventory / container:
+
+H: gold and carry weight
+Up / Down: change item
+Left / Right: change category or switch inventory/container
+
+In map (M key):
+
+Page Down: next marker
+Page Up: previous marker
+Home: marker details
+Shift + Home: set / clear reference point
+End: cycle filters
+
+In journal (J key):
+
+Up / Down: change quest
+Enter: activate / deactivate quest
+
+
+Plugin developed by Pyrhame. Requires NVDA.

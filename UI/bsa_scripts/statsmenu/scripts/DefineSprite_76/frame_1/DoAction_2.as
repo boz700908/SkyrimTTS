@@ -1,0 +1,4 @@
+_root.StatsMenuBaseInstance.BottomBarInstance.BottomBarPlayerInfoInstance.PlayerInfoCardInstance.HealthTextInstance.textAutoSize = "shrink";
+_root.StatsMenuBaseInstance.BottomBarInstance.BottomBarPlayerInfoInstance.PlayerInfoCardInstance.MagickaTextInstance.textAutoSize = "shrink";
+_root.StatsMenuBaseInstance.BottomBarInstance.BottomBarPlayerInfoInstance.PlayerInfoCardInstance.StaminaTextInstance.textAutoSize = "shrink";
+stop();
