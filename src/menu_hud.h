@@ -55,6 +55,13 @@ static std::string g_hudPrevNotif;
 static std::string g_hudPrevSubtitle;
 static std::string g_hudPrevLocation;
 static std::string g_hudPrevTutorial;
+static std::string g_hudPrevMessage;   // dernier message d'item (Gold added, etc.)
+static std::set<std::string> g_hudReadObjectives; // objectifs de quête déjà lus
+static std::string g_hudPrevArrowCount;  // dernier compteur de flèches
+static std::string g_hudPrevStealth;     // dernier statut furtivité
+static bool g_wasSneaking = false;       // état accroupi précédent
+static bool g_wasFirstPerson = true;     // état caméra précédent
+static bool g_cameraInitialized = false; // éviter annonce au lancement
 
 // Notifications : QuestName stocké sur AnimatedLetter_mc avant animation lettre par lettre
 static constexpr const char* HUD_NOTIF     = "_root.HUDMovieBaseInstance.QuestUpdateBaseInstance.AnimatedLetter_mc.QuestName";
@@ -83,12 +90,136 @@ static void HUDAdvanceMovie_Hook(RE::IMenu* a_this, float a_interval, std::uint3
     if (!movie) return;
 
     // Notifications HUD (compétence augmentée, quête mise à jour, niveau HUD)
+    // On reset g_hudPrevNotif quand le texte disparaît, pour relire si ça réapparaît identique
     std::string notif;
     if (GetGFxString(movie, HUD_NOTIF, notif)) {
         if (!notif.empty() && notif != g_hudPrevNotif) {
             LOG("HUD notif: '{}'", notif);
             g_hudPrevNotif = notif;
             Speak(StripMarkupForSpeech(Utf8ToWString(notif)));
+        }
+    } else if (!g_hudPrevNotif.empty()) {
+        g_hudPrevNotif.clear();
+    }
+
+    // Objectifs de quête (texte sous la notification "Quest updated")
+    {
+        bool anyObjectiveVisible = false;
+        for (int i = 0; i < 3; i++) {
+            std::string path = "_root.HUDMovieBaseInstance.QuestUpdateBaseInstance.objective"
+                + std::to_string(i) + ".ObjectiveTextFieldInstance.TextFieldInstance.text";
+            std::string objText;
+            if (GetGFxString(movie, path.c_str(), objText) && !objText.empty()) {
+                anyObjectiveVisible = true;
+                if (g_hudReadObjectives.find(objText) == g_hudReadObjectives.end()) {
+                    g_hudReadObjectives.insert(objText);
+                    LOG("HUD objective: '{}'", objText);
+                    SpeakQueue(StripMarkupForSpeech(Utf8ToWString(objText)));
+                }
+            }
+        }
+        // Quand tous les objectifs disparaissent, on reset le set pour pouvoir relire
+        if (!anyObjectiveVisible && !g_hudReadObjectives.empty()) {
+            g_hudReadObjectives.clear();
+        }
+    }
+
+    // Messages HUD (item ajouté, or reçu, etc.)
+    // Reset quand le tableau est vide pour relire un message identique qui réapparaît
+    {
+        RE::GFxValue messagesBlock;
+        if (movie->GetVariable(&messagesBlock, "_root.HUDMovieBaseInstance.MessagesBlock") && messagesBlock.IsObject()) {
+            RE::GFxValue shownArray;
+            if (messagesBlock.GetMember("ShownMessageArray", &shownArray) && shownArray.IsArray()) {
+                uint32_t len = shownArray.GetArraySize();
+                if (len == 0) {
+                    g_hudPrevMessage.clear();
+                } else {
+                    for (uint32_t i = 0; i < len; i++) {
+                        RE::GFxValue entry;
+                        if (!shownArray.GetElement(i, &entry) || !entry.IsObject()) continue;
+                        RE::GFxValue textClip;
+                        if (!entry.GetMember("TextFieldClip", &textClip) || !textClip.IsObject()) continue;
+                        RE::GFxValue tf1;
+                        if (!textClip.GetMember("tf1", &tf1) || !tf1.IsObject()) continue;
+                        RE::GFxValue htmlText;
+                        if (!tf1.GetMember("htmlText", &htmlText) || !htmlText.IsString()) continue;
+                        std::string msg = htmlText.GetString();
+                        if (!msg.empty() && msg != g_hudPrevMessage) {
+                            g_hudPrevMessage = msg;
+                            std::wstring wmsg = StripMarkupForSpeech(Utf8ToWString(msg));
+                            if (!wmsg.empty()) {
+                                // Filtrer "Aucune quête active" / "No active quest" (spam du mod Dio)
+                                std::wstring lower = wmsg;
+                                for (auto& c : lower) c = towlower(c);
+                                bool mute = (lower.find(L"aucune qu") != std::wstring::npos) ||
+                                            (lower.find(L"no active quest") != std::wstring::npos) ||
+                                            (lower.find(L"no quest") != std::wstring::npos);
+                                if (!mute) SpeakQueue(wmsg);
+                            }
+                        }
+                        break;  // lire seulement le premier (le plus récent)
+                    }
+                }
+            }
+        } else if (!g_hudPrevMessage.empty()) {
+            g_hudPrevMessage.clear();
+        }
+    }
+
+    // Compteur de flèches (annonce seulement quand le type de flèche change, pas le nombre)
+    {
+        std::string arrowCount;
+        if (GetGFxString(movie, "_root.HUDMovieBaseInstance.ArrowInfoInstance.ArrowCountInstance.ArrowNumInstance.text", arrowCount)) {
+            if (!arrowCount.empty()) {
+                // Extraire le nom de la flèche (avant le "(")
+                std::string arrowName = arrowCount;
+                auto paren = arrowName.find('(');
+                if (paren != std::string::npos) arrowName = arrowName.substr(0, paren);
+                // Ne vocaliser que si le type de flèche change
+                if (arrowName != g_hudPrevArrowCount) {
+                    g_hudPrevArrowCount = arrowName;
+                    SpeakQueue(Utf8ToWString(arrowCount));
+                }
+            }
+        } else if (!g_hudPrevArrowCount.empty()) {
+            g_hudPrevArrowCount.clear();
+        }
+    }
+
+    // Détection accroupi / debout
+    {
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        if (player) {
+            bool sneaking = player->IsSneaking();
+            if (sneaking != g_wasSneaking) {
+                g_wasSneaking = sneaking;
+                Speak(sneaking ? L"Sneaking" : L"Standing");
+            }
+        }
+    }
+
+    // Détection première / troisième personne — mise à jour silencieuse de l'état
+    // L'annonce vocale se fait uniquement sur appui de F dans InputListener (plugin.cpp)
+    {
+        auto* camera = RE::PlayerCamera::GetSingleton();
+        if (camera) {
+            bool firstPerson = camera->IsInFirstPerson();
+            g_wasFirstPerson = firstPerson;
+            g_cameraInitialized = true;
+        }
+    }
+
+    // Statut furtivité (Hidden / Detected / Caution) — suspendre pendant le crafting
+    if (!RE::UI::GetSingleton()->IsMenuOpen(RE::CraftingMenu::MENU_NAME)) {
+        std::string stealth;
+        if (GetGFxString(movie, "_root.HUDMovieBaseInstance.StealthMeterInstance.SneakTextHolder.SneakTextClip.SneakTextInstance.text", stealth)) {
+            if (!stealth.empty() && stealth != g_hudPrevStealth) {
+                g_hudPrevStealth = stealth;
+                Speak(Utf8ToWString(stealth));
+            }
+        } else if (!g_hudPrevStealth.empty()) {
+            g_hudPrevStealth.clear();
         }
     }
 
@@ -99,6 +230,7 @@ static void HUDAdvanceMovie_Hook(RE::IMenu* a_this, float a_interval, std::uint3
             g_hudPrevSubtitle.clear();
         } else if (subtitle != g_hudPrevSubtitle) {
             g_hudPrevSubtitle = subtitle;
+            LOG("HUD subtitle: '{}'", subtitle);
             Speak(StripMarkupForSpeech(Utf8ToWString(subtitle)));
         }
     }

@@ -24,6 +24,7 @@ struct InventorySnapshot {
     std::wstring apparelArmorText;
     std::wstring catText;
     std::wstring descText;
+    std::wstring soulLevelText;
     bool         favorite{false};
 };
 
@@ -117,6 +118,7 @@ static bool ReadInventorySnapshot(InventorySnapshot& snap) {
     readItemCard("ItemWeightText.text",    snap.weightText);
     readItemCard("WeaponDamageValue.text", snap.weaponDamageText);
     readItemCard("ApparelArmorValue.text", snap.apparelArmorText);
+    readItemCard("SoulLevel.text",        snap.soulLevelText);
 
     snap.valueText  = SanitizeNumericText(snap.valueText);
     snap.weightText = SanitizeNumericText(snap.weightText);
@@ -172,14 +174,19 @@ static std::wstring BuildItemAnnouncement(const InventorySnapshot& snap) {
     const std::wstring eq = FormatEquipState(snap.equipState);
     if (!eq.empty())
         msg += L", " + eq;
-    if (!snap.valueText.empty())
-        msg += L", value " + snap.valueText;
-    if (!snap.weightText.empty() && snap.weightText != L"0")
-        msg += L", weight " + snap.weightText;
-    if (!snap.weaponDamageText.empty() && snap.weaponDamageText != L"0")
+    auto isZero = [](const std::wstring& s) {
+        try { return std::stof(s) == 0.0f; } catch (...) { return s.empty(); }
+    };
+    if (!snap.weaponDamageText.empty() && !isZero(snap.weaponDamageText))
         msg += L", damage " + snap.weaponDamageText;
-    if (!snap.apparelArmorText.empty() && snap.apparelArmorText != L"0")
+    if (!snap.apparelArmorText.empty() && !isZero(snap.apparelArmorText))
         msg += L", armor " + snap.apparelArmorText;
+    if (!snap.valueText.empty() && !isZero(snap.valueText))
+        msg += L", value " + snap.valueText;
+    if (!snap.weightText.empty() && !isZero(snap.weightText))
+        msg += L", weight " + snap.weightText;
+    if (!snap.soulLevelText.empty())
+        msg += L", " + snap.soulLevelText;
     if (snap.favorite)
         msg += L", favorite";
     return msg;
@@ -200,6 +207,14 @@ static void AnnounceInventoryChangeImpl() {
     const bool sameItem    = !itemChanged && !snap.itemText.empty() && snap.itemText == g_lastInvItemName;
     const int  favInt      = snap.favorite ? 1 : 0;
     const bool favChanged  = sameItem && g_lastInvFavorite >= 0 && favInt != g_lastInvFavorite;
+
+    // Si on est dans les catégories (pas d'item), reset pour forcer la relecture au retour
+    if (snap.itemText.empty() && !g_lastInvItemAnnounce.empty()) {
+        g_lastInvItemAnnounce.clear();
+        g_lastInvItemName.clear();
+        g_lastInvItemCount = 0;
+        g_lastInvCat.clear();  // relire la catégorie quand on revient avec flèche gauche
+    }
 
     const bool firstRead = g_lastInvCat.empty() && g_lastInvItemAnnounce.empty();
     if (catChanged) {

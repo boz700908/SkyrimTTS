@@ -39,9 +39,8 @@ static std::wstring GetKeyName(std::uint32_t keyCode)
 // R (XButton) pour confirmer
 static std::wstring BuildRaceSexHints()
 {
-    static std::wstring cached;
-    if (!cached.empty()) return cached;
-    cached = L", Numpad 5 / Numpad 8: change category";
+    std::wstring cached;
+    cached = L". Ctrl Left / Right: change category";
     auto* cm = RE::ControlMap::GetSingleton();
     if (cm) {
         constexpr std::uint32_t kInvalid = 0xFF;
@@ -58,6 +57,7 @@ static std::jthread     g_raceSexPollThread;
 static std::wstring     g_lastRaceSexCat;
 static std::wstring     g_lastRaceSexRace;
 static std::wstring     g_lastRaceSexSliderLabel;
+static int              g_raceSexTickCount{0};  // compteur de ticks pour délai nom
 static double           g_lastRaceSexSliderValue{-1.0};
 static std::wstring     g_lastRaceSexName;
 static std::wstring     g_lastRaceSexRaceDesc;
@@ -76,38 +76,52 @@ static void AnnounceRaceSexChangeImpl() {
 
     std::string tmp;
 
-    // Hints de touches (lus dynamiquement depuis ControlMap)
     const std::wstring hints = BuildRaceSexHints();
     const bool firstRead = g_lastRaceSexSex < 0;
+    g_raceSexTickCount++;
 
-    // Sexe depuis les données C++ du menu (source la plus fiable)
+    // 1. Sexe depuis les données C++ (source fiable, pas le slider GFx)
     const int sex = (menu->GetRuntimeData().sex == RE::SEX::kFemale) ? 1 : 0;
     if (sex != g_lastRaceSexSex) {
-        std::wstring sexMsg = (sex == 1 ? L"Female" : L"Male") + hints;
-        if (firstRead) SpeakQueue(sexMsg); else Speak(sexMsg);
+        LOG("RaceSex: sex={} firstRead={}", sex == 1 ? "Female" : "Male", firstRead);
         g_lastRaceSexSex = sex;
+        // Ne pas lire le sexe ici — il sera lu via le slider "Sexe" ou à l'ouverture
     }
 
-    // Catégorie active (Race / Corps / Tête)
+    // 2. Catégorie active (Ethnie / Corps / Tête / sous-catégories Sourcils, Yeux, etc.)
+    bool catChanged = false;
     if (GetGFxString(movie, "_root.RaceSexMenuBaseInstance.CagetoryLockBaseInstance.CategoryInstance.List_mc.SelectedEntry.textField.text", tmp) && !tmp.empty()) {
         const std::wstring cat = ResolveUIString(movie, tmp);
         if (!cat.empty() && cat != g_lastRaceSexCat) {
-            if (firstRead) SpeakQueue(cat + hints); else Speak(cat + hints);
+            LOG("RaceSex: cat='{}' firstRead={}", WStringToUtf8(cat), firstRead);
             g_lastRaceSexCat = cat;
+            catChanged = true;
+            // Reset slider pour lire le premier slider du nouvel onglet
+            g_lastRaceSexSliderLabel.clear();
+            g_lastRaceSexSliderValue = -1.0;
+            // Lire la catégorie + hints
+            if (firstRead) SpeakQueue(cat + hints); else Speak(cat + hints);
         }
     }
 
-    // Race sélectionnée (panel étroit) + description
+    // 3. Race sélectionnée (panel étroit, onglet Ethnie uniquement)
+    // Ignorer les valeurs numériques (retournées dans les onglets Corps/Tête)
+    // Ne PAS reset la race au changement de catégorie — elle ne change pas
     if (GetGFxString(movie, "_root.RaceSexMenuBaseInstance.RaceSexPanelsInstance.PanelTwoNarrowInstance.List_mc.SelectedEntry.textField.text", tmp) && !tmp.empty()) {
-        const std::wstring race = ResolveUIString(movie, tmp);
-        if (!race.empty() && race != g_lastRaceSexRace) {
-            Speak(race);
-            g_lastRaceSexRace = race;
-            g_lastRaceSexRaceDesc.clear();
+        bool isNumeric = true;
+        for (auto c : tmp) { if (c < '0' || c > '9') { isNumeric = false; break; } }
+        if (!isNumeric) {
+            const std::wstring race = ResolveUIString(movie, tmp);
+            if (!race.empty() && race != g_lastRaceSexRace) {
+                LOG("RaceSex: race='{}' catChanged={}", WStringToUtf8(race), catChanged);
+                if (firstRead || catChanged) SpeakQueue(race); else Speak(race);
+                g_lastRaceSexRace = race;
+                g_lastRaceSexRaceDesc.clear();
+            }
         }
     }
 
-    // Description de la race — s'enchaîne après le nom sans l'interrompre
+    // 4. Description de la race — s'enchaîne après le nom
     if (GetGFxString(movie, "_root.RaceSexMenuBaseInstance.RaceSexPanelsInstance.RaceDescriptionInstance.RaceTextInstance.text", tmp) && !tmp.empty()) {
         const std::wstring desc = StripMarkupForSpeech(Utf8ToWString(tmp));
         if (!desc.empty() && desc != g_lastRaceSexRaceDesc) {
@@ -116,18 +130,36 @@ static void AnnounceRaceSexChangeImpl() {
         }
     }
 
-    // Slider actif : label + valeur (panel large)
+    // 5. Slider actif (panel large)
     std::wstring sliderLabel;
     if (GetGFxString(movie, "_root.RaceSexMenuBaseInstance.RaceSexPanelsInstance.PanelTwoWideInstance.List_mc.SelectedEntry.textField.text", tmp) && !tmp.empty())
         sliderLabel = ResolveUIString(movie, tmp);
     double sliderVal = -1.0;
     GetGFxNumber(movie, "_root.RaceSexMenuBaseInstance.RaceSexPanelsInstance.PanelTwoWideInstance.List_mc.SelectedEntry.SliderInstance.position", sliderVal);
 
+    // Ignorer les sliders parasites ("Selected Text" apparaît à l'init)
+    if (!sliderLabel.empty() && WStringToUtf8(sliderLabel) == "Selected Text") {
+        sliderLabel.clear();
+    }
+
+    // Slider "Sexe"/"Sex" : lire Male/Female au lieu de 0/1
+    bool isSexSlider = false;
+    if (!sliderLabel.empty()) {
+        std::string lbl = WStringToUtf8(sliderLabel);
+        if (lbl == "Sexe" || lbl == "Sex") isSexSlider = true;
+    }
+
     if (!sliderLabel.empty() && (sliderLabel != g_lastRaceSexSliderLabel || sliderVal != g_lastRaceSexSliderValue)) {
-        std::wstring msg = sliderLabel;
-        if (sliderVal >= 0.0)
-            msg += L", " + std::to_wstring(static_cast<int>(std::round(sliderVal)));
-        Speak(msg);
+        std::wstring msg;
+        if (isSexSlider) {
+            msg = (sex == 1) ? L"Female" : L"Male";
+        } else {
+            msg = sliderLabel;
+            if (sliderVal >= 0.0)
+                msg += L", " + std::to_wstring(static_cast<int>(std::round(sliderVal)));
+        }
+        LOG("RaceSex: slider='{}' val={:.1f} -> '{}'", WStringToUtf8(sliderLabel), sliderVal, WStringToUtf8(msg));
+        if (firstRead || catChanged) SpeakQueue(msg); else Speak(msg);
         g_lastRaceSexSliderLabel = sliderLabel;
         g_lastRaceSexSliderValue = sliderVal;
     }
@@ -139,28 +171,16 @@ static void AnnounceRaceSexChangeImpl() {
         movie->GetVariable(&nameVisVal, "_root.RaceSexMenuBaseInstance.RaceSexPanelsInstance.NameEntryInstance._visible") &&
         ((nameVisVal.IsBool() && nameVisVal.GetBool()) || (nameVisVal.IsNumber() && nameVisVal.GetNumber() > 0.5));
     GetGFxString(movie, "_root.RaceSexMenuBaseInstance.RaceSexPanelsInstance.NameEntryInstance.TextInputInstance.text", nameTmp);
-    if (nameFieldVisible) {
-        if (!g_lastRaceSexNameEntryActive) {
-            // Première fois qu'on voit le champ → annoncer l'invite + touche de confirmation
-            auto* cm = RE::ControlMap::GetSingleton();
-            const std::uint32_t confirmKey = cm
-                ? cm->GetMappedKey("Accept", RE::INPUT_DEVICE::kKeyboard, RE::UserEvents::INPUT_CONTEXT_ID::kMenuMode)
-                : 0xFF;
-            std::wstring confirmHint = (confirmKey != 0xFF) ? L", " + GetKeyName(confirmKey) + L": Confirm" : L"";
-            Speak(L"Enter your name" + confirmHint);
-            g_lastRaceSexNameEntryActive = true;
-            g_lastRaceSexName.clear();
+    // Le champ de nom est toujours "visible" en GFx. On ne peut pas détecter
+    // quand le joueur entre en mode saisie de nom. On lit simplement les
+    // caractères tapés quand le texte change, sans annonce "Enter your name".
+    if (!nameTmp.empty()) {
+        const std::wstring name = Utf8ToWString(nameTmp);
+        if (name != g_lastRaceSexName) {
+            LOG("RaceSex: name='{}'", nameTmp);
+            Speak(name);
+            g_lastRaceSexName = name;
         }
-        // Vocaliser les caractères tapés au fur et à mesure
-        if (!nameTmp.empty()) {
-            const std::wstring name = Utf8ToWString(nameTmp);
-            if (name != g_lastRaceSexName) {
-                Speak(name);
-                g_lastRaceSexName = name;
-            }
-        }
-    } else {
-        g_lastRaceSexNameEntryActive = false;
     }
 }
 

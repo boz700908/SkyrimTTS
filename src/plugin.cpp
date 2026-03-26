@@ -15,6 +15,14 @@
 #include "menu_favorites.h"
 #include "menu_uilistmenu.h"
 #include "menu_map.h"
+#include "menu_barter.h"
+#include "menu_crafting.h"
+#include "menu_loading.h"
+#include "menu_sleepwait.h"
+#include "menu_gift.h"
+#include "menu_book.h"
+#include "menu_training.h"
+#include "menu_console.h"
 #include "scanner.h"
 #include "autowalk.h"
 
@@ -29,6 +37,7 @@ public:
         // Log only unhandled menus (light diagnostics)
         if (e->menuName != RE::RaceSexMenu::MENU_NAME &&
             e->menuName != RE::ContainerMenu::MENU_NAME &&
+            e->menuName != RE::BarterMenu::MENU_NAME &&
             e->menuName != RE::InventoryMenu::MENU_NAME &&
             e->menuName != RE::MainMenu::MENU_NAME &&
             e->menuName != RE::TitleSequenceMenu::MENU_NAME &&
@@ -41,6 +50,11 @@ public:
             e->menuName != RE::TutorialMenu::MENU_NAME &&
             e->menuName != RE::DialogueMenu::MENU_NAME &&
             e->menuName != RE::FavoritesMenu::MENU_NAME &&
+            e->menuName != RE::LoadingMenu::MENU_NAME &&
+            e->menuName != RE::SleepWaitMenu::MENU_NAME &&
+            e->menuName != RE::GiftMenu::MENU_NAME &&
+            e->menuName != RE::BookMenu::MENU_NAME &&
+            e->menuName != RE::TrainingMenu::MENU_NAME &&
             e->menuName != UILIST_MENU_NAME) {
             LOG("Menu {} : {}", e->opening ? "OPEN" : "CLOSE", e->menuName.c_str());
         }
@@ -67,8 +81,9 @@ public:
                 g_lastRaceSexName.clear();
                 g_lastRaceSexRaceDesc.clear();
                 g_lastRaceSexSex = -1;
-                g_lastRaceSexNameEntryActive = false;
-                Speak(L"Character creation" + BuildRaceSexHints());
+                g_lastRaceSexNameEntryActive = true;  // true au départ pour ne pas lire "Enter your name" à l'ouverture
+                g_raceSexTickCount = 0;
+                Speak(L"Character creation");
                 QueueRaceSexRead();
                 StartRaceSexPolling();
             } else {
@@ -106,6 +121,133 @@ public:
             } else {
                 g_containerOpen.store(false);
                 StopContainerPolling();
+            }
+        }
+
+        if (e->menuName == RE::BarterMenu::MENU_NAME) {
+            LOG("BarterMenu event: opening={}", e->opening);
+            if (e->opening) {
+                g_barterOpen.store(true);
+                g_lastBarterCat.clear();
+                g_lastBarterItemAnnounce.clear();
+                g_lastBarterSide.clear();
+                g_lastBarterDesc.clear();
+                Speak(L"Barter menu open");
+                QueueBarterRead();
+                StartBarterPolling();
+            } else {
+                g_barterOpen.store(false);
+                StopBarterPolling();
+            }
+        }
+
+        if (e->menuName == RE::CraftingMenu::MENU_NAME) {
+            if (e->opening) {
+                g_craftingOpen.store(true);
+                g_lastCraftingCat.clear();
+                g_lastCraftingItemAnnounce.clear();
+                g_lastCraftingDesc.clear();
+                g_craftingFirstReadDone = false;
+                g_craftingModeDetected = false;
+                g_craftingIsSimpleList = false;
+                SpeakQueue(L"Crafting menu open");
+                StartCraftingPolling();
+            } else {
+                g_craftingOpen.store(false);
+                StopCraftingPolling();
+            }
+        }
+
+        if (e->menuName == RE::Console::MENU_NAME) {
+            if (e->opening) {
+                g_consoleOpen.store(true);
+                g_lastConsoleEntry.clear();
+                g_lastConsoleMessage.clear();
+                Speak(L"Console");
+            } else {
+                g_consoleOpen.store(false);
+            }
+        }
+
+        if (e->menuName == RE::LoadingMenu::MENU_NAME) {
+            if (e->opening) {
+                g_loadingOpen.store(true);
+                g_lastLoadingText.clear();
+            } else {
+                g_loadingOpen.store(false);
+            }
+        }
+
+        if (e->menuName == RE::SleepWaitMenu::MENU_NAME) {
+            if (e->opening) {
+                g_sleepWaitOpen.store(true);
+                g_lastSleepWaitHours.clear();
+                g_lastSleepWaitTime.clear();
+                auto* task = SKSE::GetTaskInterface();
+                if (task) {
+                    task->AddUITask([]() {
+                        auto ui = RE::UI::GetSingleton();
+                        if (!ui) return;
+                        auto menu = ui->GetMenu(RE::SleepWaitMenu::MENU_NAME);
+                        if (!menu) return;
+                        RE::GFxMovieView* movie = menu->uiMovie.get();
+                        if (!movie) return;
+                        AnnounceSleepWaitOpen(movie);
+                    });
+                }
+            } else {
+                g_sleepWaitOpen.store(false);
+            }
+        }
+
+        if (e->menuName == RE::GiftMenu::MENU_NAME) {
+            if (e->opening) {
+                g_giftOpen.store(true);
+                g_lastGiftCat.clear();
+                g_lastGiftItemAnnounce.clear();
+                g_lastGiftItemName.clear();
+                g_lastGiftItemCount = 0;
+                Speak(L"Gift menu open");
+                QueueGiftRead();
+                StartGiftPolling();
+            } else {
+                g_giftOpen.store(false);
+                StopGiftPolling();
+            }
+        }
+
+        if (e->menuName == RE::TrainingMenu::MENU_NAME) {
+            if (e->opening) {
+                g_trainingOpen.store(true);
+                g_lastTrainingCost.clear();
+                auto* task = SKSE::GetTaskInterface();
+                if (task) {
+                    task->AddUITask([]() {
+                        auto ui = RE::UI::GetSingleton();
+                        if (!ui) return;
+                        auto menu = ui->GetMenu(RE::TrainingMenu::MENU_NAME);
+                        if (!menu) return;
+                        RE::GFxMovieView* movie = menu->uiMovie.get();
+                        if (!movie) return;
+                        AnnounceTrainingOpen(movie);
+                    });
+                }
+            } else {
+                g_trainingOpen.store(false);
+            }
+        }
+
+        if (e->menuName == RE::BookMenu::MENU_NAME) {
+            if (e->opening) {
+                g_bookOpen.store(true);
+                auto* task = SKSE::GetTaskInterface();
+                if (task) {
+                    task->AddUITask([]() {
+                        AnnounceBookContent();
+                    });
+                }
+            } else {
+                g_bookOpen.store(false);
             }
         }
 
@@ -257,7 +399,6 @@ public:
             } else {
                 g_mainOpen.store(false);
                 StopMainMenuPolling();
-                Speak(L"Main menu closed");
             }
         }
 
@@ -448,8 +589,75 @@ public:
                 if (navKey) QueueContainerRead();
             }
 
+            // Barter : haut/bas changent l'item, gauche/droite changent de catégorie, F switch de côté
+            if (g_barterOpen.load(std::memory_order_relaxed)) {
+                const bool navKey = (code == RE::BSKeyboardDevice::Keys::kUp)    ||
+                                    (code == RE::BSKeyboardDevice::Keys::kDown)   ||
+                                    (code == RE::BSKeyboardDevice::Keys::kLeft)   ||
+                                    (code == RE::BSKeyboardDevice::Keys::kRight)  ||
+                                    (code == RE::BSKeyboardDevice::Keys::kW)      ||
+                                    (code == RE::BSKeyboardDevice::Keys::kS)      ||
+                                    (code == RE::BSKeyboardDevice::Keys::kA)      ||
+                                    (code == RE::BSKeyboardDevice::Keys::kD);
+                if (navKey) QueueBarterRead();
+            }
+
+            // Gift menu
+            if (g_giftOpen.load(std::memory_order_relaxed)) {
+                const bool navKey = (code == RE::BSKeyboardDevice::Keys::kUp)    ||
+                                    (code == RE::BSKeyboardDevice::Keys::kDown)   ||
+                                    (code == RE::BSKeyboardDevice::Keys::kLeft)   ||
+                                    (code == RE::BSKeyboardDevice::Keys::kRight)  ||
+                                    (code == RE::BSKeyboardDevice::Keys::kW)      ||
+                                    (code == RE::BSKeyboardDevice::Keys::kS)      ||
+                                    (code == RE::BSKeyboardDevice::Keys::kA)      ||
+                                    (code == RE::BSKeyboardDevice::Keys::kD);
+                if (navKey) QueueGiftRead();
+            }
+
+            // Crafting
+            if (g_craftingOpen.load(std::memory_order_relaxed)) {
+                const bool navKey = (code == RE::BSKeyboardDevice::Keys::kUp)    ||
+                                    (code == RE::BSKeyboardDevice::Keys::kDown)   ||
+                                    (code == RE::BSKeyboardDevice::Keys::kLeft)   ||
+                                    (code == RE::BSKeyboardDevice::Keys::kRight)  ||
+                                    (code == RE::BSKeyboardDevice::Keys::kW)      ||
+                                    (code == RE::BSKeyboardDevice::Keys::kS)      ||
+                                    (code == RE::BSKeyboardDevice::Keys::kA)      ||
+                                    (code == RE::BSKeyboardDevice::Keys::kD);
+                if (navKey) {
+                    g_craftingFirstReadDone = true;  // débloquer la lecture des items
+                    QueueCraftingRead();
+                }
+            }
+
             // RaceSex : toute navigation déclenche une lecture immédiate
             if (g_raceSexOpen.load(std::memory_order_relaxed)) {
+                bool ctrl = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+                // Ctrl+Gauche/Droite = changer d'onglet (catégorie)
+                if (code == RE::BSKeyboardDevice::Keys::kLeft || code == RE::BSKeyboardDevice::Keys::kRight) {
+                    LOG("RaceSex: arrow key={} ctrl={}", code, ctrl);
+                }
+                if (ctrl && (code == RE::BSKeyboardDevice::Keys::kLeft || code == RE::BSKeyboardDevice::Keys::kRight)) {
+                    bool next = (code == RE::BSKeyboardDevice::Keys::kRight);
+                    auto* task = SKSE::GetTaskInterface();
+                    if (task) {
+                        task->AddUITask([next]() {
+                            auto* ui2 = RE::UI::GetSingleton();
+                            if (!ui2) return;
+                            auto menu = ui2->GetMenu(RE::RaceSexMenu::MENU_NAME);
+                            if (!menu || !menu->uiMovie) return;
+                            RE::GFxValue panels;
+                            if (menu->uiMovie->GetVariable(&panels, "_root.RaceSexMenuBaseInstance.RaceSexPanelsInstance")) {
+                                panels.Invoke(next ? "moveCategoriesUp" : "moveCategoriesDown", nullptr, nullptr, 0);
+                                LOG("RaceSex: invoked {} on panels", next ? "moveCategoriesUp" : "moveCategoriesDown");
+                            }
+                        });
+                    }
+                    // Laisser le temps au GFx de changer puis relire
+                    QueueRaceSexRead();
+                    continue;
+                }
                 const bool navKey = (code == RE::BSKeyboardDevice::Keys::kUp)    ||
                                     (code == RE::BSKeyboardDevice::Keys::kDown)   ||
                                     (code == RE::BSKeyboardDevice::Keys::kLeft)   ||
@@ -506,11 +714,15 @@ public:
                     MapCycleFilter();
                     continue;
                 }
+                if (code == RE::BSKeyboardDevice::Keys::kEnter) {
+                    MapFastTravel();
+                    continue;
+                }
             }
 
             // Scanner + AutoWalk (seulement hors menus)
             {
-                bool anyMenuOpen = g_invOpen.load() || g_containerOpen.load() ||
+                bool anyMenuOpen = g_invOpen.load() || g_containerOpen.load() || g_barterOpen.load() || g_craftingOpen.load() ||
                                    g_journalOpen.load() || g_magicOpen.load() ||
                                    g_mainOpen.load() || g_dialogueOpen.load() ||
                                    g_raceSexOpen.load() || g_tweenOpen.load() ||
@@ -548,9 +760,10 @@ public:
                         ScannerCycleSubcategory();
                         continue;
                     }
-                    // X = verrouiller l'ennemi le plus proche
+                    // X = verrouiller l'ennemi le plus proche, Shift+X = toggle lock-on continu
                     if (code == RE::BSKeyboardDevice::Keys::kX) {
-                        LockNearestEnemy();
+                        if (shift) ToggleLockOnEnemy();
+                        else LockNearestEnemy();
                         continue;
                     }
                     // Stop autowalk si on marche et qu'on appuie sur une touche de mouvement
@@ -566,12 +779,30 @@ public:
                 }
             }
 
+            // F = toggle caméra première/troisième personne
+            if (code == RE::BSKeyboardDevice::Keys::kF) {
+                // Délai court pour laisser le jeu changer la caméra avant de lire
+                auto* task = SKSE::GetTaskInterface();
+                if (task) {
+                    task->AddTask([]() {
+                        auto* camera = RE::PlayerCamera::GetSingleton();
+                        if (camera) {
+                            bool fp = camera->IsInFirstPerson();
+                            Speak(fp ? L"First person" : L"Third person");
+                        }
+                    });
+                }
+                // Ne pas 'continue' — laisser le jeu traiter F normalement
+            }
+
             // H = stats contextuelles (en jeu: vitals, en inventaire: or/poids)
             if (code == RE::BSKeyboardDevice::Keys::kH) {
                 if (g_invOpen.load(std::memory_order_relaxed)) {
                     AnnounceInventoryStats();
                 } else if (g_containerOpen.load(std::memory_order_relaxed)) {
                     AnnounceContainerStats();
+                } else if (g_barterOpen.load(std::memory_order_relaxed)) {
+                    AnnounceBarterStats();
                 } else {
                     AnnouncePlayerVitals();
                 }
@@ -722,9 +953,9 @@ public:
 
         // Son de kill : 3 bips descendants dans un thread séparé
         std::thread([]() {
-            Beep(1500, 100);
-            Beep(1000, 100);
-            Beep(600, 200);
+            Beep(1500, 60);
+            Beep(1000, 60);
+            Beep(600, 80);
         }).detach();
 
         return RE::BSEventNotifyControl::kContinue;
@@ -737,6 +968,77 @@ static void RegisterDeathListener() {
         static DeathListener listener;
         source->AddEventSink(&listener);
         LOG("DeathListener registered");
+    }
+}
+
+// Hit listener — bip grave quand le joueur touche un dragon à l'arc
+class HitListener : public RE::BSTEventSink<RE::TESHitEvent> {
+public:
+    RE::BSEventNotifyControl ProcessEvent(const RE::TESHitEvent* e,
+        RE::BSTEventSource<RE::TESHitEvent>*) override {
+        if (!e || !e->target || !e->cause) return RE::BSEventNotifyControl::kContinue;
+
+        // Seulement si le joueur est l'attaquant
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        if (e->cause.get() != player) return RE::BSEventNotifyControl::kContinue;
+
+        // Seulement si la cible est un dragon
+        auto* victim = e->target->As<RE::Actor>();
+        if (!victim || !IsDragon(victim)) return RE::BSEventNotifyControl::kContinue;
+
+        LOG("HitListener: player hit dragon '{}'", victim->GetDisplayFullName() ? victim->GetDisplayFullName() : "?");
+
+        // Bip aigu (bien au-dessus du son de visée)
+        std::thread([]() {
+            Beep(3000, 100);
+        }).detach();
+
+        return RE::BSEventNotifyControl::kContinue;
+    }
+};
+
+static void RegisterHitListener() {
+    auto* source = RE::ScriptEventSourceHolder::GetSingleton();
+    if (source) {
+        static HitListener listener;
+        source->AddEventSink(&listener);
+        LOG("HitListener registered");
+    }
+}
+
+// Furniture listener — debug crafting station enter/exit
+class FurnitureListener : public RE::BSTEventSink<RE::TESFurnitureEvent> {
+public:
+    RE::BSEventNotifyControl ProcessEvent(const RE::TESFurnitureEvent* e, RE::BSTEventSource<RE::TESFurnitureEvent>*) override {
+        if (!e || !e->actor || !e->targetFurniture) return RE::BSEventNotifyControl::kContinue;
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        if (e->actor.get() != player) return RE::BSEventNotifyControl::kContinue;
+
+        auto* furnRef = e->targetFurniture.get();
+        std::string furnName = furnRef ? furnRef->GetDisplayFullName() : "unknown";
+        RE::FormID furnID = furnRef ? furnRef->GetFormID() : 0;
+
+        // Get base form type
+        std::string baseType = "unknown";
+        if (furnRef && furnRef->GetBaseObject()) {
+            auto* base = furnRef->GetBaseObject();
+            baseType = std::to_string(static_cast<int>(base->GetFormType()));
+        }
+
+        bool entering = (e->type == RE::TESFurnitureEvent::FurnitureEventType::kEnter);
+        LOG("FurnitureEvent: {} furniture '{}' FormID={:08X} baseType={}",
+            entering ? "ENTER" : "EXIT", furnName, furnID, baseType);
+
+        return RE::BSEventNotifyControl::kContinue;
+    }
+};
+
+static void RegisterFurnitureListener() {
+    auto* source = RE::ScriptEventSourceHolder::GetSingleton();
+    if (source) {
+        static FurnitureListener listener;
+        source->AddEventSink(&listener);
+        LOG("FurnitureListener registered");
     }
 }
 
@@ -770,7 +1072,13 @@ SKSEPluginLoad(const SKSE::LoadInterface* skse) {
             RegisterCrosshairListener();
             RegisterActivateListener();
             RegisterDeathListener();
+            RegisterHitListener();
+            // RegisterFurnitureListener();  // DÉSACTIVÉ POUR TEST
             InstallHUDAdvanceMovieHook();
+            InstallConsoleAdvanceMovieHook();
+            InstallLoadingAdvanceMovieHook();
+            InstallSleepWaitAdvanceMovieHook();
+            InstallTrainingAdvanceMovieHook();
             StartBowAutoAimPolling();
             Speak(L"Plugin loaded");
             LOG("kDataLoaded: listeners registered");
@@ -783,7 +1091,8 @@ SKSEPluginLoad(const SKSE::LoadInterface* skse) {
         // Après chargement d'une sauvegarde : remettre SpeedMult à 100
         if (msg->type == SKSE::MessagingInterface::kPostLoadGame) {
             AutoWalkSafetyReset();
-            LOG("kPostLoadGame: autowalk safety reset");
+            RegisterShoutListener();
+            LOG("kPostLoadGame: autowalk safety reset, shout listener registered");
         }
     });
 

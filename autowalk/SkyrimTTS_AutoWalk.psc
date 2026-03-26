@@ -6,15 +6,12 @@ ReferenceAlias Property Traveler Auto
 Scene Property WalkScene Auto
 Actor Property PlayerRef Auto
 
-; === Debug: trace on load to verify script is attached ===
 Event OnInit()
     Debug.Trace("SkyrimTTS:AutoWalk - Script loaded!")
     if !self.IsRunning()
         self.Start()
         Debug.Trace("SkyrimTTS:AutoWalk - Quest force-started")
     endIf
-    Debug.Notification("AutoWalk charge! Appuie sur K pour tester")
-    RegisterForKey(37)  ; 37 = touche K
 EndEvent
 
 ; === Internal state ===
@@ -53,33 +50,6 @@ Function OnStopWalking()
     endIf
 EndFunction
 
-; === Test: appui sur K ===
-Event OnKeyDown(int keyCode)
-    if keyCode == 37  ; K
-        if IsWalking
-            Debug.Notification("AutoWalk: arret!")
-            Debug.Trace("SkyrimTTS:AutoWalk - Key stop")
-            StopWalkingInternal(true)
-        else
-            Debug.Notification("AutoWalk: marche!")
-            Debug.Trace("SkyrimTTS:AutoWalk - Key start")
-            ; Place a marker 500 units ahead
-            Form xmarkerForm = Game.GetForm(0x10)  ; XMarkerHeading
-            if xmarkerForm != None
-                ObjectReference marker = PlayerRef.PlaceAtMe(xmarkerForm)
-                if marker != None
-                    float angle = PlayerRef.GetAngleZ()
-                    float offsetX = 500.0 * Math.Sin(angle)
-                    float offsetY = 500.0 * Math.Cos(angle)
-                    marker.MoveTo(PlayerRef, offsetX, offsetY, 0.0)
-                    Debug.Trace("SkyrimTTS:AutoWalk - Marker pos=" + marker.GetPositionX() + "," + marker.GetPositionY() + "," + marker.GetPositionZ())
-                    StartWalkToRef(marker, 100.0)
-                endIf
-            endIf
-        endIf
-    endIf
-EndEvent
-
 ; === Update: check if we arrived ===
 Event OnUpdate()
     if IsWalking
@@ -94,7 +64,11 @@ Function CheckArrival()
         return
     endIf
 
-    ; Combat check handled by C++ (hostile enemies only, not foxes/rabbits)
+    if PlayerRef.IsInCombat()
+        Debug.Trace("SkyrimTTS:AutoWalk - Combat detected, stopping")
+        StopWalkingInternal(true)
+        return
+    endIf
 
     float dist = PlayerRef.GetDistance(CurrentTarget)
     Debug.Trace("SkyrimTTS:AutoWalk - Check: dist=" + dist)
@@ -111,7 +85,8 @@ Function StopWalkingInternal(bool abNotify)
     UnregisterForUpdate()
     ; Clear DstMarker so the Travel package deactivates
     DstMarker.Clear()
-    ; Restore player control
+    ; Restore player control and normal speed
+    PlayerRef.SetActorValue("SpeedMult", 100.0)
     Game.SetPlayerAIDriven(false)
     PlayerRef.EvaluatePackage()
     CurrentTarget = None
@@ -140,10 +115,12 @@ Function StartWalkToRef(ObjectReference target, float stopDist)
     DstMarker.ForceRefTo(target)
     Debug.Trace("SkyrimTTS:AutoWalk - DstMarker set to " + DstMarker.GetReference())
 
+    ; Boost speed during autowalk
+    PlayerRef.SetActorValue("SpeedMult", 250.0)
+
     ; Take away player control, let AI run the Travel package
     Game.SetPlayerAIDriven(true)
     PlayerRef.EvaluatePackage()
-
     Debug.Trace("SkyrimTTS:AutoWalk - AI driven, EvaluatePackage called")
 
     IsWalking = true
@@ -155,4 +132,27 @@ Function ForceStop()
     if IsWalking
         StopWalkingInternal(true)
     endIf
+EndFunction
+
+; === Called from C++ via DispatchMethodCall for fast travel ===
+Function OnFastTravel(int aiFormID)
+    Form targetForm = Game.GetForm(aiFormID)
+    if targetForm == None
+        Debug.Trace("SkyrimTTS:FastTravel - Invalid FormID: " + aiFormID)
+        return
+    endIf
+
+    ObjectReference targetRef = targetForm as ObjectReference
+    if targetRef == None
+        Debug.Trace("SkyrimTTS:FastTravel - Not an ObjectReference: " + aiFormID)
+        return
+    endIf
+
+    ; Stop autowalk if active
+    if IsWalking
+        StopWalkingInternal(false)
+    endIf
+
+    Debug.Trace("SkyrimTTS:FastTravel - Traveling to FormID: " + aiFormID)
+    Game.FastTravel(targetRef)
 EndFunction

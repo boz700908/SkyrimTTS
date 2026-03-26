@@ -49,15 +49,21 @@ Manually: open the file Data\plugins.txt (or %LOCALAPPDATA%\Skyrim Special Editi
 
 ---
 
+## First Steps — Walkthrough Guide
+
+New to Skyrim? Read our detailed **[First Steps Guide](GUIDE.md)** — a complete walkthrough from character creation through the Golden Claw quest, with every step explained using accessibility features.
+
+---
+
 ## Getting Started — Character Creation
 
 When you start the game, after the intro cinematic, you arrive at the character creation menu.
 
 NVDA announces: "Character creation"
 
-- Numpad 5 or 8: switch tab (Race, Sex, Appearance...)
+- Ctrl + Left / Right: switch tab (Race, Body, Head, and sub-categories)
 - Up / Down: navigate options within a tab
-- Left / Right: adjust a slider value
+- Left / Right: adjust a slider value or change sex (Male/Female)
 - R: confirm / validate
 
 ---
@@ -108,7 +114,7 @@ NVDA announces: "Journal open"
 
 - Up / Down: change quest or entry
 - Enter: activate or deactivate the selected quest (NVDA announces "active" or "inactive")
-- Numpad 5 or 8: switch tab (Quests, System, etc.)
+- Ctrl + Left / Right: switch tab (Quests, System, etc.)
 
 When you activate or deactivate a quest in the journal, it is reflected in the scanner's Quests category.
 
@@ -140,10 +146,17 @@ Up / Down to choose your response.
 ## HUD (in game)
 
 - Object, NPC, or door in crosshair: name and action vocalized automatically (e.g. "Open door")
-- Notifications (quest updates, level up...): vocalized automatically
+- Notifications (quest updates, level up, skill increases): vocalized automatically
+- Quest objective updates: the specific objective text is read (e.g., "Find the Golden Claw"), not just "Quest updated"
+- Item pickup messages: "Gold added", "Item added", etc.
 - Subtitles: vocalized automatically
 - New location discovered: vocalized automatically
+- Stealth status: announces Hidden / Detected / Caution when sneaking
+- Crouch toggle: announces "Sneaking" / "Standing"
+- Camera view: announces "First person" / "Third person" when pressing F
+- Arrow info: arrow type and count announced when equipping a bow
 - H: announces current Health / Magicka / Stamina
+- Tutorial hints: beginning-of-game hints vocalized with key names
 
 ---
 
@@ -167,6 +180,69 @@ Left / Right to choose between Health, Magicka or Stamina. Enter to confirm.
 
 Game messages (confirmations, warnings) are vocalized automatically.
 Up / Down to navigate buttons, Enter to confirm.
+
+---
+
+## Barter Menu (Merchant)
+
+NVDA announces: "Barter menu open"
+
+- Up / Down: change item (name, value, weight, damage, armor, description vocalized)
+- Left / Right: change category or switch between vendor/player side
+- H: announces player gold, vendor gold, and carry weight
+
+---
+
+## Gift Menu (Companion Exchange)
+
+Full vocalization for giving/taking items with companions — same controls as container.
+
+---
+
+## Crafting Stations
+
+All crafting stations are fully accessible:
+- **Forge** and **Tanning Rack**: category navigation with Ctrl + Left/Right, items with Up/Down
+- **Grindstone** and **Workbench**: simple list with Up/Down
+- **Smelter**, **Enchanting Table**, **Alchemy Lab**: full vocalization
+
+Recipe name, quantity produced, required materials, and damage/armor stats are all vocalized.
+
+---
+
+## Book Menu
+
+When opening a book, NVDA reads: the title, the full content, and any spell or skill learned.
+
+---
+
+## Training Menu
+
+When talking to a trainer, NVDA reads: skill name, trainer level, training count, cost per session, and your current gold. Updated after each training session.
+
+---
+
+## Sleep / Wait Menu
+
+NVDA reads: the question (rest or wait?), current time, and hours selected as you adjust the slider.
+
+---
+
+## Loading Screen
+
+Loading tips and hints are vocalized automatically during loading screens.
+
+---
+
+## Developer Console (~)
+
+The developer console is now accessible. Typed text and command results are read by NVDA. Useful for advanced commands like `setstage`.
+
+---
+
+## Soul Gems
+
+Soul gems in inventory/container/barter display their soul level (e.g., "Grand", "Common"). Empty gems show no soul level.
 
 ---
 
@@ -226,7 +302,7 @@ Autowalk lets you walk automatically toward a selected scanner object or quest t
 
 ## Enemy Lock (X key)
 
-Press X to rotate your camera toward the nearest hostile enemy. NVDA announces the enemy name and distance.
+Press X to rotate your camera toward the nearest hostile enemy. NVDA announces the enemy name and distance. Press **Shift + X** to toggle permanent camera lock onto the enemy. Press **Shift + X** again to unlock.
 
 - Works only during combat
 - Ignores dead enemies, companions, and disabled actors
@@ -247,6 +323,12 @@ When you draw your bow (hold the attack button), the plugin automatically:
 
 When you release the bow, tracking stops. When any enemy is killed by the player (bow, melee, magic), a kill sound plays (3 descending beeps).
 
+### Dragon combat
+
+- Auto-aim prioritizes hostile dragons over closer non-dragon enemies (deer, foxes, etc.)
+- High-pitched beep when your arrow hits a dragon
+- Automatic voice announcements: "Dragon in flight" / "Dragon landed" during dragon combat
+
 ---
 
 ## Map Menu (M key)
@@ -259,13 +341,16 @@ The map is fully accessible with keyboard navigation.
 - Page Up: previous map marker
 - Home: announce full details of current marker (type, distance, direction, fast travel availability)
 - Shift + Home: set current marker as reference point (all distances recalculated from this marker instead of the player). Press again to clear the reference
-- End: cycle filters (All, Discovered, Undiscovered)
+- End: cycle filters (All, Discovered, Undiscovered, Quest Targets)
+- Enter (twice): fast travel to selected marker (first press asks for confirmation, second confirms)
 
 ### Map features
 
 - All map markers are listed with name, type (City, Cave, Fort...), distance and direction (north, south, east...)
 - Mouse hover: when you move the mouse over a marker on the map, NVDA reads its name
-- Filters let you see only discovered or undiscovered locations
+- Filters let you see only discovered or undiscovered locations, or quest targets only
+- Quest targets filter shows active quest objectives as map markers
+- Fast travel via Enter key — no need to click on the map visually
 - Reference point: set any marker as reference to measure distances between locations
 
 ---
@@ -323,12 +408,20 @@ Word Walls (where you learn dragon shouts) appear in the Activators category of 
 - Page Up: previous marker
 - Home: marker details
 - Shift + Home: set / clear reference point
-- End: cycle filters
+- End: cycle filters (All, Discovered, Undiscovered, Quest Targets)
+- Enter (twice): fast travel
 
 ### In journal (J key)
 
 - Up / Down: change quest
 - Enter: activate / deactivate quest
+
+### Character creation
+
+- Ctrl + Left / Right: switch tab
+- Up / Down: navigate options
+- Left / Right: adjust slider / change sex
+- R: confirm
 
 ---
 
