@@ -2,6 +2,7 @@
 #include "menu_inventory.h"
 #include "menu_container.h"
 #include "menu_dialogue.h"
+#include "menu_mcm.h"
 #include "menu_journal.h"
 #include "menu_levelup.h"
 #include "menu_magic.h"
@@ -270,6 +271,7 @@ public:
                     });
                 }
                 g_journalOpen.store(false);
+                g_mcmOpen.store(false);
                 StopJournalPolling();
             }
         }
@@ -353,6 +355,7 @@ public:
             if (e->opening) {
                 g_favOpen.store(true);
                 g_lastFavItemAnnounce.clear();
+                g_lastFavCategory.clear();
                 Speak(L"Favorites");
                 QueueFavRead();
                 StartFavPolling();
@@ -506,7 +509,7 @@ public:
                 QueueMainMenuRead();
             }
 
-            // Journal : gauche/droite changent d'onglet, haut/bas naviguent dans la liste
+            // Journal / MCM : navigation clavier
             if (g_journalOpen.load(std::memory_order_relaxed)) {
                 const bool navKey = (code == RE::BSKeyboardDevice::Keys::kUp)    ||
                                     (code == RE::BSKeyboardDevice::Keys::kDown)   ||
@@ -515,7 +518,10 @@ public:
                                     (code == RE::BSKeyboardDevice::Keys::kW)      ||
                                     (code == RE::BSKeyboardDevice::Keys::kS)      ||
                                     (code == RE::BSKeyboardDevice::Keys::kA)      ||
-                                    (code == RE::BSKeyboardDevice::Keys::kD);
+                                    (code == RE::BSKeyboardDevice::Keys::kD)      ||
+                                    (code == RE::BSKeyboardDevice::Keys::kEnter)  ||
+                                    (code == RE::BSKeyboardDevice::Keys::kTab)    ||
+                                    (code == RE::BSKeyboardDevice::Keys::kEscape);
                 if (navKey) QueueJournalRead();
             }
 
@@ -718,6 +724,10 @@ public:
                     MapFastTravel();
                     continue;
                 }
+                if (code == RE::BSKeyboardDevice::Keys::kP) {
+                    MapPlaceCustomMarker();
+                    continue;
+                }
             }
 
             // Scanner + AutoWalk (seulement hors menus)
@@ -807,6 +817,17 @@ public:
                     AnnouncePlayerVitals();
                 }
                 continue;
+            }
+
+            // Tri SkyUI (touches 1-4) dans inventaire/conteneur/marchand
+            if (g_skyuiMode.load(std::memory_order_relaxed) &&
+                (g_invOpen.load(std::memory_order_relaxed) || g_containerOpen.load(std::memory_order_relaxed) || g_barterOpen.load(std::memory_order_relaxed))) {
+                // col 2 = itemNameColumn (state1=nom, state2=équipé, state3=volé, state4=enchanté)
+                // col 4 = weightColumn, col 5 = valueColumn
+                if (code == RE::BSKeyboardDevice::Keys::kNum1) { SkyUISortColumn(2, 2, L"Sort by equipped"); continue; }
+                if (code == RE::BSKeyboardDevice::Keys::kNum2) { SkyUISortColumn(2, 1, L"Sort by name"); continue; }
+                if (code == RE::BSKeyboardDevice::Keys::kNum3) { SkyUISortColumn(4, 1, L"Sort by weight"); continue; }
+                if (code == RE::BSKeyboardDevice::Keys::kNum4) { SkyUISortColumn(5, 1, L"Sort by value"); continue; }
             }
 
             // Inventaire
@@ -951,12 +972,8 @@ public:
         const char* name = victim->GetDisplayFullName();
         LOG("DeathListener: killed '{}'", name ? name : "?");
 
-        // Son de kill : 3 bips descendants dans un thread séparé
-        std::thread([]() {
-            Beep(1500, 60);
-            Beep(1000, 60);
-            Beep(600, 80);
-        }).detach();
+        // Son de kill custom
+        PlaySoundOneShot(g_soundEnemyDeathID, g_volumeKill);
 
         return RE::BSEventNotifyControl::kContinue;
     }
@@ -988,10 +1005,8 @@ public:
 
         LOG("HitListener: player hit dragon '{}'", victim->GetDisplayFullName() ? victim->GetDisplayFullName() : "?");
 
-        // Bip aigu (bien au-dessus du son de visée)
-        std::thread([]() {
-            Beep(3000, 100);
-        }).detach();
+        // Son de touche dragon custom
+        PlaySoundOneShot(g_soundDragonHitID, g_volumeDragonHit);
 
         return RE::BSEventNotifyControl::kContinue;
     }
@@ -1057,6 +1072,7 @@ SKSEPluginLoad(const SKSE::LoadInterface* skse) {
 
     LOG("SkyrimNVDA starting");
     LOG("CWD: {}", std::filesystem::current_path().string());
+    LoadINISettings();
 
     SKSE::GetMessagingInterface()->RegisterListener([](SKSE::MessagingInterface::Message* msg) {
         if (!msg) return;
@@ -1068,6 +1084,7 @@ SKSEPluginLoad(const SKSE::LoadInterface* skse) {
                 LOG("nvdaController OK — NVDA is running");
             }
             LoadTranslationFile(); // fallback pour les clés absentes du BSScaleformTranslator
+            DetectSkyUIFromPlugin();
             RegisterMenuListener();
             RegisterCrosshairListener();
             RegisterActivateListener();

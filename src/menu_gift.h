@@ -3,10 +3,9 @@
 // VOCALISATION MENU CADEAU (donner/prendre objets à un compagnon) - DEBUT
 
 // GFx paths (from GiftMenu.as — hérite d'ItemMenu, même structure que inventaire/conteneur):
-// Item sélectionné : _root.Menu_mc.InventoryLists_mc.ItemsList.selectedEntry.text
-// Catégorie :        _root.Menu_mc.InventoryLists_mc.CategoriesList.centeredEntry.text
-// Label cadeau :     _root.Menu_mc.InventoryLists_mc.CategoriesList._parent.CategoryLabel.textField.text
-// ItemCard :         _root.Menu_mc.ItemCardFadeHolder_mc.ItemCard_mc.*
+// Vanilla:  _root.Menu_mc.InventoryLists_mc.ItemsList / CategoriesList.centeredEntry
+// SkyUI:    _root.Menu_mc.inventoryLists.itemList / categoryList.selectedEntry
+// ItemCard: Vanilla: ItemCardFadeHolder_mc.ItemCard_mc / SkyUI: itemCard
 
 static std::atomic_bool g_giftOpen{false};
 static std::atomic_bool g_giftPendingUIRead{false};
@@ -14,6 +13,8 @@ static std::jthread     g_giftPollThread;
 static std::wstring     g_lastGiftCat;
 static std::wstring     g_lastGiftItemAnnounce;
 static std::wstring     g_lastGiftItemName;
+static bool             g_giftQuantityOpen{false};
+static int              g_lastGiftQuantity{0};
 static int              g_lastGiftItemCount{0};
 
 struct GiftSnapshot {
@@ -37,24 +38,35 @@ static bool ReadGiftSnapshot(GiftSnapshot& snap) {
     RE::GFxMovieView* movie = menu->uiMovie.get();
     if (!movie) return false;
 
+    const bool skyui = g_skyuiMode.load(std::memory_order_relaxed);
+
+    const char* itemTextP  = skyui ? "_root.Menu_mc.inventoryLists.itemList.selectedEntry.text"
+                                   : "_root.Menu_mc.InventoryLists_mc.ItemsList.selectedEntry.text";
+    const char* itemCountP = skyui ? "_root.Menu_mc.inventoryLists.itemList.selectedEntry.count"
+                                   : "_root.Menu_mc.InventoryLists_mc.ItemsList.selectedEntry.count";
+    const char* itemEquipP = skyui ? "_root.Menu_mc.inventoryLists.itemList.selectedEntry.equipState"
+                                   : "_root.Menu_mc.InventoryLists_mc.ItemsList.selectedEntry.equipState";
+    const char* catTextP   = skyui ? "_root.Menu_mc.inventoryLists.categoryList.selectedEntry.text"
+                                   : "_root.Menu_mc.InventoryLists_mc.CategoriesList.centeredEntry.text";
+
     std::string tmp;
     double num = 0.0;
 
-    if (GetGFxString(movie, "_root.Menu_mc.InventoryLists_mc.ItemsList.selectedEntry.text", tmp) && !tmp.empty())
+    if (GetGFxString(movie, itemTextP, tmp) && !tmp.empty())
         snap.itemText = ResolveUIString(movie, tmp);
-    if (GetGFxNumber(movie, "_root.Menu_mc.InventoryLists_mc.ItemsList.selectedEntry.count", num))
+    if (GetGFxNumber(movie, itemCountP, num))
         snap.count = static_cast<int>(num);
-    if (GetGFxNumber(movie, "_root.Menu_mc.InventoryLists_mc.ItemsList.selectedEntry.equipState", num))
+    if (GetGFxNumber(movie, itemEquipP, num))
         snap.equipState = static_cast<int>(num);
-    if (GetGFxString(movie, "_root.Menu_mc.InventoryLists_mc.CategoriesList.centeredEntry.text", tmp) && !tmp.empty())
+    if (GetGFxString(movie, catTextP, tmp) && !tmp.empty())
         snap.catText = ResolveUIString(movie, tmp);
 
     // ItemCard values
     auto readItemCard = [&](const char* field, std::wstring& out) {
         std::string s;
         const char* prefixes[] = {
-            "_root.Menu_mc.ItemCardFadeHolder_mc.ItemCard_mc.",
-            "_root.Menu_mc.ItemCard_mc.",
+            skyui ? "_root.Menu_mc.itemCard." : "_root.Menu_mc.ItemCardFadeHolder_mc.ItemCard_mc.",
+            skyui ? "_root.Menu_mc.itemCardFadeHolder.ItemCard_mc." : "_root.Menu_mc.ItemCard_mc.",
             "_root.ItemCard_mc."
         };
         for (auto pfx : prefixes) {
@@ -101,6 +113,45 @@ static std::wstring BuildGiftItemAnnouncement(const GiftSnapshot& snap) {
 
 static void AnnounceGiftChangeImpl() {
     if (!g_giftOpen.load()) return;
+
+    // Vérifier le slider de quantité
+    {
+        auto ui = RE::UI::GetSingleton();
+        auto menu = ui ? ui->GetMenu(RE::GiftMenu::MENU_NAME) : nullptr;
+        auto* movie = (menu && menu->uiMovie) ? menu->uiMovie.get() : nullptr;
+        if (movie) {
+            const bool skyui = g_skyuiMode.load(std::memory_order_relaxed);
+            const char* sliderPath = skyui
+                ? "_root.Menu_mc.itemCardFadeHolder.ItemCard_mc.QuantitySlider_mc.value"
+                : "_root.Menu_mc.ItemCardFadeHolder_mc.ItemCard_mc.QuantitySlider_mc.value";
+            const char* sliderAlphaPath = skyui
+                ? "_root.Menu_mc.itemCardFadeHolder.ItemCard_mc.QuantitySlider_mc._alpha"
+                : "_root.Menu_mc.ItemCardFadeHolder_mc.ItemCard_mc.QuantitySlider_mc._alpha";
+
+            double alpha = 0.0;
+            GetGFxNumber(movie, sliderAlphaPath, alpha);
+            bool sliderVisible = (alpha >= 50.0);
+
+            if (sliderVisible) {
+                double val = 0.0;
+                GetGFxNumber(movie, sliderPath, val);
+                int qty = static_cast<int>(val);
+                if (!g_giftQuantityOpen) {
+                    g_giftQuantityOpen = true;
+                    g_lastGiftQuantity = qty;
+                    Speak(L"Quantity: " + std::to_wstring(qty));
+                } else if (qty != g_lastGiftQuantity) {
+                    g_lastGiftQuantity = qty;
+                    Speak(std::to_wstring(qty));
+                }
+                return;
+            } else if (g_giftQuantityOpen) {
+                g_giftQuantityOpen = false;
+                g_lastGiftQuantity = 0;
+            }
+        }
+    }
+
     GiftSnapshot snap;
     if (!ReadGiftSnapshot(snap)) return;
 

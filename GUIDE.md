@@ -9,7 +9,8 @@ A step-by-step walkthrough for blind players using SkyrimNVDA and the Accessibil
 Make sure you have:
 - NVDA running before launching the game
 - The game launched through `skse64_loader.exe` (not the normal Skyrim launcher)
-- The SkyrimNVDA plugin and Dio's Accessibility mod installed
+- The SkyrimNVDA plugin installed
+- Skyrim Accessibility mod by Dio Kyrie installed — download the latest release at https://github.com/DioKyrie-Git/SkyrimAccessibility/releases
 
 When the game starts, NVDA will automatically begin reading menus and HUD elements.
 
@@ -73,12 +74,16 @@ When the cart arrives at Helgen, an imperial soldier named Hadvar calls out name
 
 NVDA announces: **"Character creation"** followed by navigation instructions. You must create your character before the story continues.
 
+### Important — How Character Creation Works
+
+The options in the character creation menu are **not selectable items** — you don't need to press Enter or confirm each one individually. Simply browse through the tabs, move your cursor to the option you want, and adjust it. Nothing is "locked in" until you press **R**. When you are happy with your choices across all tabs, press **R once** to confirm everything at once.
+
 ### How to Navigate
 
 - **Ctrl + Right / Left arrow**: Switch between tabs (Race, Body, Head, and sub-categories like Eyes, Mouth, Scars...)
 - **Up / Down arrows**: Navigate through options within the current tab
 - **Left / Right arrows**: Adjust slider values or change selections (like sex: Male/Female)
-- **R**: Confirm your character when you're done
+- **R**: Confirm your entire character when you're done with all tabs
 
 ### What to Choose
 
@@ -97,17 +102,19 @@ Don't spend too long here — none of the appearance options affect gameplay. Ju
 
 ## Part 3 — The Dragon Attack and Escaping Helgen
 
-Once you confirm your character, a massive dragon — **Alduin** — attacks the town. Chaos erupts with fire and destruction everywhere.
+Once you confirm your character, a massive dragon — **Alduin** — attacks the town. Chaos erupts with fire and destruction everywhere. **Do not touch anything** — wait until the dragon attack scene plays out and your character is free to move.
 
-### The Skip Intro Prompt
+### Skipping the Intro (Recommended)
 
-Dio's accessibility mod will display a **message box** asking if you want to skip the intro. NVDA will read this prompt. **We strongly recommend choosing Yes.** The intro sequence requires jumping from roof to roof and navigating through collapsing buildings, which is very difficult without sight. Skipping it places you directly at the entrance to Helgen Keep with basic equipment.
+The intro sequence requires jumping from roof to roof and navigating through collapsing buildings, which is very difficult without sight. **We strongly recommend skipping it.**
 
-If you choose No, you'll need to navigate the scripted escape sequence manually, which involves following NPCs through burning buildings — this is extremely challenging for blind players.
+Once you can move, press **L** to open Dio's accessibility menu, then select **"Walkthroughs"** → **"Main Quest Start"**. The mod will automatically walk your character through the entire intro sequence — you don't need to do anything, just wait. At the end, a dialog box will ask you to choose between **Hadvar** (Imperial) or **Ralof** (Stormcloak). Both paths are nearly identical and the choice doesn't affect the main story significantly. Select one and the walkthrough will guide you to the right place.
+
+If you don't skip, you'll need to navigate the scripted escape sequence manually, which involves following NPCs through burning buildings — this is extremely challenging for blind players.
 
 ### Choosing Your Companion
 
-After the scripted intro (or after skipping it), you'll be asked to follow either **Ralof** (Stormcloak) or **Hadvar** (Imperial). Both paths are nearly identical — the choice doesn't affect the main story significantly.
+After the intro (or after skipping it), follow your chosen companion.
 
 **Using the Scanner**: Press **Page Down / Page Up** to find NPCs near you. Use **Shift + Page Down** to switch to the **NPCs** category. Home key will orient your camera toward the selected NPC. Press **Shift + Home** to autowalk toward them.
 

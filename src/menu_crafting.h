@@ -8,7 +8,7 @@ static std::jthread     g_craftingPollThread;
 static std::wstring     g_lastCraftingCat;
 static std::wstring     g_lastCraftingItemAnnounce;
 static std::wstring     g_lastCraftingDesc;
-static bool             g_craftingFirstReadDone{false};
+static std::atomic_bool g_craftingFirstReadDone{false};
 
 struct CraftingSnapshot {
     std::wstring itemText;
@@ -22,8 +22,8 @@ struct CraftingSnapshot {
     bool         inCategoryMode{true};  // true = dans les catégories, false = dans les items
 };
 
-static bool g_craftingIsSimpleList{false};  // true = tannerie/meule/établi (pas de catégories)
-static bool g_craftingModeDetected{false};
+static std::atomic_bool g_craftingIsSimpleList{false};  // true = tannerie/meule/établi (pas de catégories)
+static std::atomic_bool g_craftingModeDetected{false};
 
 // Lecture sûre pour mode simple — ne lit QUE les textfields de ItemInfo (pas de getters AS2)
 static bool ReadCraftingSnapshotSimple(CraftingSnapshot& snap) {
@@ -35,13 +35,22 @@ static bool ReadCraftingSnapshotSimple(CraftingSnapshot& snap) {
     RE::GFxMovieView* movie = menu->uiMovie.get();
     if (!movie) return false;
 
+    const bool skyui = g_skyuiMode.load(std::memory_order_relaxed);
     std::string tmp;
 
-    // Lire le nom de l'item — essayer la liste d'abord, puis ItemInfo
-    if (GetGFxString(movie, "_root.Menu.ItemListTweener.List_mc.selectedEntry.text", tmp) && !tmp.empty())
-        snap.itemText = StripMarkupForSpeech(Utf8ToWString(tmp));
-    else if (GetGFxString(movie, "_root.Menu.ItemInfoHolder.ItemInfo.ItemText.ItemTextField.text", tmp) && !tmp.empty())
-        snap.itemText = StripMarkupForSpeech(Utf8ToWString(tmp));
+    // Lire le nom de l'item
+    // SkyUI : CategoryList.itemList.selectedEntry.text
+    // Vanilla : ItemListTweener.List_mc.selectedEntry.text
+    const char* itemPaths[] = {
+        skyui ? "_root.Menu.CategoryList.itemList.selectedEntry.text" : "_root.Menu.ItemListTweener.List_mc.selectedEntry.text",
+        "_root.Menu.ItemInfoHolder.ItemInfo.ItemText.ItemTextField.text",
+    };
+    for (auto* p : itemPaths) {
+        if (GetGFxString(movie, p, tmp) && !tmp.empty()) {
+            snap.itemText = StripMarkupForSpeech(Utf8ToWString(tmp));
+            break;
+        }
+    }
 
     // Stats
     auto readField = [&](const char* path, std::wstring& out) {
@@ -76,30 +85,55 @@ static bool ReadCraftingSnapshotForge(CraftingSnapshot& snap) {
     RE::GFxMovieView* movie = menu->uiMovie.get();
     if (!movie) return false;
 
+    const bool skyui = g_skyuiMode.load(std::memory_order_relaxed);
     std::string tmp;
 
-    // Item sélectionné — préférer l'ItemCard, ajouter la quantité si > 1
-    std::string itemCardText, listText;
-    GetGFxString(movie, "_root.Menu.ItemInfoHolder.ItemInfo.ItemText.ItemTextField.text", itemCardText);
-    GetGFxString(movie, "_root.Menu.CategoryList.ItemsList.selectedEntry.text", listText);
-    double countNum = 0;
-    GetGFxNumber(movie, "_root.Menu.CategoryList.ItemsList.selectedEntry.count", countNum);
-    if (!itemCardText.empty())
-        snap.itemText = StripMarkupForSpeech(Utf8ToWString(itemCardText));
-    else if (!listText.empty())
-        snap.itemText = ResolveUIString(movie, listText);
-    // Ajouter la quantité produite si > 1
-    if (static_cast<int>(countNum) > 1)
-        snap.itemText += L" (" + std::to_wstring(static_cast<int>(countNum)) + L")";
+    // CategoryList fonctionne dans les deux modes (vérifié via logs)
+    const char* catListBase = "_root.Menu.CategoryList";
 
     // Catégorie
-    if (GetGFxString(movie, "_root.Menu.CategoryList.CategoriesList.centeredEntry.text", tmp) && !tmp.empty())
-        snap.catText = ResolveUIString(movie, tmp);
+    if (skyui) {
+        std::string catLabelPath = std::string(catListBase) + ".categoryLabel.textField.text";
+        std::string catEntryPath = std::string(catListBase) + ".CategoriesList.selectedEntry.text";
+        if (GetGFxString(movie, catLabelPath.c_str(), tmp) && !tmp.empty())
+            snap.catText = ResolveUIString(movie, tmp);
+        else if (GetGFxString(movie, catEntryPath.c_str(), tmp) && !tmp.empty())
+            snap.catText = ResolveUIString(movie, tmp);
+    } else {
+        if (GetGFxString(movie, "_root.Menu.CategoryList.CategoriesList.centeredEntry.text", tmp) && !tmp.empty())
+            snap.catText = ResolveUIString(movie, tmp);
+    }
 
-    // Mode catégorie ou items
-    double panelState = 0;
-    GetGFxNumber(movie, "_root.Menu.CategoryList.currentState", panelState);
-    snap.inCategoryMode = (static_cast<int>(panelState) != 2);
+    // Item sélectionné — lire depuis la liste d'abord (vide si focus sur catégories)
+    {
+        std::string listText, itemCardText;
+        std::string listTextPath = std::string(catListBase) + (skyui ? ".itemList.selectedEntry.text" : ".ItemsList.selectedEntry.text");
+        GetGFxString(movie, listTextPath.c_str(), listText);
+
+        if (!listText.empty()) {
+            // Focus sur les items — lire depuis la liste
+            snap.itemText = ResolveUIString(movie, listText);
+            snap.inCategoryMode = false;
+        } else {
+            // Liste vide = focus sur les catégories — ne PAS lire l'ItemCard (elle garde l'ancien)
+            snap.inCategoryMode = true;
+        }
+
+        // Quantité depuis la liste
+        std::string listCountPath = std::string(catListBase) + (skyui ? ".itemList.selectedEntry.count" : ".ItemsList.selectedEntry.count");
+        double countNum = 0;
+        GetGFxNumber(movie, listCountPath.c_str(), countNum);
+        if (static_cast<int>(countNum) > 1 && !snap.itemText.empty())
+            snap.itemText += L" (" + std::to_wstring(static_cast<int>(countNum)) + L")";
+    }
+
+    // Vanilla : utiliser aussi panelState pour le mode catégorie
+    if (!skyui) {
+        double panelState = 0;
+        std::string statePath = std::string(catListBase) + ".currentState";
+        GetGFxNumber(movie, statePath.c_str(), panelState);
+        snap.inCategoryMode = (static_cast<int>(panelState) != 2);
+    }
 
     // Stats
     auto readField = [&](const char* path, std::wstring& out) {
@@ -134,10 +168,12 @@ static void DetectCraftingMode() {
     RE::GFxMovieView* movie = menu->uiMovie.get();
     if (!movie) return;
 
-    // Détection : si ItemListTweener existe ET currentState n'est pas un panel mode → simple
-    // Si CategoryList.currentState == 1 (ONE_PANEL) ou 2 (TWO_PANELS) → forge/tannerie (avec catégories)
+
+    // Détection : si currentState >= 1 → forge/tannerie (avec catégories), sinon simple (meule, établi)
+    const bool skyui = g_skyuiMode.load(std::memory_order_relaxed);
+    const char* statePath = "_root.Menu.CategoryList.currentState";
     double panelState = 0;
-    bool hasPanelState = GetGFxNumber(movie, "_root.Menu.CategoryList.currentState", panelState);
+    bool hasPanelState = GetGFxNumber(movie, statePath, panelState);
     if (hasPanelState && panelState >= 1.0) {
         g_craftingIsSimpleList = false;  // mode forge/catégories (forge, tannerie)
     } else {
@@ -185,7 +221,7 @@ static void AnnounceCraftingChangeImpl() {
         return;
     }
 
-    // En mode catégorie : lire seulement la catégorie
+    // En mode catégorie (vanilla uniquement) : lire seulement la catégorie
     if (snap.inCategoryMode) {
         bool returnedFromItems = !g_lastCraftingItemAnnounce.empty();
         if (catChanged || firstRead || returnedFromItems) {
@@ -204,9 +240,11 @@ static void AnnounceCraftingChangeImpl() {
     if (catChanged) {
         Speak(snap.catText);
         g_lastCraftingCat = snap.catText;
+        g_lastCraftingDesc.clear();
+        // Ne PAS clear g_lastCraftingItemAnnounce — l'ItemCard garde l'ancien texte
+        // pendant quelques ticks. On évite de le relire en gardant le dernier annoncé.
     }
-    const bool ingredientsChanged = !snap.ingredientsText.empty() && snap.ingredientsText != g_lastCraftingDesc;
-    if (itemChanged || ingredientsChanged) {
+    if (itemChanged) {
         // Construire l'annonce avec stats
         std::wstring announce = snap.itemText;
         auto isZero = [](const std::wstring& s) {
@@ -247,16 +285,16 @@ static void StartCraftingPolling() {
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
         // Détecter le mode via AddUITask et attendre le résultat
         if (!st.stop_requested() && g_craftingOpen.load(std::memory_order_relaxed)) {
-            std::atomic_bool detected{false};
+            auto detected = std::make_shared<std::atomic_bool>(false);
             auto* task = SKSE::GetTaskInterface();
             if (task) {
-                task->AddUITask([&detected]() {
+                task->AddUITask([detected]() {
                     DetectCraftingMode();
-                    detected.store(true);
+                    detected->store(true);
                 });
             }
             // Attendre que la détection soit faite (max 2 secondes)
-            for (int i = 0; i < 40 && !detected.load() && !st.stop_requested(); i++)
+            for (int i = 0; i < 40 && !detected->load() && !st.stop_requested(); i++)
                 std::this_thread::sleep_for(std::chrono::milliseconds(50));
         }
         LOG("Crafting: {} mode detected, starting polling", g_craftingIsSimpleList ? "simple" : "forge");

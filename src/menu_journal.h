@@ -27,6 +27,9 @@ static int              g_lastQuestActive{-1};  // -1=unknown, 0=inactive, 1=act
 static int              g_lastSystemState{-1};
 static std::wstring     g_lastSystemItem;
 static std::wstring     g_lastStatsCategory;
+static int              g_lastMiscObjIdx{-1};
+static std::wstring     g_lastMiscObjText;
+static int              g_lastMiscObjActive{-1};  // -1=unknown, 0=inactive, 1=active
 
 // --- Snapshot ---
 struct StatEntry {
@@ -46,7 +49,12 @@ struct JournalSnapshot {
     std::wstring questTitle;
     std::wstring questDesc;
     bool         questActive{false};
+    double       questFormID{-1.0};  // formID de l'entrée centrée (0 = Divers)
     std::vector<QuestObjective> objectives;
+    // Quand on est sur Divers : objectif sélectionné individuellement
+    int          miscObjIdx{-1};
+    std::wstring miscObjText;
+    bool         miscObjActive{false};
     // Onglet Stats
     std::wstring statsCategory;
     std::vector<StatEntry> statsEntries;
@@ -83,32 +91,58 @@ static bool ReadJournalSnapshot(JournalSnapshot& snap) {
         if (movie->GetVariable(&activeVal, "_root.QuestJournalFader.Menu_mc.QuestsFader.Page_mc.TitleList_mc.List_mc.centeredEntry.active"))
             snap.questActive = activeVal.IsBool() ? activeVal.GetBool() : (activeVal.IsNumber() && activeVal.GetNumber() != 0.0);
 
-        // objectifs (ObjectiveScrollingList.as : entryList[i].text / .active / .completed / .failed)
-        RE::GFxValue entryList;
-        if (movie->GetVariable(&entryList, "_root.QuestJournalFader.Menu_mc.QuestsFader.Page_mc.objectiveList.entryList") && entryList.IsArray()) {
-            const auto len = entryList.GetArraySize();
-            for (std::uint32_t i = 0; i < len; ++i) {
-                RE::GFxValue item;
-                entryList.GetElement(i, &item);
-                if (!item.IsObject()) continue;
+        // formID de l'entrée centrée (0 = Divers/Miscellaneous)
+        RE::GFxValue formIDVal;
+        if (movie->GetVariable(&formIDVal, "_root.QuestJournalFader.Menu_mc.QuestsFader.Page_mc.TitleList_mc.List_mc.centeredEntry.formID") && formIDVal.IsNumber())
+            snap.questFormID = formIDVal.GetNumber();
 
+        // Divers (formID == 0) : lire l'objectif sélectionné individuellement
+        if (snap.questFormID == 0.0) {
+            // selectedIndex dans objectiveList
+            double selIdx = -1.0;
+            GetGFxNumber(movie, "_root.QuestJournalFader.Menu_mc.QuestsFader.Page_mc.objectiveList.selectedIndex", selIdx);
+            snap.miscObjIdx = static_cast<int>(selIdx);
+
+            // selectedEntry dans objectiveList
+            RE::GFxValue selEntry;
+            if (movie->GetVariable(&selEntry, "_root.QuestJournalFader.Menu_mc.QuestsFader.Page_mc.objectiveList.selectedEntry") && selEntry.IsObject()) {
                 RE::GFxValue textVal;
-                if (!item.GetMember("text", &textVal) || !textVal.IsString()) continue;
-                std::string txt = textVal.GetString();
-                if (txt.empty()) continue;
+                if (selEntry.GetMember("text", &textVal) && textVal.IsString()) {
+                    std::string s = textVal.GetString();
+                    if (!s.empty()) snap.miscObjText = ResolveUIString(movie, s);
+                }
+                RE::GFxValue actVal;
+                if (selEntry.GetMember("active", &actVal))
+                    snap.miscObjActive = actVal.IsBool() ? actVal.GetBool() : (actVal.IsNumber() && actVal.GetNumber() != 0.0);
+            }
+        } else {
+            // Quête normale : lire tous les objectifs en bloc
+            RE::GFxValue entryList;
+            if (movie->GetVariable(&entryList, "_root.QuestJournalFader.Menu_mc.QuestsFader.Page_mc.objectiveList.entryList") && entryList.IsArray()) {
+                const auto len = entryList.GetArraySize();
+                for (std::uint32_t i = 0; i < len; ++i) {
+                    RE::GFxValue item;
+                    entryList.GetElement(i, &item);
+                    if (!item.IsObject()) continue;
 
-                QuestObjective obj;
-                obj.text = ResolveUIString(movie, txt);
+                    RE::GFxValue textVal;
+                    if (!item.GetMember("text", &textVal) || !textVal.IsString()) continue;
+                    std::string txt = textVal.GetString();
+                    if (txt.empty()) continue;
 
-                auto readBool = [&](const char* field) -> bool {
-                    RE::GFxValue v;
-                    if (!item.GetMember(field, &v)) return false;
-                    return v.IsBool() ? v.GetBool() : (v.IsNumber() && v.GetNumber() != 0.0);
-                };
-                obj.active    = readBool("active");
-                obj.completed = readBool("completed");
-                obj.failed    = readBool("failed");
-                snap.objectives.push_back(std::move(obj));
+                    QuestObjective obj;
+                    obj.text = ResolveUIString(movie, txt);
+
+                    auto readBool = [&](const char* field) -> bool {
+                        RE::GFxValue v;
+                        if (!item.GetMember(field, &v)) return false;
+                        return v.IsBool() ? v.GetBool() : (v.IsNumber() && v.GetNumber() != 0.0);
+                    };
+                    obj.active    = readBool("active");
+                    obj.completed = readBool("completed");
+                    obj.failed    = readBool("failed");
+                    snap.objectives.push_back(std::move(obj));
+                }
             }
         }
     } else if (snap.tab == JOURNAL_TAB_STATS) {
@@ -296,6 +330,38 @@ static const wchar_t* JournalTabName(int tab) {
 
 static void AnnounceJournalChangeImpl() {
     if (!g_journalOpen.load()) return;
+
+    // Si le MCM est ouvert (ConfigPanelFader visible), lire le MCM au lieu du journal
+    {
+        auto ui = RE::UI::GetSingleton();
+        if (ui) {
+            auto menu = ui->GetMenu(RE::JournalMenu::MENU_NAME);
+            if (menu && menu->uiMovie) {
+                RE::GFxValue vis;
+                if (menu->uiMovie->GetVariable(&vis, "_root.ConfigPanelFader._visible") &&
+                    vis.IsBool() && vis.GetBool()) {
+                    // MCM est ouvert
+                    if (!g_mcmOpen.load(std::memory_order_relaxed)) {
+                        g_mcmOpen.store(true);
+                        ResetMcmState();
+                        Speak(L"Mod Configuration");
+                        LOG("MCM: opened");
+                    }
+                    AnnounceMcmChangeImpl();
+                    return;
+                } else if (g_mcmOpen.load(std::memory_order_relaxed)) {
+                    // MCM vient de se fermer, retour au journal
+                    g_mcmOpen.store(false);
+                    LOG("MCM: closed, back to journal");
+                    // Reset journal state pour relire l'onglet courant
+                    g_lastJournalTab = -1;
+                    g_lastSystemItem.clear();
+                    g_lastSystemState = -1;
+                }
+            }
+        }
+    }
+
     JournalSnapshot snap;
     if (!ReadJournalSnapshot(snap)) return;
 
@@ -336,30 +402,67 @@ static void AnnounceJournalChangeImpl() {
         const bool titleChanged = !snap.questTitle.empty() && snap.questTitle != g_lastJournalTitle;
         if (titleChanged) {
             std::wstring announce = snap.questTitle;
-            if (snap.questActive) announce += L", active";
+            // Pour les quêtes normales, ajouter "active" ; pour Divers, pas de statut global
+            if (snap.questFormID != 0.0 && snap.questActive)
+                announce += L", active";
             if (firstRead) SpeakQueue(announce); else Speak(announce);
             g_lastJournalTitle = snap.questTitle;
             g_lastJournalDesc.clear();
             g_lastQuestActive = snap.questActive ? 1 : 0;
 
-            // Objectifs : s'enchaînent après le titre
-            for (const auto& obj : snap.objectives) {
-                if (obj.text.empty()) continue;
-                std::wstring objLine = obj.text;
-                if (obj.completed)     objLine += L", completed";
-                else if (obj.failed)   objLine += L", failed";
-                SpeakQueue(objLine);
+            if (snap.questFormID == 0.0) {
+                // On arrive sur Divers : sauvegarder l'état actuel pour ne pas
+                // auto-lire le premier objectif (attendre que le joueur navigue)
+                g_lastMiscObjIdx = snap.miscObjIdx;
+                g_lastMiscObjText = snap.miscObjText;
+                g_lastMiscObjActive = snap.miscObjActive ? 1 : 0;
+            } else {
+                g_lastMiscObjIdx = -1;
+                g_lastMiscObjText.clear();
+                g_lastMiscObjActive = -1;
+            }
+
+            if (snap.questFormID != 0.0) {
+                // Quête normale : objectifs s'enchaînent après le titre
+                for (const auto& obj : snap.objectives) {
+                    if (obj.text.empty()) continue;
+                    std::wstring objLine = obj.text;
+                    if (obj.completed)     objLine += L", completed";
+                    else if (obj.failed)   objLine += L", failed";
+                    SpeakQueue(objLine);
+                }
+            }
+            // Divers : ne rien lire en bloc, attendre la navigation individuelle
+        } else if (snap.questFormID == 0.0) {
+            // On est sur Divers : navigation individuelle dans les objectifs
+            if (!snap.miscObjText.empty() && (snap.miscObjText != g_lastMiscObjText || snap.miscObjIdx != g_lastMiscObjIdx)) {
+                // Nouvel objectif sélectionné
+                std::wstring announce = snap.miscObjText;
+                if (snap.miscObjActive) announce += L", active";
+                Speak(announce);
+                g_lastMiscObjText = snap.miscObjText;
+                g_lastMiscObjIdx = snap.miscObjIdx;
+                g_lastMiscObjActive = snap.miscObjActive ? 1 : 0;
+                LOG("Journal: misc quest '{}' active={}", WStringToUtf8(snap.miscObjText), snap.miscObjActive);
+            } else if (!snap.miscObjText.empty()) {
+                // Même objectif : détecter activation/désactivation (touche Entrée)
+                int curActive = snap.miscObjActive ? 1 : 0;
+                if (g_lastMiscObjActive >= 0 && curActive != g_lastMiscObjActive) {
+                    Speak(snap.miscObjActive ? L"active" : L"inactive");
+                    LOG("Journal: misc quest toggled to {}", snap.miscObjActive ? "active" : "inactive");
+                }
+                g_lastMiscObjActive = curActive;
             }
         } else {
-            // Détecter activation/désactivation sans changer de quête (touche Entrée)
+            // Quête normale : détecter activation/désactivation sans changer de quête
             int curActive = snap.questActive ? 1 : 0;
             if (g_lastQuestActive >= 0 && curActive != g_lastQuestActive) {
                 Speak(snap.questActive ? L"active" : L"inactive");
             }
             g_lastQuestActive = curActive;
         }
-        if (!snap.questDesc.empty() && snap.questDesc != g_lastJournalDesc) {
-            SpeakQueue(snap.questDesc); // s'enchaîne après titre + objectifs
+        if (snap.questFormID != 0.0 && !snap.questDesc.empty() && snap.questDesc != g_lastJournalDesc) {
+            SpeakQueue(snap.questDesc); // s'enchaîne après titre + objectifs (pas pour Divers)
             g_lastJournalDesc = snap.questDesc;
         }
         // Mettre à jour la liste des quêtes actives à chaque tick sur l'onglet quêtes

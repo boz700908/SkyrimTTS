@@ -54,6 +54,12 @@ static bool                        g_mapUseReference{false};  // true = distance
 static RE::NiPoint3                g_mapReferencePos{0, 0, 0};
 static std::wstring                g_mapReferenceName;
 
+// --- Marqueur personnalisé (P) pour le scanner/autowalk ---
+static RE::NiPoint3                g_customMarkerPos{0, 0, 0};
+static std::wstring                g_customMarkerName;
+static RE::FormID                  g_customMarkerFormID{0};
+static bool                        g_customMarkerActive{false};
+
 // --- Nom du type de marqueur ---
 static const wchar_t* GetMarkerTypeName(RE::MARKER_TYPE type) {
     switch (type) {
@@ -164,36 +170,50 @@ static void AddQuestTargetsToMap(RE::PlayerCharacter* player, const RE::NiPoint3
 
             auto rp = ref->GetPosition();
 
-            // Si la cible est dans un intérieur, chercher la porte de sortie
-            // pour obtenir une position monde valide sur la carte
+            // Si la cible est dans un intérieur, trouver la position extérieure
             auto* refCell = ref->GetParentCell();
             if (refCell && refCell->IsInteriorCell()) {
-                // Chercher une porte dans cette cellule qui mène à l'extérieur
-                RE::TESObjectREFR* exitDoor = nullptr;
-                for (auto& doorHandle : refCell->GetRuntimeData().references) {
-                    auto doorPtr = doorHandle.get();
-                    if (!doorPtr) continue;
-                    auto* doorBase = doorPtr->GetBaseObject();
-                    if (!doorBase || doorBase->GetFormType() != RE::FormType::Door) continue;
-                    auto* extraTele = doorPtr->extraList.GetByType<RE::ExtraTeleport>();
-                    if (!extraTele || !extraTele->teleportData) continue;
-                    auto linkedDoor = extraTele->teleportData->linkedDoor.get();
-                    if (!linkedDoor) continue;
-                    auto* destCell = linkedDoor->GetParentCell();
-                    // La porte mène-t-elle à l'extérieur ?
-                    if (destCell && !destCell->IsInteriorCell()) {
-                        exitDoor = linkedDoor.get();
-                        break;
-                    }
-                    // Ou la porte liée a un worldspace ?
-                    if (linkedDoor->GetWorldspace()) {
-                        exitDoor = linkedDoor.get();
-                        break;
+                bool foundExit = false;
+
+                // 1. worldLocMarker : position exacte de l'entrée du lieu sur la carte
+                auto* targetLocation = refCell->GetLocation();
+                for (auto* loc = targetLocation; loc && !foundExit; loc = loc->parentLoc) {
+                    if (loc->worldLocMarker) {
+                        auto markerPtr = loc->worldLocMarker.get();
+                        if (markerPtr) {
+                            rp = markerPtr->GetPosition();
+                            foundExit = true;
+                            LOG("MapMenu: quest '{}' resolved via worldLocMarker loc='{}' pos=({:.0f},{:.0f},{:.0f})",
+                                objText, loc->GetFullName() ? loc->GetFullName() : "?", rp.x, rp.y, rp.z);
+                        }
                     }
                 }
-                if (exitDoor) {
-                    rp = exitDoor->GetPosition();
-                    LOG("MapMenu: quest '{}' redirected to exit door at ({:.0f},{:.0f},{:.0f})", objText, rp.x, rp.y, rp.z);
+
+                // 2. Fallback : chercher une porte de sortie dans la cellule
+                if (!foundExit) {
+                    for (auto& doorHandle : refCell->GetRuntimeData().references) {
+                        auto doorPtr = doorHandle.get();
+                        if (!doorPtr) continue;
+                        auto* doorBase = doorPtr->GetBaseObject();
+                        if (!doorBase || doorBase->GetFormType() != RE::FormType::Door) continue;
+                        auto* extraTele = doorPtr->extraList.GetByType<RE::ExtraTeleport>();
+                        if (!extraTele || !extraTele->teleportData) continue;
+                        auto linkedDoor = extraTele->teleportData->linkedDoor.get();
+                        if (!linkedDoor) continue;
+                        auto* destCell = linkedDoor->GetParentCell();
+                        if (destCell && !destCell->IsInteriorCell()) {
+                            rp = linkedDoor->GetPosition();
+                            foundExit = true;
+                            LOG("MapMenu: quest '{}' redirected to exit door at ({:.0f},{:.0f},{:.0f})", objText, rp.x, rp.y, rp.z);
+                            break;
+                        }
+                        if (linkedDoor->GetWorldspace()) {
+                            rp = linkedDoor->GetPosition();
+                            foundExit = true;
+                            LOG("MapMenu: quest '{}' redirected to exit door at ({:.0f},{:.0f},{:.0f})", objText, rp.x, rp.y, rp.z);
+                            break;
+                        }
+                    }
                 }
             }
 
@@ -613,6 +633,35 @@ static void MapSetReference() {
     g_mapIndex = 0;
 
     Speak(L"Reference: " + g_mapReferenceName + L". Distances from this marker");
+}
+
+// --- Placer un marqueur personnalisé (P) ---
+static void MapPlaceCustomMarker() {
+    if (!g_mapReady.load() || g_mapFiltered.empty() || g_mapIndex < 0) {
+        Speak(L"No marker selected");
+        return;
+    }
+
+    int filteredIdx = g_mapFiltered[g_mapIndex];
+    if (filteredIdx < 0 || filteredIdx >= static_cast<int>(g_mapMarkers.size())) return;
+
+    auto& m = g_mapMarkers[filteredIdx];
+
+    // Si on appuie P sur le même marqueur déjà actif, le retirer
+    if (g_customMarkerActive && g_customMarkerName == m.name) {
+        g_customMarkerActive = false;
+        g_customMarkerName.clear();
+        g_customMarkerPos = {0, 0, 0};
+        Speak(L"Marker removed");
+        return;
+    }
+
+    g_customMarkerPos = m.worldPos;
+    g_customMarkerName = m.name;
+    g_customMarkerFormID = m.formID;
+    g_customMarkerActive = true;
+
+    Speak(L"Marker placed on " + m.name);
 }
 
 // --- Cycler les filtres ---

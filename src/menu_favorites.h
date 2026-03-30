@@ -6,6 +6,7 @@ static std::atomic_bool g_favOpen{false};
 static std::atomic_bool g_favPendingUIRead{false};
 static std::jthread     g_favPollThread;
 static std::wstring     g_lastFavItemAnnounce;
+static std::wstring     g_lastFavCategory;
 
 static std::wstring FavEquipStateText(int state) {
     switch (state) {
@@ -26,13 +27,30 @@ static void AnnounceFavChangeImpl() {
     RE::GFxMovieView* movie = menu->uiMovie.get();
     if (!movie) return;
 
+    const bool skyui = g_skyuiMode.load(std::memory_order_relaxed);
+    const char* entryBase = skyui ? "_root.MenuHolder.Menu_mc.itemList.selectedEntry"
+                                  : "_root.MenuHolder.Menu_mc.List_mc.selectedEntry";
+
     std::string itemName;
     double equipState = 0.0;
     double hotkey = -1.0;
 
-    GetGFxString(movie, "_root.MenuHolder.Menu_mc.List_mc.selectedEntry.text", itemName);
-    GetGFxNumber(movie, "_root.MenuHolder.Menu_mc.List_mc.selectedEntry.equipState", equipState);
-    GetGFxNumber(movie, "_root.MenuHolder.Menu_mc.List_mc.selectedEntry.hotkey", hotkey);
+    GetGFxString(movie, (std::string(entryBase) + ".text").c_str(), itemName);
+    GetGFxNumber(movie, (std::string(entryBase) + ".equipState").c_str(), equipState);
+    GetGFxNumber(movie, (std::string(entryBase) + ".hotkey").c_str(), hotkey);
+
+    // SkyUI: lire la catégorie depuis headerText
+    if (skyui) {
+        std::string catStr;
+        if (GetGFxString(movie, "_root.MenuHolder.Menu_mc.headerText.text", catStr) && !catStr.empty()) {
+            std::wstring cat = ResolveUIString(movie, catStr);
+            if (!cat.empty() && cat != g_lastFavCategory) {
+                const bool firstCat = g_lastFavItemAnnounce.empty() && g_lastFavCategory.empty();
+                if (firstCat) SpeakQueue(cat); else Speak(cat);
+                g_lastFavCategory = cat;
+            }
+        }
+    }
 
     if (itemName.empty()) return;
 

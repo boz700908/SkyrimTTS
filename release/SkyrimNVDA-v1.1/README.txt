@@ -24,11 +24,14 @@ Step 2: Copy the plugin files
 From the release archive, copy the following files to the correct locations inside your Skyrim installation folder:
 
 - SkyrimNVDA.dll: copy to Data\SKSE\Plugins\SkyrimNVDA.dll
-- nvdaControllerClient.dll: copy to Data\SKSE\Plugins\nvdaControllerClient.dll
+- nvdaControllerClient.dll: copy to the Skyrim root folder (next to SkyrimSE.exe)
 - SkyrimTTS_AutoWalk.esp: copy to Data\SkyrimTTS_AutoWalk.esp
 - SkyrimTTS_AutoWalk.pex: copy to Data\Scripts\SkyrimTTS_AutoWalk.pex
+- SkyrimTTS_MQ105Fix.pex: copy to Data\Scripts\SkyrimTTS_MQ105Fix.pex
 
 If the folders SKSE\Plugins\ or Scripts\ do not exist inside Data\, create them.
+
+Note: If you install using a mod manager (Vortex, MO2), you still need to manually copy nvdaControllerClient.dll to the Skyrim root folder — mod managers only install files inside Data\.
 
 Step 3: Activate the ESP
 
@@ -48,7 +51,7 @@ Step 4: Launch the game
 
 First Steps — Walkthrough Guide
 
-New to Skyrim? Read our detailed First Steps Guide — a complete walkthrough from character creation through the Golden Claw quest, with every step explained using accessibility features.
+New to Skyrim? Read our detailed First Steps Guide (GUIDE.md) — a complete walkthrough from character creation through the Golden Claw quest, with every step explained using accessibility features.
 
 
 Getting Started — Character Creation
@@ -343,8 +346,8 @@ Word Walls (where you learn dragon shouts) appear in the Activators category of 
 
 Recommended mods for accessibility
 
-- Puzzle Pillar Auto-Solve — All pillars are pre-solved, just pull the lever
-- Dragon Claws Auto-Unlock — Claw doors open automatically when you have the claw
+- Puzzle Pillar Auto-Solve (https://www.nexusmods.com/skyrimspecialedition/mods/125875) — All pillars are pre-solved, just pull the lever
+- Dragon Claws Auto-Unlock (https://www.nexusmods.com/skyrimspecialedition/mods/47329) — Claw doors open automatically when you have the claw
 
 
 Keyboard shortcuts summary
