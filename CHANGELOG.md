@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.2 (in progress)
+## v1.2 (2026-03-30)
 
 ### SkyUI compatibility
 SkyUI (https://www.nexusmods.com/skyrimspecialedition/mods/12604) replaces the vanilla menus with a new interface. For players who have used Fallout Access, the SkyUI inventory experience is similar: categories on the left, items on the right, with keyboard-driven navigation.
