@@ -21,25 +21,44 @@ bool IsWalking = false
 float CheckInterval = 0.25
 
 ; === Called from C++ via DispatchMethodCall ===
-Function OnWalkToTarget(int aiFormID, float afStopDistance)
-    Form targetForm = Game.GetForm(aiFormID)
-    if targetForm == None
-        Debug.Trace("SkyrimTTS:AutoWalk - Invalid FormID: " + aiFormID)
-        return
-    endIf
+; For normal FormIDs (< 0xFF000000), pass formID only
+; For dynamic FormIDs (FF*), pass formID=0 + x, y, z coordinates
+Function OnWalkToTarget(int aiFormID, float afStopDistance, float afX = 0.0, float afY = 0.0, float afZ = 0.0)
+    if aiFormID != 0
+        ; Normal case: lookup by FormID
+        Form targetForm = Game.GetForm(aiFormID)
+        if targetForm == None
+            Debug.Trace("SkyrimTTS:AutoWalk - Invalid FormID: " + aiFormID)
+            return
+        endIf
 
-    ObjectReference targetRef = targetForm as ObjectReference
-    if targetRef == None
-        Debug.Trace("SkyrimTTS:AutoWalk - Not an ObjectReference: " + aiFormID)
-        return
-    endIf
+        ObjectReference targetRef = targetForm as ObjectReference
+        if targetRef == None
+            Debug.Trace("SkyrimTTS:AutoWalk - Not an ObjectReference: " + aiFormID)
+            return
+        endIf
 
-    if IsWalking
-        StopWalkingInternal(false)
-    endIf
+        if IsWalking
+            StopWalkingInternal(false)
+        endIf
 
-    fStopDistance = afStopDistance
-    StartWalkToRef(targetRef, afStopDistance)
+        fStopDistance = afStopDistance
+        StartWalkToRef(targetRef, afStopDistance)
+    else
+        ; Dynamic object: create XMarker at coordinates and walk to it
+        Debug.Trace("SkyrimTTS:AutoWalk - Walking to coordinates: " + afX + ", " + afY + ", " + afZ)
+
+        if IsWalking
+            StopWalkingInternal(false)
+        endIf
+
+        fStopDistance = afStopDistance
+
+        ; Create a temp XMarker at the target position
+        ObjectReference tempMarker = PlayerRef.PlaceAtMe(Game.GetForm(0x10), 1, true, true)
+        tempMarker.SetPosition(afX, afY, afZ)
+        StartWalkToRef(tempMarker, afStopDistance)
+    endIf
 EndFunction
 
 ; === Called from C++ to stop walking ===
@@ -155,4 +174,59 @@ Function OnFastTravel(int aiFormID)
 
     Debug.Trace("SkyrimTTS:FastTravel - Traveling to FormID: " + aiFormID)
     Game.FastTravel(targetRef)
+EndFunction
+
+; === Sound playback, called from C++ via DispatchMethodCall ===
+int currentLoopInstance = 0
+
+; Play a one-shot sound at the player's position
+; aiLocalFormID = local FormID without load order (e.g. 0x806, 0x807, 0x808)
+; afVolume = volume multiplier (0.0 to 1.0, default 1.0)
+Function OnPlaySound(int aiLocalFormID, float afVolume = 1.0)
+    Form foundForm = Game.GetFormFromFile(aiLocalFormID, "SkyrimTTS_AutoWalk.esp")
+    if foundForm == None
+        Debug.Trace("SkyrimTTS:Sound - Form not found for local ID: " + aiLocalFormID)
+        return
+    endIf
+    Sound soundObj = foundForm as Sound
+    if soundObj == None
+        Debug.Trace("SkyrimTTS:Sound - Form is not a Sound: " + aiLocalFormID)
+        return
+    endIf
+    int instance = soundObj.Play(PlayerRef as ObjectReference)
+    if afVolume < 1.0 && instance != 0
+        Sound.SetInstanceVolume(instance, afVolume)
+    endIf
+    Debug.Trace("SkyrimTTS:Sound - Playing local ID: " + aiLocalFormID + " vol: " + afVolume)
+EndFunction
+
+; Play a looping sound (e.g. aim feedback), stops any previous loop
+; aiLocalFormID = local FormID without load order (e.g. 0x806)
+; afVolume = volume multiplier (0.0 to 1.0, default 1.0)
+Function OnPlayLoopSound(int aiLocalFormID, float afVolume = 1.0)
+    OnStopLoopSound()
+    Form foundForm = Game.GetFormFromFile(aiLocalFormID, "SkyrimTTS_AutoWalk.esp")
+    if foundForm == None
+        Debug.Trace("SkyrimTTS:Sound - Loop form not found for local ID: " + aiLocalFormID)
+        return
+    endIf
+    Sound soundObj = foundForm as Sound
+    if soundObj == None
+        Debug.Trace("SkyrimTTS:Sound - Loop form is not a Sound: " + aiLocalFormID)
+        return
+    endIf
+    currentLoopInstance = soundObj.Play(PlayerRef as ObjectReference)
+    if afVolume < 1.0 && currentLoopInstance != 0
+        Sound.SetInstanceVolume(currentLoopInstance, afVolume)
+    endIf
+    Debug.Trace("SkyrimTTS:Sound - Looping local ID: " + aiLocalFormID + " vol: " + afVolume + " instance: " + currentLoopInstance)
+EndFunction
+
+; Stop the current looping sound
+Function OnStopLoopSound()
+    if currentLoopInstance != 0
+        Sound.StopInstance(currentLoopInstance)
+        Debug.Trace("SkyrimTTS:Sound - Stopped loop instance: " + currentLoopInstance)
+        currentLoopInstance = 0
+    endIf
 EndFunction

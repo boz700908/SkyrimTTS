@@ -73,12 +73,16 @@ Quand la charette arrive a Helgen, un soldat imperial nomme Hadvar appelle les n
 
 NVDA annonce : **"Character creation"** suivi des instructions de navigation. Vous devez creer votre personnage avant que l'histoire continue.
 
+### Important — Comment fonctionne la creation de personnage
+
+Les options du menu de creation de personnage **ne sont pas des elements a valider individuellement** — pas besoin d'appuyer sur Entree ou de confirmer chaque option. Naviguez simplement entre les onglets, placez votre curseur sur l'option souhaitee et ajustez-la. Rien n'est verrouille tant que vous n'appuyez pas sur **R**. Quand vous etes satisfait de vos choix sur tous les onglets, appuyez sur **R une seule fois** pour tout confirmer d'un coup.
+
 ### Comment naviguer
 
 - **Ctrl + Droite / Gauche** : Changer d'onglet (Ethnie, Corps, Tete, et sous-categories comme Yeux, Bouche, Cicatrices...)
 - **Haut / Bas** : Naviguer dans les options de l'onglet actuel
 - **Gauche / Droite** : Ajuster les curseurs ou changer le sexe (Male/Female)
-- **R** : Confirmer votre personnage
+- **R** : Confirmer l'ensemble de votre personnage quand vous avez fini tous les onglets
 
 ### Que choisir
 
@@ -97,17 +101,19 @@ Ne passez pas trop de temps ici — aucune option d'apparence n'affecte le gamep
 
 ## Partie 3 — L'attaque du dragon et l'evasion d'Helgen
 
-Une fois votre personnage confirme, un immense dragon — **Alduin** — attaque la ville. Le chaos eclate avec du feu et de la destruction partout.
+Une fois votre personnage confirme, un immense dragon — **Alduin** — attaque la ville. Le chaos eclate avec du feu et de la destruction partout. **Ne touchez a rien** — attendez que la scene d'attaque du dragon se deroule et que votre personnage soit libre de bouger.
 
-### Le message pour sauter l'intro
+### Sauter l'intro (recommande)
 
-Le mod de Dio affiche une **boite de dialogue** demandant si vous voulez sauter l'intro. NVDA lira ce message. **Nous recommandons fortement de choisir Oui.** La sequence d'intro necessite de sauter de toit en toit et de naviguer dans des batiments qui s'effondrent, ce qui est tres difficile sans voir. Sauter l'intro vous place directement a l'entree du Fort d'Helgen avec un equipement de base.
+La sequence d'intro necessite de sauter de toit en toit et de naviguer dans des batiments qui s'effondrent, ce qui est tres difficile sans voir. **Nous recommandons fortement de la sauter.**
 
-Si vous choisissez Non, vous devrez naviguer manuellement dans la sequence d'evasion scriptee, ce qui implique de suivre des PNJs a travers des batiments en flammes — c'est extremement difficile pour les joueurs aveugles.
+Une fois que vous pouvez bouger, appuyez sur **L** pour ouvrir le menu d'accessibilite de Dio, puis selectionnez **"Walkthroughs"** → **"Main Quest Start"**. Le mod va automatiquement faire marcher votre personnage a travers toute la sequence d'intro — vous n'avez rien a faire, attendez simplement. A la fin, une boite de dialogue vous demandera de choisir entre **Hadvar** (Imperial) ou **Ralof** (Sombrerage). Les deux chemins sont presque identiques et le choix n'affecte pas significativement l'histoire principale. Selectionnez-en un et le walkthrough vous guidera au bon endroit.
+
+Si vous ne sautez pas, vous devrez naviguer manuellement dans la sequence d'evasion scriptee, ce qui implique de suivre des PNJs a travers des batiments en flammes — c'est extremement difficile pour les joueurs aveugles.
 
 ### Choisir votre compagnon
 
-Apres l'intro scriptee (ou apres l'avoir sautee), on vous demandera de suivre soit **Ralof** (Sombrerage) soit **Hadvar** (Imperial). Les deux chemins sont presque identiques — le choix n'affecte pas significativement l'histoire principale.
+Apres l'intro (ou apres l'avoir sautee), suivez le compagnon que vous avez choisi.
 
 **Utiliser le scanner** : Appuyez sur **Page Bas / Page Haut** pour trouver les PNJs pres de vous. Utilisez **Shift + Page Bas** pour passer a la categorie **PNJs**. La touche Debut orientera votre camera vers le PNJ selectionne. Appuyez sur **Shift + Debut** pour marcher automatiquement vers lui.
 

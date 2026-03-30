@@ -11,6 +11,8 @@ static std::wstring     g_lastBarterSide;
 static std::wstring     g_lastBarterItemName;
 static std::wstring     g_lastBarterDesc;
 static int              g_lastBarterItemCount{0};
+static bool             g_barterQuantityOpen{false};
+static int              g_lastBarterQuantity{0};
 
 struct BarterSnapshot {
     std::wstring itemText;
@@ -36,62 +38,52 @@ static bool ReadBarterSnapshot(BarterSnapshot& snap) {
     RE::GFxMovieView* movie = menu->uiMovie.get();
     if (!movie) return false;
 
+    const bool skyui = g_skyuiMode.load(std::memory_order_relaxed);
+
+    const char* itemTextP  = skyui ? "_root.Menu_mc.inventoryLists.itemList.selectedEntry.text"
+                                   : "_root.Menu_mc.InventoryLists_mc.ItemsList.selectedEntry.text";
+    const char* itemCountP = skyui ? "_root.Menu_mc.inventoryLists.itemList.selectedEntry.count"
+                                   : "_root.Menu_mc.InventoryLists_mc.ItemsList.selectedEntry.count";
+    const char* itemEquipP = skyui ? "_root.Menu_mc.inventoryLists.itemList.selectedEntry.equipState"
+                                   : "_root.Menu_mc.InventoryLists_mc.ItemsList.selectedEntry.equipState";
+    const char* catTextP   = skyui ? "_root.Menu_mc.inventoryLists.categoryList.selectedEntry.text"
+                                   : "_root.Menu_mc.InventoryLists_mc.CategoriesList.centeredEntry.text";
+    const char* dividerP   = skyui ? "_root.Menu_mc.inventoryLists.categoryList.dividerIndex"
+                                   : "_root.Menu_mc.InventoryLists_mc.CategoriesList.dividerIndex";
+    const char* catIdxP    = skyui ? "_root.Menu_mc.inventoryLists.categoryList.selectedIndex"
+                                   : "_root.Menu_mc.InventoryLists_mc.CategoriesList.selectedIndex";
+
     std::string tmp;
     double num = 0.0;
 
-    // Essayer les chemins du BarterMenu (peut différer du ContainerMenu)
-    const char* itemPaths[] = {
-        "_root.Menu_mc.InventoryLists_mc.ItemsList.selectedEntry.text",
-        "_root.Menu_mc.itemList.selectedEntry.text",
-        "_root.Menu_mc.ItemsList.selectedEntry.text",
-    };
-    for (auto p : itemPaths) {
-        if (GetGFxString(movie, p, tmp) && !tmp.empty()) {
-            snap.itemText = ResolveUIString(movie, tmp);
-            static bool logged = false;
-            if (!logged) { LOG("Barter: item path found: '{}'", p); logged = true; }
-            break;
-        }
-    }
-
-    const char* countPaths[] = {
-        "_root.Menu_mc.InventoryLists_mc.ItemsList.selectedEntry.count",
-        "_root.Menu_mc.itemList.selectedEntry.count",
-    };
-    for (auto p : countPaths) {
-        if (GetGFxNumber(movie, p, num)) { snap.count = static_cast<int>(num); break; }
-    }
-
-    const char* equipPaths[] = {
-        "_root.Menu_mc.InventoryLists_mc.ItemsList.selectedEntry.equipState",
-        "_root.Menu_mc.itemList.selectedEntry.equipState",
-    };
-    for (auto p : equipPaths) {
-        if (GetGFxNumber(movie, p, num)) { snap.equipState = static_cast<int>(num); break; }
-    }
-
-    const char* catPaths[] = {
-        "_root.Menu_mc.InventoryLists_mc.CategoriesList.centeredEntry.text",
-        "_root.Menu_mc.categoriesList.centeredEntry.text",
-    };
-    for (auto p : catPaths) {
-        if (GetGFxString(movie, p, tmp) && !tmp.empty()) {
-            snap.catText = ResolveUIString(movie, tmp);
-            break;
-        }
-    }
+    if (GetGFxString(movie, itemTextP, tmp) && !tmp.empty())
+        snap.itemText = ResolveUIString(movie, tmp);
+    if (GetGFxNumber(movie, itemCountP, num))
+        snap.count = static_cast<int>(num);
+    if (GetGFxNumber(movie, itemEquipP, num))
+        snap.equipState = static_cast<int>(num);
+    if (GetGFxString(movie, catTextP, tmp) && !tmp.empty())
+        snap.catText = ResolveUIString(movie, tmp);
 
     // Determine if viewing vendor side or player inventory side
-    // Utiliser selectedIndex (se met à jour en temps réel) au lieu de iSelectedCategory
-    double divider = -1.0, catIdx = -1.0;
-    bool hasDivider = GetGFxNumber(movie, "_root.Menu_mc.InventoryLists_mc.CategoriesList.dividerIndex", divider);
-    bool hasCatIdx  = GetGFxNumber(movie, "_root.Menu_mc.InventoryLists_mc.CategoriesList.selectedIndex", catIdx);
-    if (!hasCatIdx) {
-        hasCatIdx = GetGFxNumber(movie, "_root.Menu_mc.iSelectedCategory", catIdx);
-    }
-    if (hasDivider && hasCatIdx && divider > 0) {
-        snap.isVendorSide = (catIdx < divider);
-        snap.atDivider    = (catIdx == divider);
+    if (skyui) {
+        // SkyUI uses activeSegment: 0 = vendor (buy), 1 = player (sell)
+        double segment = 0.0;
+        if (GetGFxNumber(movie, "_root.Menu_mc.inventoryLists.categoryList.activeSegment", segment)) {
+            snap.isVendorSide = (static_cast<int>(segment) == 0);
+            snap.atDivider = false;
+        }
+    } else {
+        double divider = -1.0, catIdx = -1.0;
+        bool hasDivider = GetGFxNumber(movie, dividerP, divider);
+        bool hasCatIdx  = GetGFxNumber(movie, catIdxP, catIdx);
+        if (!hasCatIdx) {
+            hasCatIdx = GetGFxNumber(movie, "_root.Menu_mc.iSelectedCategory", catIdx);
+        }
+        if (hasDivider && hasCatIdx && divider > 0) {
+            snap.isVendorSide = (catIdx < divider);
+            snap.atDivider    = (catIdx == divider);
+        }
     }
 
     // Read description/effects from ItemCard infoText (C++ side)
@@ -129,8 +121,8 @@ static bool ReadBarterSnapshot(BarterSnapshot& snap) {
     auto readItemCard = [&](const char* field, std::wstring& out) {
         std::string s;
         const char* prefixes[] = {
-            "_root.Menu_mc.ItemCardFadeHolder_mc.ItemCard_mc.",
-            "_root.Menu_mc.ItemCard_mc.",
+            skyui ? "_root.Menu_mc.itemCard." : "_root.Menu_mc.ItemCardFadeHolder_mc.ItemCard_mc.",
+            skyui ? "_root.Menu_mc.itemCardFadeHolder.ItemCard_mc." : "_root.Menu_mc.ItemCard_mc.",
             "_root.ItemCard_mc."
         };
         for (auto pfx : prefixes) {
@@ -180,6 +172,48 @@ static std::wstring BuildBarterItemAnnouncement(const BarterSnapshot& snap) {
 
 static void AnnounceBarterChangeImpl() {
     if (!g_barterOpen.load()) return;
+
+    // Vérifier le slider de quantité (achat/vente d'objets empilés)
+    {
+        auto ui = RE::UI::GetSingleton();
+        auto menu = ui ? ui->GetMenu(RE::BarterMenu::MENU_NAME) : nullptr;
+        auto* movie = (menu && menu->uiMovie) ? menu->uiMovie.get() : nullptr;
+        if (movie) {
+            const bool skyui = g_skyuiMode.load(std::memory_order_relaxed);
+            const char* sliderPath = skyui
+                ? "_root.Menu_mc.itemCardFadeHolder.ItemCard_mc.QuantitySlider_mc.value"
+                : "_root.Menu_mc.ItemCardFadeHolder_mc.ItemCard_mc.QuantitySlider_mc.value";
+            const char* sliderAlphaPath = skyui
+                ? "_root.Menu_mc.itemCardFadeHolder.ItemCard_mc.QuantitySlider_mc._alpha"
+                : "_root.Menu_mc.ItemCardFadeHolder_mc.ItemCard_mc.QuantitySlider_mc._alpha";
+
+            double alpha = 0.0;
+            GetGFxNumber(movie, sliderAlphaPath, alpha);
+            bool sliderVisible = (alpha >= 50.0);
+
+            if (sliderVisible) {
+                double val = 0.0;
+                GetGFxNumber(movie, sliderPath, val);
+                int qty = static_cast<int>(val);
+                if (!g_barterQuantityOpen) {
+                    // Slider vient de s'ouvrir
+                    g_barterQuantityOpen = true;
+                    g_lastBarterQuantity = qty;
+                    Speak(L"Quantity: " + std::to_wstring(qty));
+                } else if (qty != g_lastBarterQuantity) {
+                    // Valeur changée
+                    g_lastBarterQuantity = qty;
+                    Speak(std::to_wstring(qty));
+                }
+                return;  // ne pas lire l'item pendant que le slider est ouvert
+            } else if (g_barterQuantityOpen) {
+                // Slider vient de se fermer
+                g_barterQuantityOpen = false;
+                g_lastBarterQuantity = 0;
+            }
+        }
+    }
+
     BarterSnapshot snap;
     if (!ReadBarterSnapshot(snap)) return;
 
@@ -246,35 +280,30 @@ static void AnnounceBarterStats() {
                     // Lire l'or du marchand via GFx au lieu du C++
                     auto* movie = menu->uiMovie.get();
                     if (movie) {
-                        // Probe tous les chemins possibles du BottomBar
-                        const char* allPaths[] = {
-                            "_root.Menu_mc.BottomBar_mc.PlayerGoldValue.text",
-                            "_root.Menu_mc.BottomBar_mc.ContainerGoldValue.text",
-                            "_root.Menu_mc.BottomBar_mc.CarryWeightValue.text",
-                            "_root.Menu_mc.BottomBar_mc.PlayerInfoCard_mc.PlayerGoldValue.text",
-                            "_root.Menu_mc.BottomBar_mc.PlayerInfoCard_mc.CarryWeightValue.text",
-                        };
-                        for (auto p : allPaths) {
-                            std::string val;
-                            bool ok = GetGFxString(movie, p, val);
-                            if (ok && !val.empty()) {
-                                LOG("BarterStats: '{}' = '{}'", p, val);
-                            }
-                        }
+                        const bool skyui = g_skyuiMode.load(std::memory_order_relaxed);
 
                         // Lire l'or du joueur
                         std::string playerGold;
-                        if (GetGFxString(movie, "_root.Menu_mc.BottomBar_mc.PlayerGoldValue.text", playerGold) && !playerGold.empty()) {
-                            msg += L"Your gold: " + Utf8ToWString(playerGold);
-                        } else if (GetGFxString(movie, "_root.Menu_mc.BottomBar_mc.PlayerInfoCard_mc.PlayerGoldValue.text", playerGold) && !playerGold.empty()) {
-                            msg += L"Your gold: " + Utf8ToWString(playerGold);
+                        const char* playerGoldPaths[] = {
+                            skyui ? "_root.Menu_mc.bottomBar.playerInfoCard.PlayerGoldValue.text"
+                                  : "_root.Menu_mc.BottomBar_mc.PlayerGoldValue.text",
+                            skyui ? "_root.Menu_mc.bottomBar.PlayerGoldValue.text"
+                                  : "_root.Menu_mc.BottomBar_mc.PlayerInfoCard_mc.PlayerGoldValue.text",
+                        };
+                        for (auto p : playerGoldPaths) {
+                            if (GetGFxString(movie, p, playerGold) && !playerGold.empty()) {
+                                msg += L"Your gold: " + StripMarkupForSpeech(Utf8ToWString(playerGold));
+                                break;
+                            }
                         }
 
                         // Lire l'or du marchand
                         std::string vendorGold;
                         const char* vendorPaths[] = {
-                            "_root.Menu_mc.BottomBar_mc.PlayerInfoCard_mc.VendorGoldValue.text",
-                            "_root.Menu_mc.BottomBar_mc.PlayerInfoCard_mc.VendorGoldValue.htmlText",
+                            skyui ? "_root.Menu_mc.bottomBar.playerInfoCard.VendorGoldValue.text"
+                                  : "_root.Menu_mc.BottomBar_mc.PlayerInfoCard_mc.VendorGoldValue.text",
+                            skyui ? "_root.Menu_mc.bottomBar.playerInfoCard.VendorGoldValue.htmlText"
+                                  : "_root.Menu_mc.BottomBar_mc.PlayerInfoCard_mc.VendorGoldValue.htmlText",
                         };
                         for (auto p : vendorPaths) {
                             if (GetGFxString(movie, p, vendorGold) && !vendorGold.empty()) {

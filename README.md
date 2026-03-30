@@ -9,6 +9,7 @@ Accessibility plugin for Skyrim Special/Anniversary Edition. Automatically vocal
 - Skyrim Special Edition or Anniversary Edition
 - SKSE64 (Skyrim Script Extender)
 - NVDA screen reader (must be running before launching the game)
+- Skyrim Accessibility mod by Dio Kyrie — download the latest release at https://github.com/DioKyrie-Git/SkyrimAccessibility/releases
 
 ---
 
@@ -26,11 +27,14 @@ If you haven't already, download and install SKSE64 from https://skse.silverlock
 From the release archive, copy the following files to the correct locations inside your Skyrim installation folder:
 
 - SkyrimNVDA.dll: copy to Data\SKSE\Plugins\SkyrimNVDA.dll
-- nvdaControllerClient.dll: copy to Data\SKSE\Plugins\nvdaControllerClient.dll
+- nvdaControllerClient.dll: copy to the Skyrim root folder (next to SkyrimSE.exe)
 - SkyrimTTS_AutoWalk.esp: copy to Data\SkyrimTTS_AutoWalk.esp
 - SkyrimTTS_AutoWalk.pex: copy to Data\Scripts\SkyrimTTS_AutoWalk.pex
+- SkyrimTTS_MQ105Fix.pex: copy to Data\Scripts\SkyrimTTS_MQ105Fix.pex
 
 If the folders SKSE\Plugins\ or Scripts\ do not exist inside Data\, create them.
+
+**Note:** If you install using a mod manager (Vortex, MO2), you still need to manually copy nvdaControllerClient.dll to the Skyrim root folder — mod managers only install files inside Data\.
 
 ### Step 3: Activate the ESP
 

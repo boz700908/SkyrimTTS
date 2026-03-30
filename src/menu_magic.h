@@ -15,13 +15,13 @@ static constexpr int MAGIC_ES_LEFT           = 2;
 static constexpr int MAGIC_ES_RIGHT          = 3;
 static constexpr int MAGIC_ES_BOTH           = 4;
 
-// --- Chemins GFx (MagicMenu extends ItemMenu → même InventoryLists_mc que l'inventaire) ---
-static constexpr const char* MAGIC_ITEM_TEXT    = "_root.Menu_mc.InventoryLists_mc.ItemsList.selectedEntry.text";
-static constexpr const char* MAGIC_ITEM_ENABLED = "_root.Menu_mc.InventoryLists_mc.ItemsList.selectedEntry.enabled";
-static constexpr const char* MAGIC_ITEM_EQUIP    = "_root.Menu_mc.InventoryLists_mc.ItemsList.selectedEntry.equipState";
-static constexpr const char* MAGIC_ITEM_FAVORITE = "_root.Menu_mc.InventoryLists_mc.ItemsList.selectedEntry.favorite";
-static constexpr const char* MAGIC_CAT_TEXT      = "_root.Menu_mc.InventoryLists_mc.CategoriesList.centeredEntry.text";
-static constexpr const char* MAGIC_CARD_PREFIX  = "_root.Menu_mc.ItemCardFadeHolder_mc.ItemCard_mc.itemInfo.";
+// --- Chemins GFx (dynamiques: SkyUI ou Vanilla, détectés à l'ouverture) ---
+static const char* MagicItemText()    { return g_skyuiMode.load(std::memory_order_relaxed) ? "_root.Menu_mc.inventoryLists.itemList.selectedEntry.text"       : "_root.Menu_mc.InventoryLists_mc.ItemsList.selectedEntry.text"; }
+static const char* MagicItemEnabled() { return g_skyuiMode.load(std::memory_order_relaxed) ? "_root.Menu_mc.inventoryLists.itemList.selectedEntry.enabled"    : "_root.Menu_mc.InventoryLists_mc.ItemsList.selectedEntry.enabled"; }
+static const char* MagicItemEquip()   { return g_skyuiMode.load(std::memory_order_relaxed) ? "_root.Menu_mc.inventoryLists.itemList.selectedEntry.equipState" : "_root.Menu_mc.InventoryLists_mc.ItemsList.selectedEntry.equipState"; }
+static const char* MagicItemFav()     { return g_skyuiMode.load(std::memory_order_relaxed) ? "_root.Menu_mc.inventoryLists.itemList.selectedEntry.favorite"   : "_root.Menu_mc.InventoryLists_mc.ItemsList.selectedEntry.favorite"; }
+static const char* MagicCatText()     { return g_skyuiMode.load(std::memory_order_relaxed) ? "_root.Menu_mc.inventoryLists.categoryList.selectedEntry.text"   : "_root.Menu_mc.InventoryLists_mc.CategoriesList.centeredEntry.text"; }
+static const char* MagicCardPrefix()  { return g_skyuiMode.load(std::memory_order_relaxed) ? "_root.Menu_mc.itemCard.itemInfo."                               : "_root.Menu_mc.ItemCardFadeHolder_mc.ItemCard_mc.itemInfo."; }
 
 // --- État ---
 static std::atomic_bool g_magicOpen{false};
@@ -65,29 +65,29 @@ static bool ReadMagicSnapshot(MagicSnapshot& snap) {
 
     std::string tmp;
 
-    if (GetGFxString(movie, MAGIC_CAT_TEXT, tmp) && !tmp.empty())
+    if (GetGFxString(movie, MagicCatText(), tmp) && !tmp.empty())
         snap.category = ResolveUIString(movie, tmp);
 
-    if (GetGFxString(movie, MAGIC_ITEM_TEXT, tmp) && !tmp.empty())
+    if (GetGFxString(movie, MagicItemText(), tmp) && !tmp.empty())
         snap.itemName = ResolveUIString(movie, tmp);
 
     RE::GFxValue enabledVal;
-    if (movie->GetVariable(&enabledVal, MAGIC_ITEM_ENABLED))
+    if (movie->GetVariable(&enabledVal, MagicItemEnabled()))
         snap.itemEnabled = enabledVal.IsBool() ? enabledVal.GetBool()
                          : (enabledVal.IsNumber() && enabledVal.GetNumber() != 0.0);
 
     double equipD = 0.0;
-    if (GetGFxNumber(movie, MAGIC_ITEM_EQUIP, equipD))
+    if (GetGFxNumber(movie, MagicItemEquip(), equipD))
         snap.equipState = static_cast<int>(equipD);
 
     RE::GFxValue favVal;
-    if (movie->GetVariable(&favVal, MAGIC_ITEM_FAVORITE))
+    if (movie->GetVariable(&favVal, MagicItemFav()))
         snap.favorite = favVal.IsBool() ? favVal.GetBool()
                       : (favVal.IsNumber() && favVal.GetNumber() != 0.0);
 
     // --- itemInfo ---
     auto cardField = [](const char* field) {
-        return std::string(MAGIC_CARD_PREFIX) + field;
+        return std::string(MagicCardPrefix()) + field;
     };
 
     double typeD = -1.0;

@@ -5,6 +5,8 @@
 // --- État ---
 static std::atomic_bool g_invOpen{false};
 static std::atomic_bool g_invPendingUIRead{false};
+static std::atomic_bool g_invSortJustChanged{false};  // après un tri, la prochaine lecture s'enchaîne sans couper
+static std::atomic<int64_t> g_invSortSuppressUntil{0};  // timestamp jusqu'auquel le polling est suspendu
 static std::jthread     g_invPollThread;
 static std::wstring     g_lastInvCat;
 static std::wstring     g_lastInvItemAnnounce;
@@ -12,6 +14,8 @@ static std::wstring     g_lastInvDesc;
 static std::wstring     g_lastInvItemName;
 static int              g_lastInvItemCount{0};
 static int              g_lastInvFavorite{-1};  // -1=inconnu, 0=non, 1=oui
+static bool             g_invQuantityOpen{false};
+static int              g_lastInvQuantity{0};
 
 // --- Inventory snapshot data ---
 struct InventorySnapshot {
@@ -38,22 +42,37 @@ static bool ReadInventorySnapshot(InventorySnapshot& snap) {
     RE::GFxMovieView* movie = menu->uiMovie.get();
     if (!movie) return false;
 
+    const bool skyui = g_skyuiMode.load(std::memory_order_relaxed);
+
+    // Item list paths — SkyUI: inventoryLists.itemList / Vanilla: InventoryLists_mc.ItemsList
+    const char* itemText  = skyui ? "_root.Menu_mc.inventoryLists.itemList.selectedEntry.text"
+                                  : "_root.Menu_mc.InventoryLists_mc.ItemsList.selectedEntry.text";
+    const char* itemCount = skyui ? "_root.Menu_mc.inventoryLists.itemList.selectedEntry.count"
+                                  : "_root.Menu_mc.InventoryLists_mc.ItemsList.selectedEntry.count";
+    const char* itemEquip = skyui ? "_root.Menu_mc.inventoryLists.itemList.selectedEntry.equipState"
+                                  : "_root.Menu_mc.InventoryLists_mc.ItemsList.selectedEntry.equipState";
+    const char* itemFav   = skyui ? "_root.Menu_mc.inventoryLists.itemList.selectedEntry.favorite"
+                                  : "_root.Menu_mc.InventoryLists_mc.ItemsList.selectedEntry.favorite";
+    // Category — SkyUI: categoryList.selectedEntry / Vanilla: CategoriesList.centeredEntry
+    const char* catPath   = skyui ? "_root.Menu_mc.inventoryLists.categoryList.selectedEntry.text"
+                                  : "_root.Menu_mc.InventoryLists_mc.CategoriesList.centeredEntry.text";
+
     std::string tmp;
     double num = 0.0;
 
-    if (GetGFxString(movie, "_root.Menu_mc.InventoryLists_mc.ItemsList.selectedEntry.text", tmp) && !tmp.empty())
+    if (GetGFxString(movie, itemText, tmp) && !tmp.empty())
         snap.itemText = ResolveUIString(movie, tmp);
-    if (GetGFxNumber(movie, "_root.Menu_mc.InventoryLists_mc.ItemsList.selectedEntry.count", num))
+    if (GetGFxNumber(movie, itemCount, num))
         snap.count = static_cast<int>(num);
-    if (GetGFxNumber(movie, "_root.Menu_mc.InventoryLists_mc.ItemsList.selectedEntry.equipState", num))
+    if (GetGFxNumber(movie, itemEquip, num))
         snap.equipState = static_cast<int>(num);
     {
         RE::GFxValue favVal;
-        if (movie->GetVariable(&favVal, "_root.Menu_mc.InventoryLists_mc.ItemsList.selectedEntry.favorite"))
+        if (movie->GetVariable(&favVal, itemFav))
             snap.favorite = favVal.IsBool() ? favVal.GetBool()
                           : favVal.IsNumber() ? (favVal.GetNumber() != 0.0) : false;
     }
-    if (GetGFxString(movie, "_root.Menu_mc.InventoryLists_mc.CategoriesList.centeredEntry.text", tmp) && !tmp.empty())
+    if (GetGFxString(movie, catPath, tmp) && !tmp.empty())
         snap.catText = ResolveUIString(movie, tmp);
 
     // Read description/effects from ItemCard::infoText (C++ side, more reliable than GFx)
@@ -103,7 +122,11 @@ static bool ReadInventorySnapshot(InventorySnapshot& snap) {
     // Read value/weight from ItemCard TextFields
     auto readItemCard = [&](const char* field, std::wstring& out) {
         std::string s;
-        const char* prefixes[] = {"_root.Menu_mc.ItemCard_mc.", "_root.ItemCard_mc."};
+        const char* prefixes[] = {
+            skyui ? "_root.Menu_mc.itemCard." : "_root.Menu_mc.ItemCard_mc.",
+            skyui ? "_root.Menu_mc.itemCardFadeHolder.ItemCard_mc." : "_root.Menu_mc.ItemCardFadeHolder_mc.ItemCard_mc.",
+            "_root.ItemCard_mc."
+        };
         const char* suffixes[] = {".text", ""};
         for (auto pfx : prefixes) {
             for (auto sfx : suffixes) {
@@ -198,6 +221,45 @@ static std::wstring BuildItemAnnouncement(const InventorySnapshot& snap) {
 
 static void AnnounceInventoryChangeImpl() {
     if (!g_invOpen.load()) return;
+
+    // Vérifier le slider de quantité (jeter des objets empilés)
+    {
+        auto ui = RE::UI::GetSingleton();
+        auto menu = ui ? ui->GetMenu(RE::InventoryMenu::MENU_NAME) : nullptr;
+        auto* movie = (menu && menu->uiMovie) ? menu->uiMovie.get() : nullptr;
+        if (movie) {
+            const bool skyui = g_skyuiMode.load(std::memory_order_relaxed);
+            const char* sliderPath = skyui
+                ? "_root.Menu_mc.itemCardFadeHolder.ItemCard_mc.QuantitySlider_mc.value"
+                : "_root.Menu_mc.ItemCardFadeHolder_mc.ItemCard_mc.QuantitySlider_mc.value";
+            const char* sliderAlphaPath = skyui
+                ? "_root.Menu_mc.itemCardFadeHolder.ItemCard_mc.QuantitySlider_mc._alpha"
+                : "_root.Menu_mc.ItemCardFadeHolder_mc.ItemCard_mc.QuantitySlider_mc._alpha";
+
+            double alpha = 0.0;
+            GetGFxNumber(movie, sliderAlphaPath, alpha);
+            bool sliderVisible = (alpha >= 50.0);
+
+            if (sliderVisible) {
+                double val = 0.0;
+                GetGFxNumber(movie, sliderPath, val);
+                int qty = static_cast<int>(val);
+                if (!g_invQuantityOpen) {
+                    g_invQuantityOpen = true;
+                    g_lastInvQuantity = qty;
+                    Speak(L"Quantity: " + std::to_wstring(qty));
+                } else if (qty != g_lastInvQuantity) {
+                    g_lastInvQuantity = qty;
+                    Speak(std::to_wstring(qty));
+                }
+                return;
+            } else if (g_invQuantityOpen) {
+                g_invQuantityOpen = false;
+                g_lastInvQuantity = 0;
+            }
+        }
+    }
+
     InventorySnapshot snap;
     if (!ReadInventorySnapshot(snap)) return;
 
@@ -217,19 +279,26 @@ static void AnnounceInventoryChangeImpl() {
     }
 
     const bool firstRead = g_lastInvCat.empty() && g_lastInvItemAnnounce.empty();
+    const bool afterSort = g_invSortJustChanged.exchange(false);
+    if (afterSort) {
+        // Après un tri : forcer la relecture du premier item, en SpeakQueue pour ne pas couper l'annonce du tri
+        g_lastInvItemAnnounce.clear();
+        g_lastInvItemName.clear();
+    }
     if (catChanged) {
-        if (firstRead) SpeakQueue(snap.catText); else Speak(snap.catText);
+        if (firstRead || afterSort) SpeakQueue(snap.catText); else Speak(snap.catText);
         g_lastInvCat = snap.catText;
     }
-    if (itemChanged) {
+    const bool itemChangedAfterSort = afterSort && !announce.empty();
+    if (itemChanged || itemChangedAfterSort) {
         // Si même objet mais seul le count a changé → dire juste le nombre restant
-        if (!firstRead && !snap.itemText.empty() && snap.itemText == g_lastInvItemName && snap.count != g_lastInvItemCount) {
+        if (!firstRead && !afterSort && !snap.itemText.empty() && snap.itemText == g_lastInvItemName && snap.count != g_lastInvItemCount) {
             if (snap.count > 1)
                 Speak(std::to_wstring(snap.count));
             else
                 Speak(L"1");
         } else {
-            if (firstRead) SpeakQueue(announce); else Speak(announce);
+            if (firstRead || afterSort) SpeakQueue(announce); else Speak(announce);
         }
         g_lastInvItemAnnounce = announce;
         g_lastInvItemName = snap.itemText;
@@ -262,8 +331,17 @@ static void AnnounceInventoryStats() {
         if (!movie) return;
 
         std::string gold, carry;
-        GetGFxString(movie, "_root.Menu_mc.BottomBar_mc.PlayerInfoCard_mc.PlayerGoldValue.text", gold);
-        GetGFxString(movie, "_root.Menu_mc.BottomBar_mc.PlayerInfoCard_mc.CarryWeightValue.text", carry);
+        const bool skyui = g_skyuiMode.load(std::memory_order_relaxed);
+        const char* goldPaths[] = {
+            skyui ? "_root.Menu_mc.bottomBar.playerInfoCard.PlayerGoldValue.text"
+                  : "_root.Menu_mc.BottomBar_mc.PlayerInfoCard_mc.PlayerGoldValue.text",
+        };
+        const char* carryPaths[] = {
+            skyui ? "_root.Menu_mc.bottomBar.playerInfoCard.CarryWeightValue.text"
+                  : "_root.Menu_mc.BottomBar_mc.PlayerInfoCard_mc.CarryWeightValue.text",
+        };
+        for (auto p : goldPaths)  { if (GetGFxString(movie, p, gold)  && !gold.empty())  break; }
+        for (auto p : carryPaths) { if (GetGFxString(movie, p, carry) && !carry.empty()) break; }
 
         std::wstring msg;
         if (!gold.empty())
@@ -296,6 +374,9 @@ static void DiagnoseInventoryNow() {
 
 static void QueueInventoryRead() {
     if (!g_invOpen.load(std::memory_order_relaxed)) return;
+    // Pendant le tri, ignorer les lectures du polling pour ne pas couper l'annonce
+    auto now = std::chrono::steady_clock::now().time_since_epoch().count();
+    if (now < g_invSortSuppressUntil.load(std::memory_order_relaxed)) return;
     if (g_invPendingUIRead.exchange(true)) return;
     auto* task = SKSE::GetTaskInterface();
     if (!task) { g_invPendingUIRead.store(false); return; }
@@ -317,6 +398,57 @@ static void StartInventoryPolling() {
 
 static void StopInventoryPolling() {
     if (g_invPollThread.joinable()) { g_invPollThread.request_stop(); g_invPollThread.join(); }
+}
+
+// --- Tri SkyUI (touches 1-4) ---
+// SkyUI config.txt layout :
+//   columns = <equipColumn(0), iconColumn(1), itemNameColumn(2), subTypeColumn(3), weightColumn(4), valueColumn(5), ...>
+//   equipColumn est passive (pas triable)
+//   itemNameColumn a 4 états : 1=nom, 2=équipé, 3=volé, 4=enchanté
+//   weightColumn/valueColumn : 2 états chacun (asc/desc)
+// On utilise restoreColumnState(columnIndex, stateIndex) pour cibler directement le bon tri
+static void SkyUISortColumn(int columnIndex, int stateIndex, const wchar_t* label) {
+    if (!g_skyuiMode.load(std::memory_order_relaxed)) return;
+    auto* task = SKSE::GetTaskInterface();
+    if (!task) return;
+    // Annoncer le tri immédiatement et suspendre le polling 500ms pour ne pas être coupé
+    Speak(label);
+    auto suppress = (std::chrono::steady_clock::now() + std::chrono::milliseconds(500)).time_since_epoch().count();
+    g_invSortSuppressUntil.store(suppress, std::memory_order_relaxed);
+    task->AddUITask([columnIndex, stateIndex]() {
+        auto ui = RE::UI::GetSingleton();
+        if (!ui) return;
+
+        // Essayer chaque menu qui utilise inventoryLists
+        static const RE::BSFixedString menuNames[] = {
+            RE::InventoryMenu::MENU_NAME,
+            RE::ContainerMenu::MENU_NAME,
+            RE::BarterMenu::MENU_NAME,
+        };
+        RE::GFxMovieView* movie = nullptr;
+        for (const auto& name : menuNames) {
+            auto menu = ui->GetMenu(name);
+            if (menu && menu->uiMovie) { movie = menu->uiMovie.get(); break; }
+        }
+        if (!movie) { LOG("SkyUI sort: no open menu found"); return; }
+
+        const char* layoutPath = "_root.Menu_mc.inventoryLists.itemList.layout";
+
+        RE::GFxValue layout;
+        if (movie->GetVariable(&layout, layoutPath) && layout.IsObject()) {
+            RE::GFxValue args[2];
+            args[0].SetNumber(static_cast<double>(columnIndex));
+            args[1].SetNumber(static_cast<double>(stateIndex));
+            layout.Invoke("restoreColumnState", nullptr, args, 2);
+            LOG("SkyUI sort: column {} state {}", columnIndex, stateIndex);
+            // Poser le flag JUSTE AVANT la lecture pour qu'aucun tick ne le consomme avant
+            g_invSortJustChanged.store(true);
+            g_invSortSuppressUntil.store(0, std::memory_order_relaxed);
+            AnnounceInventoryChangeImpl();
+        } else {
+            LOG("SkyUI sort: layout not found at {}", layoutPath);
+        }
+    });
 }
 
 // VOCALISATION INVENTAIRE - FIN

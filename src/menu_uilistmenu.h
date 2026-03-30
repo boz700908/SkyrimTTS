@@ -1,7 +1,7 @@
 #pragma once
 #include "common.h"
 
-// UIExtensions UIListMenu — vocalisation du menu V du mod d'accessibilité gameplay
+// UIExtensions UIListMenu — vocalisation du menu V/L du mod d'accessibilité gameplay
 // Le menu GFx s'appelle "CustomMenu", les items sont ajoutés après ouverture via Papyrus
 
 static constexpr const char* UILIST_MENU_NAME = "CustomMenu";
@@ -21,9 +21,11 @@ static void AnnounceUIListChangeImpl() {
     auto menu = ui->GetMenu(UILIST_MENU_NAME); if (!menu) return;
     RE::GFxMovieView* movie = menu->uiMovie.get(); if (!movie) return;
 
+    const bool firstRead = g_lastUIListItem.empty();
+
     // Lire les entrées visibles jusqu'à trouver celle qui est sélectionnée
     // Les clips sont nommés ItemListEntry0..N dans itemList
-    for (int i = 0; i < 20; i++) {
+    for (int i = 0; i < 50; i++) {
         std::string visPath = "_root.listMenu.itemView.itemList.ItemListEntry" + std::to_string(i) + ".selectIndicator._visible";
         std::string txtPath = "_root.listMenu.itemView.itemList.ItemListEntry" + std::to_string(i) + ".textField.text";
 
@@ -35,11 +37,16 @@ static void AnnounceUIListChangeImpl() {
 
         std::string s = txt.GetString();
         if (s.empty()) continue;
+        // Ignorer les placeholders par défaut du SWF (avant que Papyrus remplisse les items)
+        if (s == "text" || s == "texte" || s == "Text") continue;
 
         std::wstring ws = StripMarkupForSpeech(Utf8ToWString(s));
         if (ws != g_lastUIListItem) {
             g_lastUIListItem = ws;
-            Speak(ws);
+            if (firstRead)
+                SpeakQueue(ws);
+            else
+                Speak(ws);
             LOG("UIListMenu selected: '{}'", s);
         }
         return;

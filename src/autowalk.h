@@ -6,6 +6,7 @@ static std::atomic_bool g_autoWalking{false};
 static std::wstring     g_autoWalkTarget;
 static RE::FormID       g_autoWalkTargetID{0};
 static float            g_autoWalkStopDist{100.0f};
+static RE::NiPoint3     g_autoWalkTargetPos{0, 0, 0};  // pour le mode coordonnées
 static std::jthread     g_autoWalkMonitor;
 
 // Détection de blocage
@@ -92,18 +93,37 @@ static void StartAutoWalkMonitor() {
             auto* player = RE::PlayerCharacter::GetSingleton();
             if (!player) continue;
 
-            auto* targetForm = RE::TESForm::LookupByID(g_autoWalkTargetID);
-            if (!targetForm) {
-                Speak(L"Target lost");
-                g_autoWalking.store(false);
-                break;
-            }
-            auto* targetRef = targetForm->AsReference();
-            if (!targetRef) continue;
-
             auto playerPos = player->GetPosition();
-            auto diff = playerPos - targetRef->GetPosition();
-            float dist = diff.Length();
+            float dist = 0.0f;
+
+            // Mode coordonnées (marqueur personnalisé, objets dynamiques)
+            if (g_autoWalkTargetPos.x != 0 || g_autoWalkTargetPos.y != 0) {
+                float dx = playerPos.x - g_autoWalkTargetPos.x;
+                float dy = playerPos.y - g_autoWalkTargetPos.y;
+                dist = std::sqrt(dx * dx + dy * dy);
+            } else {
+                // Mode FormID classique
+                auto* targetForm = RE::TESForm::LookupByID(g_autoWalkTargetID);
+                if (!targetForm) {
+                    Speak(L"Target lost");
+                    g_autoWalking.store(false);
+                    auto* taskIf = SKSE::GetTaskInterface();
+                    if (taskIf) {
+                        taskIf->AddTask([]() {
+                            auto* p = RE::PlayerCharacter::GetSingleton();
+                            if (p) {
+                                p->SetAIDriven(false);
+                                p->EvaluatePackage();
+                            }
+                        });
+                    }
+                    break;
+                }
+                auto* targetRef = targetForm->AsReference();
+                if (!targetRef) continue;
+                auto diff = playerPos - targetRef->GetPosition();
+                dist = diff.Length();
+            }
 
             // Arrivée
             if (dist <= g_autoWalkStopDist + 50.0f) {
@@ -154,14 +174,21 @@ static void StartAutoWalkMonitor() {
 }
 
 // Appelle OnWalkToTarget sur le script Papyrus de la quete AutoWalk
-static void StartAutoWalk(RE::FormID targetFormID, float stopDistance = 100.0f) {
+// Si posX/posY/posZ sont fournis (non-zero), le FormID est passé à 0 et le Papyrus
+// utilise les coordonnées directement (mode FF* pour objets dynamiques).
+static void StartAutoWalk(RE::FormID targetFormID, float stopDistance = 100.0f,
+                          float posX = 0.f, float posY = 0.f, float posZ = 0.f) {
     auto* task = SKSE::GetTaskInterface();
     if (!task) return;
 
     g_autoWalkTargetID = targetFormID;
     g_autoWalkStopDist = stopDistance;
+    g_autoWalkTargetPos = {posX, posY, posZ};  // stocker pour le moniteur
 
-    task->AddTask([targetFormID, stopDistance]() {
+    // Si FormID dynamique (FF*), passer en mode coordonnées
+    bool useCoords = (posX != 0.f || posY != 0.f || posZ != 0.f);
+
+    task->AddTask([targetFormID, stopDistance, posX, posY, posZ, useCoords]() {
         // Forcer l'initialisation du mouvement avant de lancer l'IA
         // (corrige le bug de vitesse lente si autowalk lancé sans marcher après un chargement)
         auto* player = RE::PlayerCharacter::GetSingleton();
@@ -206,10 +233,19 @@ static void StartAutoWalk(RE::FormID targetFormID, float stopDistance = 100.0f) 
             return;
         }
 
+        // Mode coordonnées : formID=0 + position x,y,z
+        // Mode normal : formID valide + 0,0,0
         auto* args = RE::MakeFunctionArguments(
-            static_cast<std::int32_t>(targetFormID),
-            static_cast<float>(stopDistance)
+            static_cast<std::int32_t>(useCoords ? 0 : static_cast<std::int32_t>(targetFormID)),
+            static_cast<float>(stopDistance),
+            static_cast<float>(posX),
+            static_cast<float>(posY),
+            static_cast<float>(posZ)
         );
+
+        if (useCoords) {
+            LOG("AutoWalk: coords mode FormID={:08X} pos=({:.0f},{:.0f},{:.0f})", targetFormID, posX, posY, posZ);
+        }
 
         RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback;
         bool ok = vm->DispatchMethodCall(
@@ -353,9 +389,21 @@ static void ToggleAutoWalk() {
     if (targetName.empty()) targetName = L"target";
     g_autoWalkTarget = targetName;
 
-    // Si FormID dynamique (FF*), la cible est dans un intérieur non chargé.
-    // On utilise la boussole pour trouver la porte d'entrée correcte.
+    // Si FormID dynamique (FF*), vérifier si l'objet est chargé en 3D (ex: objet jeté au sol).
+    // Si oui → marcher directement vers lui. Si non → chercher la porte via boussole.
     if ((targetID >> 24) == 0xFF) {
+        // Vérifier si l'objet existe en 3D dans le monde (objet jeté au sol, PNJ invoqué, etc.)
+        auto* refForm = RE::TESForm::LookupByID(targetID);
+        auto* ref = refForm ? refForm->AsReference() : nullptr;
+        if (ref && ref->Is3DLoaded() && !ref->IsDisabled() && !ref->IsDeleted()) {
+            auto pos = ref->GetPosition();
+            LOG("AutoWalk: dynamic FormID {:08X} is loaded in 3D at ({:.0f},{:.0f},{:.0f}), using coords mode",
+                targetID, pos.x, pos.y, pos.z);
+            Speak(L"Walking to " + targetName);
+            StartAutoWalk(targetID, 150.0f, pos.x, pos.y, pos.z);
+            return;
+        }
+
         LOG("AutoWalk: dynamic FormID {:08X}, searching for entrance door via compass", targetID);
 
         auto* player = RE::PlayerCharacter::GetSingleton();
@@ -534,7 +582,22 @@ static void ToggleAutoWalk() {
     }
 
     Speak(L"Walking to " + targetName);
-    StartAutoWalk(targetID, 100.0f);
+    // Si le FormID est dynamique (FF*), passer en mode coordonnées
+    if ((targetID >> 24) == 0xFF) {
+        auto* refForm = RE::TESForm::LookupByID(targetID);
+        auto* ref = refForm ? refForm->AsReference() : nullptr;
+        if (ref) {
+            auto pos = ref->GetPosition();
+            StartAutoWalk(targetID, 100.0f, pos.x, pos.y, pos.z);
+        } else if (g_scanIndex >= 0 && g_scanIndex < static_cast<int>(g_scannedFiltered.size())) {
+            auto& obj = *g_scannedFiltered[g_scanIndex];
+            StartAutoWalk(targetID, 100.0f, obj.lastKnownPos.x, obj.lastKnownPos.y, obj.lastKnownPos.z);
+        } else {
+            StartAutoWalk(targetID, 100.0f);  // fallback
+        }
+    } else {
+        StartAutoWalk(targetID, 100.0f);
+    }
 }
 
 // AUTOWALK — FIN

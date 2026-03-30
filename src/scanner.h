@@ -152,12 +152,41 @@ static void ReadActiveQuestsFromJournal() {
         LOG("Scanner: journal entry[{}] text='{}' formID={:08X} active={}", i, entryText, formID, isActive);
 
         if (formID == 0) {
-            // Entrée "Divers" — formID=0 (peut y en avoir plusieurs, garder true si vu)
+            // Entrée "Divers" — formID=0
             if (isActive) g_miscQuestsActive = true;
             LOG("Scanner: journal Misc entry active={}", isActive);
         } else if (isActive) {
             g_activeQuestFormIDs.insert(formID);
             LOG("Scanner: journal quest active FormID={:08X}", formID);
+        }
+    }
+
+    // Lire les quêtes misc individuelles depuis objectiveList
+    // Quand "Divers" est dans le journal, objectiveList contient les quêtes misc avec leurs vrais formIDs
+    RE::GFxValue objList;
+    if (movie->GetVariable(&objList, "_root.QuestJournalFader.Menu_mc.QuestsFader.Page_mc.objectiveList.entryList") && objList.IsArray()) {
+        uint32_t objCount = objList.GetArraySize();
+        for (uint32_t i = 0; i < objCount; i++) {
+            RE::GFxValue objEntry;
+            if (!objList.GetElement(i, &objEntry) || !objEntry.IsObject()) continue;
+
+            RE::GFxValue objFormIDVal, objActiveVal;
+            uint32_t objFormID = 0;
+            bool objActive = false;
+
+            if (objEntry.GetMember("formID", &objFormIDVal) && objFormIDVal.IsNumber())
+                objFormID = static_cast<uint32_t>(objFormIDVal.GetNumber());
+            if (objEntry.GetMember("active", &objActiveVal))
+                objActive = objActiveVal.IsBool() ? objActiveVal.GetBool() : (objActiveVal.IsNumber() && objActiveVal.GetNumber() != 0.0);
+
+            // formID != 0 = quête misc individuelle (formID=0 serait l'entrée Divers elle-même)
+            if (objFormID != 0 && objActive) {
+                g_activeQuestFormIDs.insert(objFormID);
+                RE::GFxValue objTextVal;
+                std::string objText = "?";
+                if (objEntry.GetMember("text", &objTextVal) && objTextVal.IsString()) objText = objTextVal.GetString();
+                LOG("Scanner: misc quest active FormID={:08X} text='{}'", objFormID, objText);
+            }
         }
     }
 
@@ -270,6 +299,7 @@ static void ApplyCategoryFilter() {
 
     g_scannedFiltered.clear();
     for (auto& obj : g_scannedAll) {
+        if (obj.formID == 0) continue;  // objet invalidé (ramassé/supprimé)
         if (g_scanCategory == kCatAll || obj.category == g_scanCategory) {
             if (g_scanCategory == kCatAll || MatchesSubcategory(obj)) {
                 g_scannedFiltered.push_back(&obj);
@@ -691,18 +721,8 @@ static void DoScanInternal() {
                 questObj->displayText.c_str(), questObj->numTargets,
                 displayedInHUD, isActive, rawFlags);
 
-            // Filtrer par quêtes actives dans le journal
-            if (g_questFilterInitialized) {
-                bool questTracked = g_activeQuestFormIDs.find(quest->GetFormID()) != g_activeQuestFormIDs.end();
-                // Les quêtes Divers (type Misc) sont incluses si "Divers" est coché
-                bool isMiscQuest = !displayedInHUD;  // les quêtes Divers n'ont pas le flag HUD
-                if (!questTracked && !(isMiscQuest && g_miscQuestsActive)) {
-                    continue;  // quête non traquée dans le journal
-                }
-            } else {
-                // Avant la première ouverture du journal, afficher toutes les quêtes displayed
-                if (!isActive && !displayedInHUD) continue;
-            }
+            // Filtrer : ne garder que les quêtes actives (cochées dans le journal)
+            if (!isActive) continue;
 
             // Parcourir les cibles de l'objectif pour trouver la référence
             for (uint32_t t = 0; t < questObj->numTargets; t++) {
@@ -756,64 +776,91 @@ static void DoScanInternal() {
                 RE::FormID actualFormID = targetRef->GetFormID();
 
                 if (refCell && refCell != playerCell) {
-                    LOG("Scanner: quest target in different cell ('{}' vs '{}'), searching door to target cell",
+                    LOG("Scanner: quest target in different cell ('{}' vs '{}'), searching entrance",
                         refCell->GetName() ? refCell->GetName() : "?",
                         playerCell->GetName() ? playerCell->GetName() : "?");
 
-                    // Chercher la porte qui mène directement à la cellule cible
-                    // (plus fiable que la boussole quand il y a plusieurs quêtes)
-                    RE::TESObjectREFR* bestDoor = nullptr;
-                    float bestDoorDist = 999999.0f;
+                    bool resolvedPos = false;
 
-                    // Lambda pour chercher dans une cellule
-                    auto searchDoorsForCell = [&](RE::TESObjectCELL* searchCell) {
-                        if (!searchCell) return;
-                        for (auto& doorHandle : searchCell->GetRuntimeData().references) {
-                            auto doorPtr = doorHandle.get();
-                            if (!doorPtr) continue;
-                            auto* doorBase = doorPtr->GetBaseObject();
-                            if (!doorBase || doorBase->GetFormType() != RE::FormType::Door) continue;
-                            auto* extraTele = doorPtr->extraList.GetByType<RE::ExtraTeleport>();
-                            if (!extraTele || !extraTele->teleportData) continue;
-                            auto linkedDoor = extraTele->teleportData->linkedDoor.get();
-                            if (!linkedDoor) continue;
-                            auto* destCell = linkedDoor->GetParentCell();
-                            if (!destCell) continue;
-
-                            // La porte mène-t-elle à la cellule de la cible ?
-                            if (destCell == refCell) {
-                                auto doorPos = doorPtr->GetPosition();
-                                float doorDist = (playerPos - doorPos).Length();
-                                if (doorDist < bestDoorDist) {
-                                    bestDoorDist = doorDist;
-                                    bestDoor = doorPtr;
+                    // === 1. worldLocMarker : position exacte de l'entrée du lieu ===
+                    // Le moteur utilise ce marqueur pour afficher les quêtes sur la carte.
+                    // Remonte la hiérarchie des lieux (sous-donjon → donjon → zone).
+                    if (!isInterior) {
+                        auto* targetLocation = refCell->GetLocation();
+                        for (auto* loc = targetLocation; loc && !resolvedPos; loc = loc->parentLoc) {
+                            if (loc->worldLocMarker) {
+                                auto markerPtr = loc->worldLocMarker.get();
+                                if (markerPtr) {
+                                    actualPos = markerPtr->GetPosition();
+                                    resolvedPos = true;
+                                    LOG("Scanner: quest resolved via worldLocMarker loc='{}' FormID={:08X} pos=({:.0f},{:.0f},{:.0f})",
+                                        loc->GetFullName() ? loc->GetFullName() : "?",
+                                        markerPtr->GetFormID(),
+                                        actualPos.x, actualPos.y, actualPos.z);
                                 }
                             }
-                        }
-                    };
-
-                    // Chercher dans la cellule du joueur
-                    searchDoorsForCell(playerCell);
-
-                    // En extérieur, chercher aussi dans les cellules voisines + persistante
-                    if (!bestDoor && !isInterior) {
-                        if (auto* gridCells = tes->gridCells) {
-                            for (uint32_t gx = 0; gx < gridCells->length && !bestDoor; gx++) {
-                                for (uint32_t gy = 0; gy < gridCells->length && !bestDoor; gy++) {
-                                    auto* gc = gridCells->GetCell(gx, gy);
-                                    if (gc && gc->IsAttached() && gc != playerCell) searchDoorsForCell(gc);
-                                }
-                            }
-                        }
-                        auto* ws = player->GetWorldspace();
-                        if (!bestDoor && ws && ws->persistentCell) {
-                            searchDoorsForCell(ws->persistentCell);
                         }
                     }
 
-                    // Fallback : si pas de porte directe, utiliser la boussole
-                    if (!bestDoor) {
-                        LOG("Scanner: no direct door to '{}', trying compass", refCell->GetName());
+                    // === 2. Recherche de porte directe dans les cellules chargées ===
+                    if (!resolvedPos) {
+                        RE::TESObjectREFR* bestDoor = nullptr;
+                        float bestDoorDist = 999999.0f;
+
+                        auto searchDoorsForCell = [&](RE::TESObjectCELL* searchCell) {
+                            if (!searchCell) return;
+                            for (auto& doorHandle : searchCell->GetRuntimeData().references) {
+                                auto doorPtr = doorHandle.get();
+                                if (!doorPtr) continue;
+                                auto* doorBase = doorPtr->GetBaseObject();
+                                if (!doorBase || doorBase->GetFormType() != RE::FormType::Door) continue;
+                                auto* extraTele = doorPtr->extraList.GetByType<RE::ExtraTeleport>();
+                                if (!extraTele || !extraTele->teleportData) continue;
+                                auto linkedDoor = extraTele->teleportData->linkedDoor.get();
+                                if (!linkedDoor) continue;
+                                auto* destCell = linkedDoor->GetParentCell();
+                                if (!destCell) continue;
+
+                                if (destCell == refCell) {
+                                    auto doorPos = doorPtr->GetPosition();
+                                    float doorDist = (playerPos - doorPos).Length();
+                                    if (doorDist < bestDoorDist) {
+                                        bestDoorDist = doorDist;
+                                        bestDoor = doorPtr;
+                                    }
+                                }
+                            }
+                        };
+
+                        searchDoorsForCell(playerCell);
+
+                        if (!bestDoor && !isInterior) {
+                            if (auto* gridCells = tes->gridCells) {
+                                for (uint32_t gx = 0; gx < gridCells->length && !bestDoor; gx++) {
+                                    for (uint32_t gy = 0; gy < gridCells->length && !bestDoor; gy++) {
+                                        auto* gc = gridCells->GetCell(gx, gy);
+                                        if (gc && gc->IsAttached() && gc != playerCell) searchDoorsForCell(gc);
+                                    }
+                                }
+                            }
+                            auto* ws = player->GetWorldspace();
+                            if (!bestDoor && ws && ws->persistentCell) {
+                                searchDoorsForCell(ws->persistentCell);
+                            }
+                        }
+
+                        if (bestDoor) {
+                            actualPos = bestDoor->GetPosition();
+                            resolvedPos = true;
+                            LOG("Scanner: quest redirected to door '{}' FormID={:08X} dist={:.0f}",
+                                bestDoor->GetDisplayFullName() ? bestDoor->GetDisplayFullName() : "?",
+                                bestDoor->GetFormID(), bestDoorDist);
+                        }
+                    }
+
+                    // === 3. Fallback boussole ===
+                    if (!resolvedPos) {
+                        LOG("Scanner: no door or marker for '{}', trying compass", refCell->GetName());
                         float compassHeading = -1.0f;
                         auto* ui = RE::UI::GetSingleton();
                         if (ui) {
@@ -846,39 +893,20 @@ static void DoScanInternal() {
                             }
                         }
                         if (compassHeading >= 0) {
+                            // Direction de la boussole, distance fictive
                             float compassRad = compassHeading * 3.14159265f / 180.0f;
-                            for (auto& doorHandle : playerCell->GetRuntimeData().references) {
-                                auto doorPtr = doorHandle.get();
-                                if (!doorPtr) continue;
-                                auto* doorBase = doorPtr->GetBaseObject();
-                                if (!doorBase || doorBase->GetFormType() != RE::FormType::Door) continue;
-                                auto* extraTele = doorPtr->extraList.GetByType<RE::ExtraTeleport>();
-                                if (!extraTele || !extraTele->teleportData) continue;
-                                auto doorPos = doorPtr->GetPosition();
-                                float dx = doorPos.x - playerPos.x;
-                                float dy = doorPos.y - playerPos.y;
-                                float doorAngle = std::atan2(dx, dy);
-                                if (doorAngle < 0) doorAngle += 2.0f * 3.14159265f;
-                                float angleDiff = std::abs(doorAngle - compassRad);
-                                if (angleDiff > 3.14159265f) angleDiff = 2.0f * 3.14159265f - angleDiff;
-                                if (angleDiff < bestDoorDist) {
-                                    bestDoorDist = angleDiff;
-                                    bestDoor = doorPtr;
-                                }
-                            }
+                            actualPos.x = playerPos.x + std::sin(compassRad) * 50000.0f;
+                            actualPos.y = playerPos.y + std::cos(compassRad) * 50000.0f;
+                            actualPos.z = playerPos.z;
+                            LOG("Scanner: quest compass fallback heading={:.1f}°", compassHeading);
                         }
-                    }
-
-                    if (bestDoor) {
-                        actualPos = bestDoor->GetPosition();
-                        LOG("Scanner: quest redirected to door '{}' FormID={:08X} dist={:.0f}",
-                            bestDoor->GetDisplayFullName() ? bestDoor->GetDisplayFullName() : "?",
-                            bestDoor->GetFormID(), bestDoorDist);
                     }
                 }
 
-                auto diff = playerPos - actualPos;
-                float dist = diff.Length();
+                // Distance 2D (comme la carte) pour les quêtes — cohérent avec les lieux
+                float dx = playerPos.x - actualPos.x;
+                float dy = playerPos.y - actualPos.y;
+                float dist = std::sqrt(dx * dx + dy * dy);
                 float zDiff = actualPos.z - playerPos.z;
 
                 // Nom : texte de l'objectif (résoudre les <Alias=XXX>)
@@ -922,6 +950,27 @@ static void DoScanInternal() {
         }
     } catch (...) {
         LOG("Scanner: exception while scanning quest objectives");
+    }
+
+    // --- Marqueur personnalisé de la carte (touche P) ---
+    if (g_customMarkerActive && (g_customMarkerPos.x != 0 || g_customMarkerPos.y != 0)) {
+        float dx = g_customMarkerPos.x - playerPos.x;
+        float dy = g_customMarkerPos.y - playerPos.y;
+        float dist = std::sqrt(dx * dx + dy * dy);
+
+        ScannedObject obj;
+        obj.formID = g_customMarkerFormID;  // FormID réel du marqueur de carte
+        obj.name = L"Marker: " + g_customMarkerName;
+        obj.distance = dist;
+        obj.zDiff = g_customMarkerPos.z - playerPos.z;
+        obj.lastKnownPos = g_customMarkerPos;
+        obj.category = kCatQuests;
+        obj.locked = false;
+        obj.empty = false;
+        obj.dead = false;
+
+        g_scannedAll.push_back(std::move(obj));
+        LOG("Scanner: custom marker '{}' at dist={:.0f}", WStringToUtf8(g_customMarkerName), dist);
     }
 
     // --- Scanner les Locations (marqueurs de carte) en extérieur ---
@@ -1086,6 +1135,17 @@ static void RefreshFilteredList() {
         }
         auto* ref = form->AsReference();
         if (!ref) continue;
+
+        // Objet ramassé, supprimé ou désactivé → retirer de la liste
+        // Exception : les quêtes ne sont jamais invalidées ici (leur cible peut être
+        // dans une cellule non chargée, désactivée, ou pas encore créée)
+        if (obj.category != kCatQuests) {
+            if (ref->IsDisabled() || ref->IsDeleted() || !ref->Is3DLoaded()) {
+                obj.category = kCatAll;
+                obj.formID = 0;
+                continue;
+            }
+        }
 
         // Recalculer la distance en temps réel
         if (player) {
@@ -1454,10 +1514,17 @@ static void ScannerAnnounceCurrent() {
         if (actor) {
             targetPos = GetActorCenter(actor);
         } else {
-            // Pour les objets non-acteurs, ajuster la hauteur vers le centre des bounds
-            auto boundMin = ref->GetBoundMin();
-            auto boundMax = ref->GetBoundMax();
-            targetPos.z += (boundMin.z + boundMax.z) * 0.5f;
+            // Utiliser le centre 3D réel (worldBound) si disponible — plus précis pour
+            // les objets jetés au sol dont la physique Havok a déplacé le mesh
+            auto* node = ref->Get3D();
+            if (node && node->worldBound.radius > 0.1f) {
+                targetPos = node->worldBound.center;
+            } else {
+                // Fallback : bounds statiques
+                auto boundMin = ref->GetBoundMin();
+                auto boundMax = ref->GetBoundMax();
+                targetPos.z += (boundMin.z + boundMax.z) * 0.5f;
+            }
         }
 
         auto diff = playerPos - targetPos;
@@ -1514,10 +1581,19 @@ static int g_autoAimFrameCount{0};                 // compteur pour rate-limit
 
 // Calculer le centre du corps d'un acteur (pas les pieds)
 static RE::NiPoint3 GetActorCenter(RE::Actor* actor) {
+    // Pour les acteurs morts (ragdoll au sol), utiliser le centre 3D réel
+    // car le bounding box statique suppose un corps debout
+    if (actor->IsDead()) {
+        auto* node = actor->Get3D();
+        if (node && node->worldBound.radius > 0.1f) {
+            return node->worldBound.center;
+        }
+    }
+
+    // Acteurs vivants : centre vertical = mi-hauteur du bounding box
     auto pos = actor->GetPosition();
     auto boundMin = actor->GetBoundMin();
     auto boundMax = actor->GetBoundMax();
-    // Centre vertical = position + moitié de la hauteur du bounding box
     float centerZ = pos.z + (boundMax.z - boundMin.z) * 0.5f;
     return {pos.x, pos.y, centerZ};
 }
@@ -1650,8 +1726,8 @@ static RE::Actor* FindNearestEnemy(RE::PlayerCharacter* player, float& outDist, 
 
         // Si on priorise les dragons et qu'on en a déjà un, ignorer les non-dragons
         if (prioritizeDragons && bestIsDragon && !dragon) return;
-        // Dragon à moins de 30000 unités → priorité absolue
-        if (dragon && dist > 30000.0f) dragon = false;
+        // Dragon à moins de 5000 unités → priorité absolue
+        if (dragon && dist > 5000.0f) dragon = false;
 
         // Score = distance, pénalisé x3 si pas de ligne de vue
         float score = dist;
@@ -1696,10 +1772,15 @@ static RE::Actor* FindNearestEnemy(RE::PlayerCharacter* player, float& outDist, 
     return best;
 }
 
+static std::atomic_bool g_aimLoopPlaying{false};
+
 // Arrêter le suivi auto-aim (safe à appeler de n'importe quel thread)
 static void StopAutoAim() {
     g_autoAimTracking.store(false);
     g_autoAimTarget.reset();
+    if (g_aimLoopPlaying.exchange(false)) {
+        StopSoundLoop();  // Arrêter le son de visée en boucle
+    }
     // Ne PAS join le thread ici — il s'arrêtera tout seul via stop_token + g_autoAimTracking
     LOG("AutoAim: tracking stopped");
 }
@@ -1759,11 +1840,17 @@ static void StartAutoAimTracking() {
                         AimAtPosition(p, targetCenter);
                     }
 
-                    // Bip seulement si ligne de vue dégagée
+                    // Son en boucle si ligne de vue dégagée
                     bool losUnused = false;
                     bool hasLOS = p->HasLineOfSight(t, losUnused);
-                    if (hasLOS) {
-                        std::thread([]() { Beep(1000, 30); }).detach();
+                    if (hasLOS && !g_aimLoopPlaying.load()) {
+                        PlaySoundLoop(g_soundAimLoopID, g_volumeAim);
+                        g_aimLoopPlaying.store(true);
+                        LOG("AutoAim: aim loop started (LOS ok)");
+                    } else if (!hasLOS && g_aimLoopPlaying.load()) {
+                        StopSoundLoop();
+                        g_aimLoopPlaying.store(false);
+                        LOG("AutoAim: aim loop stopped (LOS blocked)");
                     }
                 });
             }

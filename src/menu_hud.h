@@ -52,7 +52,6 @@ static CrosshairListener g_crosshairListener;
 
 // --- HUD AdvanceMovie hook (notifications, sous-titres, lieu, tutoriel) ---
 static std::string g_hudPrevNotif;
-static std::string g_hudPrevSubtitle;
 static std::string g_hudPrevLocation;
 static std::string g_hudPrevTutorial;
 static std::string g_hudPrevMessage;   // dernier message d'item (Gold added, etc.)
@@ -66,7 +65,6 @@ static bool g_cameraInitialized = false; // éviter annonce au lancement
 // Notifications : QuestName stocké sur AnimatedLetter_mc avant animation lettre par lettre
 static constexpr const char* HUD_NOTIF     = "_root.HUDMovieBaseInstance.QuestUpdateBaseInstance.AnimatedLetter_mc.QuestName";
 // Sous-titres de dialogue (SubtitleText = SubtitleTextHolder.textField, ligne 146)
-static constexpr const char* HUD_SUBTITLE  = "_root.HUDMovieBaseInstance.SubtitleTextHolder.textField.text";
 // Nom de lieu (SetLocationName, HUDMenu.as ligne 375)
 static constexpr const char* HUD_LOCATION  = "_root.HUDMovieBaseInstance.LocationLockBase.LocationNameBase.LocationTextBase.LocationTextInstance.text";
 // Tutoriel (ShowTutorialHintText, HUDMenu.as ligne 147)
@@ -223,17 +221,8 @@ static void HUDAdvanceMovie_Hook(RE::IMenu* a_this, float a_interval, std::uint3
         }
     }
 
-    // Sous-titres de dialogue
-    std::string subtitle;
-    if (GetGFxString(movie, HUD_SUBTITLE, subtitle)) {
-        if (subtitle.empty() || subtitle == " ") {
-            g_hudPrevSubtitle.clear();
-        } else if (subtitle != g_hudPrevSubtitle) {
-            g_hudPrevSubtitle = subtitle;
-            LOG("HUD subtitle: '{}'", subtitle);
-            Speak(StripMarkupForSpeech(Utf8ToWString(subtitle)));
-        }
-    }
+    // Sous-titres de dialogue — désactivé, les PNJ ont déjà des voix
+    // Le champ GFx peut être rempli même si les sous-titres sont désactivés dans les options
 
     // Nom de lieu quand on entre dans une nouvelle zone
     std::string location;

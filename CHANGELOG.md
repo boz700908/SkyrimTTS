@@ -1,5 +1,56 @@
 # Changelog
 
+## v1.2 (in progress)
+
+### SkyUI compatibility
+SkyUI (https://www.nexusmods.com/skyrimspecialedition/mods/12604) replaces the vanilla menus with a new interface. For players who have used Fallout Access, the SkyUI inventory experience is similar: categories on the left, items on the right, with keyboard-driven navigation.
+
+- Inventory, container, barter, magic, gift, and favorites menus now work with SkyUI installed
+- SkyUI uses different category names and navigation — categories are on the left panel, use Left/Right arrows to switch between categories and items
+- Alt key switches between your inventory and the vendor/container inventory (replaces the vanilla divider system)
+- Favorites menu with SkyUI: category filters (All, Gear, Aid, Magic) are read when navigating
+- Inventory sorting with keyboard (SkyUI only): press 1 to sort by equipped, 2 by name, 3 by weight, 4 by value — the sort type is announced, followed by the first item in the sorted list
+- SkyUI MCM (Mod Configuration Menu): full accessibility — mod list, pages, all option types (toggle, slider, menu, keymap, text, color), value changes read on toggle/slider, key names displayed instead of scan codes
+- SkyUI MCM: menu dropdown and slider dialog popups are read when navigating
+- The plugin automatically detects whether SkyUI or vanilla UI is installed — no configuration needed
+
+### Fixes
+- Autowalk: fixed dynamic objects (dropped items, summoned NPCs) — autowalk now correctly walks to them instead of searching for a door
+- Scanner: crosshair now accurately targets dropped items on the ground (uses real 3D mesh position instead of static bounds)
+- Scanner: crosshair now accurately targets dead bodies (ragdolls) lying on the ground instead of aiming above them
+- Scanner: quest objectives no longer disappear from the list when navigating with Page Up/Down
+- Scanner: quest objectives now correctly filtered from game start — no need to open the journal first
+- Map: quest markers for targets inside dungeons now point to the dungeon entrance instead of raw interior coordinates — distances and directions are now accurate
+- Map/Scanner: quest distances are now consistent between the map and the scanner (both use 2D ground distance)
+- Auto-aim: reduced dragon priority range from 30,000 to 5,000 units — dragons are only prioritized over closer enemies when they are nearby
+
+### New features
+- Auto-aim: replaced system beep with custom in-game sound that follows Skyrim's volume settings
+- Kill sound: replaced system beep with custom in-game sound
+- Dragon hit: replaced system beep with custom in-game sound
+- NPC dialogue subtitles are no longer read by NVDA (NPCs already have voice acting)
+- Translations: plugin now reads translation files directly from BSA archives — no need to extract Translate_FRENCH.txt manually
+- Journal: Miscellaneous quests are now navigable individually — scroll to Misc, press Right arrow to enter the list, navigate with Up/Down, press Enter to activate/deactivate individual misc quests
+- Map: press P on any map marker to place a custom marker — it appears in the scanner's Quests category with distance and direction, and you can autowalk toward it with Shift+Home
+- Barter/Container/Inventory/Gift: quantity slider is now read when buying, selling, dropping, or giving stacked items — announces the quantity on open and reads each change when pressing Up/Down
+
+### Sound volume settings
+You can now adjust the volume of each custom sound effect by editing the file `Data/SKSE/Plugins/SkyrimNVDA.ini`. This file is installed alongside the plugin. Open it with any text editor and change the values:
+
+```
+[Sounds]
+AimVolume=0.2
+KillVolume=0.4
+DragonHitVolume=1.0
+```
+
+- Values range from 0.0 (silent) to 1.0 (full volume)
+- AimVolume: the continuous beep when aiming at an enemy with a bow
+- KillVolume: the sound that plays when you kill an enemy
+- DragonHitVolume: the sound that plays when your arrow hits a dragon
+- Setting a value to 0.0 will completely disable that sound
+- Changes require a game restart to take effect
+
 ## v1.1 (2026-03-26)
 
 ### New features
@@ -37,8 +88,8 @@
 - Training menu: vocalize skill name, trainer level, training count, cost, and gold on open and after each training session
 - Auto-aim: uses ProcessLists instead of cell scan to find enemies — dragons in flight are now detected reliably
 - Map: added Quest Targets filter — active quest objectives appear as markers with distance and direction
-- Map: camera now moves to the selected marker's world position when navigating
 - Map: quest targets in interiors are redirected to the exit door for correct map positioning
+- Enemy lock: Shift+X toggles permanent camera lock onto the nearest enemy (press Shift+X again to unlock)
 - HUD: announce sneaking/standing when toggling crouch
 - HUD: announce first person/third person when switching camera view
 - Console: developer console (~) is now accessible — typed text and command results are read by NVDA

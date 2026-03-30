@@ -10,6 +10,8 @@ static std::wstring     g_lastContainerItemAnnounce;
 static std::wstring     g_lastContainerSide;
 static std::wstring     g_lastContainerItemName;
 static int              g_lastContainerItemCount{0};
+static bool             g_containerQuantityOpen{false};
+static int              g_lastContainerQuantity{0};
 
 struct ContainerSnapshot {
     std::wstring itemText;
@@ -34,33 +36,57 @@ static bool ReadContainerSnapshot(ContainerSnapshot& snap) {
     RE::GFxMovieView* movie = menu->uiMovie.get();
     if (!movie) return false;
 
+    const bool skyui = g_skyuiMode.load(std::memory_order_relaxed);
+
+    const char* itemText  = skyui ? "_root.Menu_mc.inventoryLists.itemList.selectedEntry.text"
+                                  : "_root.Menu_mc.InventoryLists_mc.ItemsList.selectedEntry.text";
+    const char* itemCount = skyui ? "_root.Menu_mc.inventoryLists.itemList.selectedEntry.count"
+                                  : "_root.Menu_mc.InventoryLists_mc.ItemsList.selectedEntry.count";
+    const char* itemEquip = skyui ? "_root.Menu_mc.inventoryLists.itemList.selectedEntry.equipState"
+                                  : "_root.Menu_mc.InventoryLists_mc.ItemsList.selectedEntry.equipState";
+    const char* catPath   = skyui ? "_root.Menu_mc.inventoryLists.categoryList.selectedEntry.text"
+                                  : "_root.Menu_mc.InventoryLists_mc.CategoriesList.centeredEntry.text";
+    const char* dividerPath = skyui ? "_root.Menu_mc.inventoryLists.categoryList.dividerIndex"
+                                    : "_root.Menu_mc.InventoryLists_mc.CategoriesList.dividerIndex";
+    const char* catIdxPath  = skyui ? "_root.Menu_mc.inventoryLists.categoryList.selectedIndex"
+                                    : "_root.Menu_mc.InventoryLists_mc.CategoriesList.selectedIndex";
+
     std::string tmp;
     double num = 0.0;
 
-    if (GetGFxString(movie, "_root.Menu_mc.InventoryLists_mc.ItemsList.selectedEntry.text", tmp) && !tmp.empty())
+    if (GetGFxString(movie, itemText, tmp) && !tmp.empty())
         snap.itemText = ResolveUIString(movie, tmp);
-    if (GetGFxNumber(movie, "_root.Menu_mc.InventoryLists_mc.ItemsList.selectedEntry.count", num))
+    if (GetGFxNumber(movie, itemCount, num))
         snap.count = static_cast<int>(num);
-    if (GetGFxNumber(movie, "_root.Menu_mc.InventoryLists_mc.ItemsList.selectedEntry.equipState", num))
+    if (GetGFxNumber(movie, itemEquip, num))
         snap.equipState = static_cast<int>(num);
-    if (GetGFxString(movie, "_root.Menu_mc.InventoryLists_mc.CategoriesList.centeredEntry.text", tmp) && !tmp.empty())
+    if (GetGFxString(movie, catPath, tmp) && !tmp.empty())
         snap.catText = ResolveUIString(movie, tmp);
 
     // Determine if viewing container side or player inventory side
-    double divider = -1.0, catIdx = -1.0;
-    bool hasDivider = GetGFxNumber(movie, "_root.Menu_mc.InventoryLists_mc.CategoriesList.dividerIndex", divider);
-    bool hasCatIdx  = GetGFxNumber(movie, "_root.Menu_mc.InventoryLists_mc.CategoriesList.selectedIndex", catIdx);
-    if (hasDivider && hasCatIdx && divider > 0) {
-        snap.isContainerSide = (catIdx < divider);
-        snap.atDivider       = (catIdx == divider);
+    if (skyui) {
+        // SkyUI uses activeSegment: 0 = container, 1 = player inventory
+        double segment = 0.0;
+        if (GetGFxNumber(movie, "_root.Menu_mc.inventoryLists.categoryList.activeSegment", segment)) {
+            snap.isContainerSide = (static_cast<int>(segment) == 0);
+            snap.atDivider = false;
+        }
+    } else {
+        double divider = -1.0, catIdx = -1.0;
+        bool hasDivider = GetGFxNumber(movie, dividerPath, divider);
+        bool hasCatIdx  = GetGFxNumber(movie, catIdxPath, catIdx);
+        if (hasDivider && hasCatIdx && divider > 0) {
+            snap.isContainerSide = (catIdx < divider);
+            snap.atDivider       = (catIdx == divider);
+        }
     }
 
     // Read value/weight/damage/armor from ItemCard — try multiple prefixes
     auto readItemCard = [&](const char* field, std::wstring& out) {
         std::string s;
         const char* prefixes[] = {
-            "_root.Menu_mc.ItemCardFadeHolder_mc.ItemCard_mc.",
-            "_root.Menu_mc.ItemCard_mc.",
+            skyui ? "_root.Menu_mc.itemCard." : "_root.Menu_mc.ItemCardFadeHolder_mc.ItemCard_mc.",
+            skyui ? "_root.Menu_mc.itemCardFadeHolder.ItemCard_mc." : "_root.Menu_mc.ItemCard_mc.",
             "_root.ItemCard_mc."
         };
         for (auto pfx : prefixes) {
@@ -107,21 +133,63 @@ static std::wstring BuildContainerItemAnnouncement(const ContainerSnapshot& snap
 
 static void AnnounceContainerChangeImpl() {
     if (!g_containerOpen.load()) return;
+
+    // Vérifier le slider de quantité
+    {
+        auto ui = RE::UI::GetSingleton();
+        auto menu = ui ? ui->GetMenu(RE::ContainerMenu::MENU_NAME) : nullptr;
+        auto* movie = (menu && menu->uiMovie) ? menu->uiMovie.get() : nullptr;
+        if (movie) {
+            const bool skyui = g_skyuiMode.load(std::memory_order_relaxed);
+            const char* sliderPath = skyui
+                ? "_root.Menu_mc.itemCardFadeHolder.ItemCard_mc.QuantitySlider_mc.value"
+                : "_root.Menu_mc.ItemCardFadeHolder_mc.ItemCard_mc.QuantitySlider_mc.value";
+            const char* sliderAlphaPath = skyui
+                ? "_root.Menu_mc.itemCardFadeHolder.ItemCard_mc.QuantitySlider_mc._alpha"
+                : "_root.Menu_mc.ItemCardFadeHolder_mc.ItemCard_mc.QuantitySlider_mc._alpha";
+
+            double alpha = 0.0;
+            GetGFxNumber(movie, sliderAlphaPath, alpha);
+            bool sliderVisible = (alpha >= 50.0);
+
+            if (sliderVisible) {
+                double val = 0.0;
+                GetGFxNumber(movie, sliderPath, val);
+                int qty = static_cast<int>(val);
+                if (!g_containerQuantityOpen) {
+                    g_containerQuantityOpen = true;
+                    g_lastContainerQuantity = qty;
+                    Speak(L"Quantity: " + std::to_wstring(qty));
+                } else if (qty != g_lastContainerQuantity) {
+                    g_lastContainerQuantity = qty;
+                    Speak(std::to_wstring(qty));
+                }
+                return;
+            } else if (g_containerQuantityOpen) {
+                g_containerQuantityOpen = false;
+                g_lastContainerQuantity = 0;
+            }
+        }
+    }
+
     ContainerSnapshot snap;
     if (!ReadContainerSnapshot(snap)) return;
 
+    const bool skyui = g_skyuiMode.load(std::memory_order_relaxed);
     const std::wstring side = snap.isContainerSide ? L"container" : L"inventory";
     const bool sideChanged = (side != g_lastContainerSide);
     const bool catChanged  = !snap.catText.empty() && (sideChanged || snap.catText != g_lastContainerCat);
     // Log uniquement quand quelque chose change
-    if (sideChanged || catChanged || (!snap.itemText.empty() && snap.itemText != g_lastContainerItemName.c_str())) {
+    if (sideChanged || catChanged || (!snap.itemText.empty() && snap.itemText != g_lastContainerItemName)) {
         // Log les valeurs brutes du divider
         auto ui2 = RE::UI::GetSingleton();
         double rawDiv = -1, rawCatIdx = -1;
         if (ui2) {
             auto m2 = ui2->GetMenu(RE::ContainerMenu::MENU_NAME);
             if (m2 && m2->uiMovie) {
-                GetGFxNumber(m2->uiMovie.get(), "_root.Menu_mc.InventoryLists_mc.CategoriesList.dividerIndex", rawDiv);
+                const char* divP = skyui ? "_root.Menu_mc.inventoryLists.categoryList.dividerIndex"
+                                         : "_root.Menu_mc.InventoryLists_mc.CategoriesList.dividerIndex";
+                GetGFxNumber(m2->uiMovie.get(), divP, rawDiv);
                 GetGFxNumber(m2->uiMovie.get(), "_root.Menu_mc.iSelectedCategory", rawCatIdx);
             }
         }
@@ -182,13 +250,18 @@ static void AnnounceContainerStats() {
         if (!movie) return;
 
         std::string gold, carry;
+        const bool skyui = g_skyuiMode.load(std::memory_order_relaxed);
         const char* goldPaths[]  = {
-            "_root.Menu_mc.BottomBar_mc.PlayerGoldValue.text",
-            "_root.Menu_mc.BottomBar_mc.PlayerInfoCard_mc.PlayerGoldValue.text"
+            skyui ? "_root.Menu_mc.bottomBar.playerInfoCard.PlayerGoldValue.text"
+                  : "_root.Menu_mc.BottomBar_mc.PlayerGoldValue.text",
+            skyui ? "_root.Menu_mc.bottomBar.PlayerGoldValue.text"
+                  : "_root.Menu_mc.BottomBar_mc.PlayerInfoCard_mc.PlayerGoldValue.text"
         };
         const char* carryPaths[] = {
-            "_root.Menu_mc.BottomBar_mc.CarryWeightValue.text",
-            "_root.Menu_mc.BottomBar_mc.PlayerInfoCard_mc.CarryWeightValue.text"
+            skyui ? "_root.Menu_mc.bottomBar.playerInfoCard.CarryWeightValue.text"
+                  : "_root.Menu_mc.BottomBar_mc.CarryWeightValue.text",
+            skyui ? "_root.Menu_mc.bottomBar.CarryWeightValue.text"
+                  : "_root.Menu_mc.BottomBar_mc.PlayerInfoCard_mc.CarryWeightValue.text"
         };
         for (auto p : goldPaths)  { if (GetGFxString(movie, p, gold)  && !gold.empty())  break; }
         for (auto p : carryPaths) { if (GetGFxString(movie, p, carry) && !carry.empty()) break; }
@@ -241,14 +314,19 @@ static void DiagnoseContainerNow() {
         RE::GFxMovieView* movie = menu->uiMovie.get();
         if (!movie) { LOG("Container diag: no movie"); return; }
 
+        const bool skyui = g_skyuiMode.load(std::memory_order_relaxed);
         double divider = -1, catIdx = -1, itemCount = -1;
         std::string catText, itemText;
 
-        GetGFxNumber(movie, "_root.Menu_mc.InventoryLists_mc.CategoriesList.dividerIndex", divider);
+        GetGFxNumber(movie, skyui ? "_root.Menu_mc.inventoryLists.categoryList.dividerIndex"
+                                  : "_root.Menu_mc.InventoryLists_mc.CategoriesList.dividerIndex", divider);
         GetGFxNumber(movie, "_root.Menu_mc.iSelectedCategory", catIdx);
-        GetGFxNumber(movie, "_root.Menu_mc.InventoryLists_mc.ItemsList.totalCount", itemCount);
-        GetGFxString(movie, "_root.Menu_mc.InventoryLists_mc.CategoriesList.centeredEntry.text", catText);
-        GetGFxString(movie, "_root.Menu_mc.InventoryLists_mc.ItemsList.selectedEntry.text", itemText);
+        GetGFxNumber(movie, skyui ? "_root.Menu_mc.inventoryLists.itemList.selectedIndex"
+                                  : "_root.Menu_mc.InventoryLists_mc.ItemsList.totalCount", itemCount);
+        GetGFxString(movie, skyui ? "_root.Menu_mc.inventoryLists.categoryList.selectedEntry.text"
+                                  : "_root.Menu_mc.InventoryLists_mc.CategoriesList.centeredEntry.text", catText);
+        GetGFxString(movie, skyui ? "_root.Menu_mc.inventoryLists.itemList.selectedEntry.text"
+                                  : "_root.Menu_mc.InventoryLists_mc.ItemsList.selectedEntry.text", itemText);
 
         LOG("Container diag: divider={} catIdx={} catText='{}' itemCount={} selectedItem='{}'",
             (int)divider, (int)catIdx, catText, (int)itemCount, itemText);

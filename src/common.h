@@ -52,6 +52,14 @@ static std::wstring NormalizeForSpeech(const std::wstring& w) {
     return out;
 }
 
+// Helper pour log wstring → narrow string (avant que WStringToUtf8 soit défini)
+static std::string WToNarrow(const std::wstring& w) {
+    std::string s;
+    s.reserve(w.size());
+    for (wchar_t c : w) s += (c < 128) ? static_cast<char>(c) : '?';
+    return s;
+}
+
 // Interrompt la synthèse en cours puis lit le texte
 static void Speak(const wchar_t* w) {
     if (w && *w) {
@@ -289,17 +297,16 @@ static void LoadTranslationFile() {
                 c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
         }
     }
-    std::string filePath = "Data\\Interface\\Translate_" + lang + ".txt";
-    LOG("LoadTranslationFile: language='{}', opening '{}'", lang, filePath);
+    // Chemin relatif à Data/ — BSResourceNiBinaryStream cherche dans les fichiers loose ET les BSA
+    std::string bsaPath = "Interface\\Translate_" + lang + ".txt";
+    LOG("LoadTranslationFile: language='{}', opening '{}'", lang, bsaPath);
 
-    std::ifstream file(filePath, std::ios::binary | std::ios::ate);
-    if (!file.is_open()) { LOG("LoadTranslationFile: not found"); return; }
+    RE::BSResourceNiBinaryStream stream(bsaPath.c_str());
+    if (!stream.good()) { LOG("LoadTranslationFile: not found (loose or BSA)"); return; }
 
-    auto fileSize = static_cast<size_t>(file.tellg());
-    file.seekg(0);
+    auto fileSize = static_cast<size_t>(stream.stream->totalSize);
     std::vector<char> buf(fileSize);
-    file.read(buf.data(), static_cast<std::streamsize>(fileSize));
-    file.close();
+    stream.read(buf.data(), static_cast<std::uint32_t>(fileSize));
 
     std::wstring content;
     if (fileSize >= 2 &&
@@ -506,6 +513,151 @@ static std::wstring SanitizeNumericText(const std::wstring& s) {
     return out;
 }
 
+// --- DirectX Scan Code → Key Name ---
+static std::wstring DXScanCodeToName(int code) {
+    switch (code) {
+        case 1:   return L"Escape";
+        case 2:   return L"1";
+        case 3:   return L"2";
+        case 4:   return L"3";
+        case 5:   return L"4";
+        case 6:   return L"5";
+        case 7:   return L"6";
+        case 8:   return L"7";
+        case 9:   return L"8";
+        case 10:  return L"9";
+        case 11:  return L"0";
+        case 12:  return L"Minus";
+        case 13:  return L"Equals";
+        case 14:  return L"Backspace";
+        case 15:  return L"Tab";
+        case 16:  return L"Q";
+        case 17:  return L"W";
+        case 18:  return L"E";
+        case 19:  return L"R";
+        case 20:  return L"T";
+        case 21:  return L"Y";
+        case 22:  return L"U";
+        case 23:  return L"I";
+        case 24:  return L"O";
+        case 25:  return L"P";
+        case 26:  return L"Left Bracket";
+        case 27:  return L"Right Bracket";
+        case 28:  return L"Enter";
+        case 29:  return L"Left Ctrl";
+        case 30:  return L"A";
+        case 31:  return L"S";
+        case 32:  return L"D";
+        case 33:  return L"F";
+        case 34:  return L"G";
+        case 35:  return L"H";
+        case 36:  return L"J";
+        case 37:  return L"K";
+        case 38:  return L"L";
+        case 39:  return L"Semicolon";
+        case 40:  return L"Apostrophe";
+        case 41:  return L"Tilde";
+        case 42:  return L"Left Shift";
+        case 43:  return L"Backslash";
+        case 44:  return L"Z";
+        case 45:  return L"X";
+        case 46:  return L"C";
+        case 47:  return L"V";
+        case 48:  return L"B";
+        case 49:  return L"N";
+        case 50:  return L"M";
+        case 51:  return L"Comma";
+        case 52:  return L"Period";
+        case 53:  return L"Slash";
+        case 54:  return L"Right Shift";
+        case 55:  return L"Numpad *";
+        case 56:  return L"Left Alt";
+        case 57:  return L"Space";
+        case 58:  return L"Caps Lock";
+        case 59:  return L"F1";
+        case 60:  return L"F2";
+        case 61:  return L"F3";
+        case 62:  return L"F4";
+        case 63:  return L"F5";
+        case 64:  return L"F6";
+        case 65:  return L"F7";
+        case 66:  return L"F8";
+        case 67:  return L"F9";
+        case 68:  return L"F10";
+        case 69:  return L"Num Lock";
+        case 70:  return L"Scroll Lock";
+        case 71:  return L"Numpad 7";
+        case 72:  return L"Numpad 8";
+        case 73:  return L"Numpad 9";
+        case 74:  return L"Numpad -";
+        case 75:  return L"Numpad 4";
+        case 76:  return L"Numpad 5";
+        case 77:  return L"Numpad 6";
+        case 78:  return L"Numpad +";
+        case 79:  return L"Numpad 1";
+        case 80:  return L"Numpad 2";
+        case 81:  return L"Numpad 3";
+        case 82:  return L"Numpad 0";
+        case 83:  return L"Numpad .";
+        case 87:  return L"F11";
+        case 88:  return L"F12";
+        case 156: return L"Numpad Enter";
+        case 157: return L"Right Ctrl";
+        case 181: return L"Numpad /";
+        case 183: return L"Print Screen";
+        case 184: return L"Right Alt";
+        case 197: return L"Pause";
+        case 199: return L"Home";
+        case 200: return L"Up";
+        case 201: return L"Page Up";
+        case 203: return L"Left";
+        case 205: return L"Right";
+        case 207: return L"End";
+        case 208: return L"Down";
+        case 209: return L"Page Down";
+        case 210: return L"Insert";
+        case 211: return L"Delete";
+        case 219: return L"Left Win";
+        case 220: return L"Right Win";
+        // Mouse buttons (256+)
+        case 256: return L"Left Click";
+        case 257: return L"Right Click";
+        case 258: return L"Middle Click";
+        case 259: return L"Mouse 4";
+        case 260: return L"Mouse 5";
+        case 261: return L"Mouse 6";
+        case 262: return L"Mouse 7";
+        case 263: return L"Mouse 8";
+        case 264: return L"Mouse Wheel Up";
+        case 265: return L"Mouse Wheel Down";
+        default:  return L"key " + std::to_wstring(code);
+    }
+}
+
+// --- SkyUI Detection ---
+// SkyUI replaces several menus (inventory, container, barter, magic, gift) with different GFx paths.
+// Détecté au chargement via le plugin ESP, avec fallback GFx au premier menu.
+static std::atomic_bool g_skyuiMode{false};
+static std::atomic_bool g_skyuiDetectionDone{false};
+
+static void DetectSkyUIFromPlugin() {
+    auto* dataHandler = RE::TESDataHandler::GetSingleton();
+    if (!dataHandler) return;
+    bool isSkyUI = (dataHandler->LookupModByName("SkyUI_SE.esp") != nullptr);
+    g_skyuiMode.store(isSkyUI, std::memory_order_relaxed);
+    g_skyuiDetectionDone.store(true, std::memory_order_relaxed);
+    LOG("SkyUI detected at startup: {}", isSkyUI ? "yes" : "no");
+}
+
+static void DetectSkyUI(RE::GFxMovieView* movie) {
+    if (g_skyuiDetectionDone.load(std::memory_order_relaxed)) return;
+    RE::GFxValue test;
+    bool isSkyUI = movie->GetVariable(&test, "_root.Menu_mc.inventoryLists") && !test.IsUndefined();
+    g_skyuiMode.store(isSkyUI, std::memory_order_relaxed);
+    g_skyuiDetectionDone.store(true, std::memory_order_relaxed);
+    LOG("SkyUI detected via GFx fallback: {}", isSkyUI ? "yes" : "no");
+}
+
 // Check if a numeric text is zero (handles "0", "0.0", "000", etc.)
 static bool isZero(const std::wstring& s) {
     for (auto c : s) {
@@ -524,6 +676,89 @@ static std::wstring FormatWeight(double w) {
     std::wstring s = ss.str();
     for (auto& c : s) if (c == L'.') c = L',';
     return s;
+}
+
+// ---------------- INI settings ----------------
+
+static float g_volumeAim       = 1.0f;
+static float g_volumeKill      = 1.0f;
+static float g_volumeDragonHit = 1.0f;
+
+static void LoadINISettings() {
+    // Chemin : Data/SKSE/Plugins/SkyrimNVDA.ini (à côté du DLL)
+    char path[MAX_PATH];
+    GetModuleFileNameA(nullptr, path, MAX_PATH);
+    std::string exePath(path);
+    auto pos = exePath.find_last_of("\\/");
+    std::string iniPath = exePath.substr(0, pos) + "\\Data\\SKSE\\Plugins\\SkyrimNVDA.ini";
+
+    auto readFloat = [&](const char* section, const char* key, float def) -> float {
+        char buf[32];
+        GetPrivateProfileStringA(section, key, "", buf, sizeof(buf), iniPath.c_str());
+        if (buf[0] == '\0') return def;
+        try { return std::stof(buf); } catch (...) { return def; }
+    };
+
+    g_volumeAim       = readFloat("Sounds", "AimVolume", 1.0f);
+    g_volumeKill      = readFloat("Sounds", "KillVolume", 1.0f);
+    g_volumeDragonHit = readFloat("Sounds", "DragonHitVolume", 1.0f);
+
+    LOG("INI loaded: aim={:.2f} kill={:.2f} dragonHit={:.2f}", g_volumeAim, g_volumeKill, g_volumeDragonHit);
+}
+
+// ---------------- Custom sounds via Papyrus ----------------
+
+// FormIDs locaux SOUN dans SkyrimTTS_AutoWalk.esp (le script Papyrus résout le load order)
+static constexpr RE::FormID g_soundAimLoopID   = 0x806;
+static constexpr RE::FormID g_soundEnemyDeathID = 0x807;
+static constexpr RE::FormID g_soundDragonHitID  = 0x808;
+
+// Appelle une fonction son sur le script Papyrus SkyrimTTS_AutoWalk
+static void CallSoundPapyrus(const char* funcName, RE::FormID soundFormID = 0, float volume = 1.0f) {
+    auto* task = SKSE::GetTaskInterface();
+    if (!task) return;
+    std::string func(funcName);
+    RE::FormID id = soundFormID;
+    task->AddTask([func, id, volume]() {
+        auto* quest = RE::TESForm::LookupByEditorID<RE::TESQuest>("SkyrimTTS_AutoWalkQuest");
+        if (!quest) { LOG("Sound: quest not found"); return; }
+
+        auto* vm = RE::BSScript::Internal::VirtualMachine::GetSingleton();
+        if (!vm) return;
+
+        auto* policy = vm->GetObjectHandlePolicy();
+        if (!policy) return;
+
+        auto handle = policy->GetHandleForObject(RE::FormType::Quest, quest);
+        if (handle == policy->EmptyHandle()) return;
+
+        RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback;
+        bool ok = false;
+        if (id != 0) {
+            auto* args = RE::MakeFunctionArguments(static_cast<std::int32_t>(id), static_cast<float>(volume));
+            ok = vm->DispatchMethodCall(handle, RE::BSFixedString("SkyrimTTS_AutoWalk"),
+                RE::BSFixedString(func.c_str()), args, callback);
+        } else {
+            auto* emptyArgs = RE::MakeFunctionArguments();
+            ok = vm->DispatchMethodCall(handle, RE::BSFixedString("SkyrimTTS_AutoWalk"),
+                RE::BSFixedString(func.c_str()), emptyArgs, callback);
+        }
+        if (!ok) LOG("Sound: DispatchMethodCall '{}' failed (formID={:08X})", func, id);
+    });
+}
+
+static void PlaySoundOneShot(RE::FormID soundFormID, float volume = 1.0f) {
+    if (soundFormID == 0 || volume <= 0.0f) return;
+    CallSoundPapyrus("OnPlaySound", soundFormID, volume);
+}
+
+static void PlaySoundLoop(RE::FormID soundFormID, float volume = 1.0f) {
+    if (soundFormID == 0 || volume <= 0.0f) return;
+    CallSoundPapyrus("OnPlayLoopSound", soundFormID, volume);
+}
+
+static void StopSoundLoop() {
+    CallSoundPapyrus("OnStopLoopSound");
 }
 
 // Converts "250 / 300" or "250/300" to "250 out of 300"

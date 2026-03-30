@@ -26,11 +26,14 @@ Si ce n'est pas deja fait, telechargez et installez SKSE64 depuis https://skse.s
 Depuis l'archive de la release, copiez les fichiers suivants aux bons emplacements dans votre dossier d'installation Skyrim :
 
 - SkyrimNVDA.dll : copier dans Data\SKSE\Plugins\SkyrimNVDA.dll
-- nvdaControllerClient.dll : copier dans Data\SKSE\Plugins\nvdaControllerClient.dll
+- nvdaControllerClient.dll : copier a la racine du dossier Skyrim (a cote de SkyrimSE.exe)
 - SkyrimTTS_AutoWalk.esp : copier dans Data\SkyrimTTS_AutoWalk.esp
 - SkyrimTTS_AutoWalk.pex : copier dans Data\Scripts\SkyrimTTS_AutoWalk.pex
+- SkyrimTTS_MQ105Fix.pex : copier dans Data\Scripts\SkyrimTTS_MQ105Fix.pex
 
 Si les dossiers SKSE\Plugins\ ou Scripts\ n'existent pas dans Data\, creez-les.
+
+**Note :** Si vous installez via un gestionnaire de mods (Vortex, MO2), vous devez quand meme copier manuellement nvdaControllerClient.dll a la racine du dossier Skyrim — les gestionnaires de mods n'installent les fichiers que dans Data\.
 
 ### Etape 3 : Activer l'ESP
 
