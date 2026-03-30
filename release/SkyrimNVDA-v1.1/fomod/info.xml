@@ -1,0 +1,7 @@
+<fomod>
+    <Name>SkyrimNVDA</Name>
+    <Author>Pyrhame</Author>
+    <Version>1.2</Version>
+    <Website>https://github.com/DioKyrie-Git/SkyrimTTS</Website>
+    <Description>Accessibility plugin for Skyrim SE/AE. Vocalizes menus, adds object scanner, autowalk, auto-aim, and quest tracking via NVDA.</Description>
+</fomod>
