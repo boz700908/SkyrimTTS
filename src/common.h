@@ -119,34 +119,43 @@ static std::string WStringToUtf8(const std::wstring& w) {
 static bool ExtractString(const RE::GFxValue& v, std::string& out) {
     out.clear();
 
-    if (v.IsString()) {
-        out = v.GetString();
-        return true;
-    }
+    // Protection contre les GFxValue corrompus (mods qui modifient le menu)
+    try {
+        if (!v.IsString() && !v.IsObject()) return false;
 
-    if (v.IsObject()) {
-        const char* fields[] = {"selectedTextString", "text", "label", "htmlText", "caption", "title"};
-        for (auto f : fields) {
-            RE::GFxValue mv;
-            if (v.GetMember(f, &mv) && mv.IsString()) {
-                out = mv.GetString();
-                return true;
-            }
+        if (v.IsString()) {
+            const char* s = v.GetString();
+            if (!s) return false;
+            out = s;
+            return true;
         }
 
-        RE::GFxValue se;
-        if (v.GetMember("selectedEntry", &se) && se.IsObject()) {
-            RE::GFxValue lab;
-            if (se.GetMember("label", &lab) && lab.IsString()) {
-                out = lab.GetString();
-                return true;
+        if (v.IsObject()) {
+            const char* fields[] = {"selectedTextString", "text", "label", "htmlText", "caption", "title"};
+            for (auto f : fields) {
+                RE::GFxValue mv;
+                if (v.GetMember(f, &mv) && mv.IsString()) {
+                    const char* s = mv.GetString();
+                    if (s) { out = s; return true; }
+                }
             }
-            RE::GFxValue tx;
-            if (se.GetMember("text", &tx) && tx.IsString()) {
-                out = tx.GetString();
-                return true;
+
+            RE::GFxValue se;
+            if (v.GetMember("selectedEntry", &se) && se.IsObject()) {
+                RE::GFxValue lab;
+                if (se.GetMember("label", &lab) && lab.IsString()) {
+                    const char* s = lab.GetString();
+                    if (s) { out = s; return true; }
+                }
+                RE::GFxValue tx;
+                if (se.GetMember("text", &tx) && tx.IsString()) {
+                    const char* s = tx.GetString();
+                    if (s) { out = s; return true; }
+                }
             }
         }
+    } catch (...) {
+        return false;
     }
 
     return false;
