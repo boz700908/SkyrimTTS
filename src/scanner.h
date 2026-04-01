@@ -1571,6 +1571,114 @@ static std::wstring ScannerGetCurrentName() {
     return g_scannedFiltered[g_scanIndex]->name;
 }
 
+// --- Téléportation scanner (Alt+Home) ---
+// Téléporte le joueur à côté de l'objet sélectionné dans le scanner
+static void ScannerTeleport() {
+    if (g_scannedFiltered.empty() || g_scanIndex < 0) {
+        Speak(L"No target selected");
+        return;
+    }
+
+    auto& obj = *g_scannedFiltered[g_scanIndex];
+    RE::FormID targetID = obj.formID;
+    std::wstring targetName = obj.name;
+
+    if (targetID == 0) {
+        Speak(L"No valid target");
+        return;
+    }
+
+    auto* task = SKSE::GetTaskInterface();
+    if (!task) return;
+
+    RE::NiPoint3 cachedPos = obj.lastKnownPos;  // position en cache pour fallback
+
+    task->AddTask([targetID, targetName, cachedPos]() {
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        if (!player) return;
+
+        // Chercher la référence cible
+        auto* form = RE::TESForm::LookupByID(targetID);
+        auto* targetRef = form ? form->AsReference() : nullptr;
+
+        if (!targetRef) {
+            Speak(L"Target not found");
+            LOG("ScannerTeleport: FormID {:08X} not found", targetID);
+            return;
+        }
+
+        // Vérification de portée :
+        // Intérieur = même cellule uniquement
+        // Extérieur = distance max 3000 unités
+        auto* playerCell = player->GetParentCell();
+        if (playerCell && playerCell->IsInteriorCell()) {
+            auto* targetCell = targetRef->GetParentCell();
+            if (targetCell != playerCell) {
+                Speak(L"Target is in another area");
+                LOG("ScannerTeleport: blocked - different interior cell");
+                return;
+            }
+        } else {
+            auto playerPos = player->GetPosition();
+            auto targetPos = targetRef->GetPosition();
+            float dx = playerPos.x - targetPos.x;
+            float dy = playerPos.y - targetPos.y;
+            float dist = std::sqrt(dx * dx + dy * dy);
+            if (dist > 3000.0f) {
+                Speak(L"Target is too far");
+                LOG("ScannerTeleport: blocked - distance {:.0f} > 3000", dist);
+                return;
+            }
+        }
+
+        LOG("ScannerTeleport: teleporting to '{}' FormID={:08X}",
+            WStringToUtf8(targetName), targetID);
+
+        // Téléporter le joueur à côté de la cible
+        player->MoveTo(targetRef);
+
+        // Petit décalage pour ne pas être DANS l'objet :
+        // avancer de 100 unités dans la direction opposée à la cible
+        auto* taskPost = SKSE::GetTaskInterface();
+        if (taskPost) {
+            taskPost->AddTask([targetID]() {
+                auto* p = RE::PlayerCharacter::GetSingleton();
+                if (!p) return;
+
+                auto playerPos = p->GetPosition();
+                auto* targetForm = RE::TESForm::LookupByID(targetID);
+                if (!targetForm) return;
+                auto* targetRef = targetForm->AsReference();
+                if (!targetRef) return;
+
+                auto targetPos = targetRef->GetPosition();
+                float dx = playerPos.x - targetPos.x;
+                float dy = playerPos.y - targetPos.y;
+                float len = std::sqrt(dx * dx + dy * dy);
+
+                if (len > 1.0f) {
+                    // Reculer de 100 unités par rapport à la cible
+                    float offsetX = (dx / len) * 100.0f;
+                    float offsetY = (dy / len) * 100.0f;
+                    RE::NiPoint3 safePos = {targetPos.x + offsetX, targetPos.y + offsetY, playerPos.z};
+                    p->SetPosition(safePos, true);
+                }
+
+                // Tourner le joueur vers la cible
+                float angle = std::atan2(targetPos.x - p->GetPosition().x,
+                                          targetPos.y - p->GetPosition().y);
+                if (angle < 0) angle += 2.0f * 3.14159265f;
+                p->data.angle.z = angle;
+
+                LOG("ScannerTeleport: arrived at ({:.0f},{:.0f},{:.0f})",
+                    p->GetPosition().x, p->GetPosition().y, p->GetPosition().z);
+            });
+        }
+
+        Speak(L"Teleported to " + targetName);
+    });
+}
+
 // --- Verrouillage ennemi (touche C) ---
 // --- AUTO-AIM SYSTEM (inspiré de FO4 Access) ---
 

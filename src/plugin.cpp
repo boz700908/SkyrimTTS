@@ -26,6 +26,7 @@
 #include "menu_console.h"
 #include "scanner.h"
 #include "autowalk.h"
+// #include "pathfinding.h"  // Désactivé — en développement, Alt+Home pour activer
 
 // ---------------- Menu open/close listener ----------------
 
@@ -759,9 +760,11 @@ public:
                         else ScannerPrevObject();
                         continue;
                     }
-                    // Home = annoncer objet courant, Shift+Home = toggle autowalk
+                    // Home = annoncer objet courant, Shift+Home = autowalk, Alt+Home = téléportation
                     if (code == RE::BSKeyboardDevice::Keys::kHome) {
-                        if (shift) ToggleAutoWalk();
+                        bool alt = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
+                        if (alt) ScannerTeleport();
+                        else if (shift) ToggleAutoWalk();
                         else ScannerAnnounceCurrent();
                         continue;
                     }
@@ -1108,8 +1111,9 @@ SKSEPluginLoad(const SKSE::LoadInterface* skse) {
         // Après chargement d'une sauvegarde : remettre SpeedMult à 100
         if (msg->type == SKSE::MessagingInterface::kPostLoadGame) {
             AutoWalkSafetyReset();
+            // PathfindingSafetyReset();  // Désactivé temporairement
             RegisterShoutListener();
-            LOG("kPostLoadGame: autowalk safety reset, shout listener registered");
+            LOG("kPostLoadGame: autowalk/pathfinding safety reset, shout listener registered");
         }
     });
 
