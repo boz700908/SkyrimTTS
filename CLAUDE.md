@@ -219,6 +219,48 @@ Quand on corrige un bug sur un atelier (meule, tannerie), verifier que la forge 
 ### Furtivite
 Suspendre la vocalisation de la furtivite (Hidden/Detected/Caution) quand le Crafting Menu est ouvert pour ne pas couper les tutoriels et annonces.
 
+## Pathfinding custom (src/pathfinding.h)
+
+Systeme de navigation A* sur navmesh, parallele a l'autowalk classique (autowalk.h).
+
+- **Ctrl+Home** = pathfinding A* (nouveau), **Shift+Home** = autowalk classique (inchange)
+- Lit les navmeshes du jeu (`BSNavmesh`, `BSNavmeshGrid`, `BSNavmeshTriangle`)
+- A* sur graphe de triangles avec portails inter-navmesh (`extraEdgeInfo`)
+- Lissage de chemin (string-pulling), ouverture de portes, saut auto, annonces vocales
+- 5 niveaux de recuperation en cas de blocage
+- Les deux systemes sont mutuellement exclusifs (lancer l'un stoppe l'autre)
+- L'indexation `extraEdgeInfo` (portails) doit etre verifiee empiriquement au premier test
+
+## GitHub Actions (CI/CD)
+
+Release automatisee via `.github/workflows/build-and-release.yml`.
+
+### Publier une release
+```bash
+git tag v1.3
+git push origin v1.3
+```
+GitHub compile en Release, verifie la taille DLL (anti-Debug), cree le zip (structure MO2), et publie un brouillon de release.
+
+### Structure du zip (sans dossier Data/)
+```
+SKSE/Plugins/SkyrimNVDA.dll
+SKSE/Plugins/nvdaControllerClient.dll
+SKSE/Plugins/SkyrimNVDA.ini
+Scripts/SkyrimTTS_AutoWalk.pex
+Scripts/SkyrimTTS_MQ105Fix.pex
+Sound/fx/SkyrimTTS/*.wav
+SkyrimTTS_AutoWalk.esp
+fomod/info.xml
+CHANGELOG.txt, README.txt, GUIDE.txt, GUIDE_FR.txt, LISEZMOI.txt
+```
+
+### Commits atomiques
+Faire un commit par changement logique (un bug = un commit, une feature = un commit). Ne pas regrouper.
+
+### Release : TOUJOURS en Release build
+La DLL Release fait ~1 Mo, la Debug ~5 Mo. La Debug depend de DLL developpeur (MSVCP140D.dll) que les joueurs n'ont pas. Le CI verifie automatiquement la taille.
+
 ## Log
 
 Le plugin ecrit dans `Data\SKSE\SkyrimNVDA.log`. Les menus geres (inventaire, magie, etc.) sont exclus du log generique des events pour eviter le spam. Seuls les menus non-geres sont logges.

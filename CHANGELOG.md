@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.3 (2026-04-01)
+
+### New features
+- Scanner teleport (Alt+Home): teleport directly to the object selected in the scanner. Useful for getting unstuck in dungeons or reaching hard-to-access quest objectives. Limitations: in interiors, only works within the same cell (no teleporting through loading doors). In exteriors, limited to 3000 units range.
+- Improved mod manager compatibility: nvdaControllerClient.dll is now automatically installed to the game root folder via FOMOD installer — no more manual copying required.
+- Improved compatibility with modded UIs: GFx value access is now protected with SEH exception handling to prevent crashes with heavily modded setups.
+
+### Important note about scanner teleport
+Use scanner teleport with caution. Teleporting past quest triggers, doors, or scripted events may break quest progression. It is meant as a last resort when you are stuck, not as a primary navigation method. If a quest seems broken after teleporting, try reloading a previous save.
+
 ## v1.2 (2026-03-30)
 
 ### SkyUI compatibility

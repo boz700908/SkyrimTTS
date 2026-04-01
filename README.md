@@ -34,7 +34,7 @@ From the release archive, copy the following files to the correct locations insi
 
 If the folders SKSE\Plugins\ or Scripts\ do not exist inside Data\, create them.
 
-**Note:** If you install using a mod manager (Vortex, MO2), you still need to manually copy nvdaControllerClient.dll to the Skyrim root folder — mod managers only install files inside Data\.
+**Note:** If you install using a mod manager (Vortex, MO2), the FOMOD installer will automatically copy nvdaControllerClient.dll to the Skyrim root folder. No manual copying needed.
 
 ### Step 3: Activate the ESP
 
@@ -262,6 +262,8 @@ The scanner lets you detect and navigate all objects around you: NPCs, doors, it
 - Shift + Page Down: next category
 - Shift + Page Up: previous category
 - Home: announce current object with distance and orient your camera toward it
+- Shift + Home: autowalk toward the selected object
+- Alt + Home: teleport to the selected object (see Scanner Teleport section)
 - End: cycle subcategories (e.g. locked/unlocked doors, looted/unlooted corpses)
 
 ### Scanner categories
@@ -301,6 +303,27 @@ Autowalk lets you walk automatically toward a selected scanner object or quest t
 - For quest objectives in another cell (e.g. inside a dungeon), the autowalk follows the compass to find the correct entrance door
 - If the player gets stuck for 20 seconds, autowalk stops with "Can't reach target"
 - Autowalk stops automatically when you arrive within 200 units of the target
+
+---
+
+## Scanner Teleport (Alt + Home)
+
+If you are stuck in a dungeon or cannot reach a target with autowalk, you can teleport directly to the selected scanner object.
+
+### How to use
+
+- Select an object in the scanner (Page Up / Page Down)
+- Press Alt + Home to teleport next to it
+
+### Limitations
+
+- In interiors (dungeons, houses): you can only teleport to objects in the same area. You cannot teleport through loading doors.
+- In exteriors: you can only teleport to objects within 3000 units. Farther targets will say "Target is too far".
+- The teleport places you about 100 units away from the target, facing it.
+
+### Warning
+
+Use this feature with caution. Teleporting past quest triggers, locked doors, or scripted events may break quest progression. It is meant as a last resort when you are stuck, not as a primary way to play. If a quest seems broken after teleporting, reload a previous save.
 
 ---
 

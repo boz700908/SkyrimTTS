@@ -1,7 +1,7 @@
-{
+      {
   "version": 3,
-  "configurePresets": [
-    {
+  "con    figurePresets": [
+  {
       "name": "base",
       "hidden": true,
       "generator": "Ninja",
@@ -37,6 +37,12 @@
       "environment": {
         "VCPKG_ROOT": "C:/Users/marcd/Downloads/vcpkg-2025.10.17/vcpkg-2025.10.17"
       },
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+    },
+    {
+      "name": "ci-release",
+      "inherits": [ "base" ],
+      "displayName": "CI Release",
       "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
     }
   ]

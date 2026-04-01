@@ -26,6 +26,7 @@ When the game starts, NVDA will automatically begin reading menus and HUD elemen
 | End | Cycle subcategories (e.g., locked/unlocked doors) |
 | Home | Announce current object details + orient camera toward it |
 | Shift + Home | Start / stop autowalk toward selected object |
+| Alt + Home | Teleport to selected scanner object (last resort) |
 | Numpad 5 | Scan objects in current category |
 
 ### Combat
@@ -355,6 +356,12 @@ Travel to Whiterun and head to **Dragonsreach**. Talk to **Farengar Secret-Fire*
 - **Autowalk** (Shift + Home) works great on flat terrain and inside buildings
 - When autowalk says "Can't reach target", switch to **manual walking with audio navigation** (O key for clairvoyance sound)
 - The two systems complement each other — use autowalk for easy paths and audio navigation for complex terrain
+
+### Scanner Teleport
+- **Alt + Home** teleports you directly to the selected scanner object — use this as a last resort when you are stuck in a dungeon or cannot reach an objective
+- In interiors, teleportation only works within the same area (no teleporting through loading doors)
+- In exteriors, limited to 3000 units range
+- **Warning**: teleporting past quest triggers, locked doors, or scripted events may break quest progression — if something goes wrong, reload a previous save
 
 ### Combat Tips
 - Always press **X** before engaging enemies to know who and where they are
