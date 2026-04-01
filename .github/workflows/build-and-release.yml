@@ -28,7 +28,7 @@ jobs:
       - name: Setup vcpkg
         uses: lukka/run-vcpkg@v11
         with:
-          vcpkgGitCommitId: '55f467760b3c3f0a2cd13efb7ad3260433abe218'
+          vcpkgGitCommitId: '52f5569a8e867859fac967c1e3f10ca0a8a3cc39'
 
       - name: Setup MSVC
         uses: ilammy/msvc-dev-cmd@v1
