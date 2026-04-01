@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<fomod>
+  <Name>SkyrimNVDA</Name>
+  <Author>Pyrhame</Author>
+  <Version>1.2</Version>
+  <Website>https://github.com/DioKyrie-Git/SkyrimTTS</Website>
+  <Description>Skyrim accessibility plugin - screen reader support via NVDA</Description>
+</fomod>
