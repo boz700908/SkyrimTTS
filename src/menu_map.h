@@ -736,27 +736,27 @@ static void MapFastTravel() {
         return;
     }
 
-    auto* handlePolicy = vm->GetObjectHandlePolicy();
-    RE::VMHandle questHandle = handlePolicy->GetHandleForObject(
-        quest->GetFormType(), quest);
-    if (questHandle == 0) {
+    auto* policy = vm->GetObjectHandlePolicy();
+    if (!policy) {
+        LOG("MapMenu: no handle policy");
+        return;
+    }
+
+    auto handle = policy->GetHandleForObject(RE::FormType::Quest, quest);
+    if (handle == policy->EmptyHandle()) {
         LOG("MapMenu: failed to get quest handle");
         Speak(L"Error: quest handle failed");
         return;
     }
 
-    RE::BSTSmartPointer<RE::BSScript::Object> questObj;
-    vm->FindBoundObject(questHandle, "SkyrimTTS_AutoWalk", questObj);
-    if (!questObj) {
-        LOG("MapMenu: SkyrimTTS_AutoWalk script not bound to quest");
-        Speak(L"Error: script not bound");
-        return;
-    }
-
-    auto* args = RE::MakeFunctionArguments((int)m.formID);
+    auto* args = RE::MakeFunctionArguments(static_cast<std::int32_t>(m.formID));
     RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback;
-    RE::BSFixedString fnName("OnFastTravel");
-    vm->DispatchMethodCall(questObj, fnName, args, callback);
+    vm->DispatchMethodCall(
+        handle,
+        RE::BSFixedString("SkyrimTTS_AutoWalk"),
+        RE::BSFixedString("OnFastTravel"),
+        args,
+        callback);
 
     Speak(L"Traveling to " + m.name);
 }

@@ -116,46 +116,62 @@ static std::string WStringToUtf8(const std::wstring& w) {
 
 // ---------------- GFx helpers ----------------
 
+// Protection SEH contre les access violations sur des GFxValue corrompus (mods UI)
+// __try/__except ne peut pas être dans une fonction avec des objets C++ (destructeurs),
+// donc on isole les appels dangereux ici.
+static bool SafeGetMember(const RE::GFxValue& obj, const char* name, RE::GFxValue* out) {
+    __try {
+        return obj.GetMember(name, out);
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+static bool SafeIsString(const RE::GFxValue& v) {
+    __try { return v.IsString(); } __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
+static bool SafeIsObject(const RE::GFxValue& v) {
+    __try { return v.IsObject(); } __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
+static const char* SafeGetString(const RE::GFxValue& v) {
+    __try { return v.GetString(); } __except(EXCEPTION_EXECUTE_HANDLER) { return nullptr; }
+}
+
 static bool ExtractString(const RE::GFxValue& v, std::string& out) {
     out.clear();
 
-    // Protection contre les GFxValue corrompus (mods qui modifient le menu)
-    try {
-        if (!v.IsString() && !v.IsObject()) return false;
+    if (SafeIsString(v)) {
+        const char* s = SafeGetString(v);
+        if (!s) return false;
+        out = s;
+        return true;
+    }
 
-        if (v.IsString()) {
-            const char* s = v.GetString();
-            if (!s) return false;
-            out = s;
-            return true;
-        }
-
-        if (v.IsObject()) {
-            const char* fields[] = {"selectedTextString", "text", "label", "htmlText", "caption", "title"};
-            for (auto f : fields) {
-                RE::GFxValue mv;
-                if (v.GetMember(f, &mv) && mv.IsString()) {
-                    const char* s = mv.GetString();
-                    if (s) { out = s; return true; }
-                }
-            }
-
-            RE::GFxValue se;
-            if (v.GetMember("selectedEntry", &se) && se.IsObject()) {
-                RE::GFxValue lab;
-                if (se.GetMember("label", &lab) && lab.IsString()) {
-                    const char* s = lab.GetString();
-                    if (s) { out = s; return true; }
-                }
-                RE::GFxValue tx;
-                if (se.GetMember("text", &tx) && tx.IsString()) {
-                    const char* s = tx.GetString();
-                    if (s) { out = s; return true; }
-                }
+    if (SafeIsObject(v)) {
+        const char* fields[] = {"selectedTextString", "text", "label", "htmlText", "caption", "title"};
+        for (auto f : fields) {
+            RE::GFxValue mv;
+            if (SafeGetMember(v, f, &mv) && SafeIsString(mv)) {
+                const char* s = SafeGetString(mv);
+                if (s) { out = s; return true; }
             }
         }
-    } catch (...) {
-        return false;
+
+        RE::GFxValue se;
+        if (SafeGetMember(v, "selectedEntry", &se) && SafeIsObject(se)) {
+            RE::GFxValue lab;
+            if (SafeGetMember(se, "label", &lab) && SafeIsString(lab)) {
+                const char* s = SafeGetString(lab);
+                if (s) { out = s; return true; }
+            }
+            RE::GFxValue tx;
+            if (SafeGetMember(se, "text", &tx) && SafeIsString(tx)) {
+                const char* s = SafeGetString(tx);
+                if (s) { out = s; return true; }
+            }
+        }
     }
 
     return false;
@@ -178,8 +194,9 @@ static bool GetGFxNumber(RE::GFxMovieView* movie, const char* path, double& out)
     RE::GFxValue v;
     if (!movie->GetVariable(&v, path)) return false;
     if (v.IsNumber()) { out = v.GetNumber(); return true; }
-    if (v.IsString()) {
-        try { out = std::stod(v.GetString()); return true; } catch (...) {}
+    if (SafeIsString(v)) {
+        const char* s = SafeGetString(v);
+        if (s) { try { out = std::stod(s); return true; } catch (...) {} }
     }
     return false;
 }
