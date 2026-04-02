@@ -15,11 +15,6 @@
   },
   {
     "type": "copy",
-    "source": "SKSE/Plugins/nvdaControllerClient.dll",
-    "destination": "Data/SKSE/Plugins/nvdaControllerClient.dll"
-  },
-  {
-    "type": "copy",
     "source": "SKSE/Plugins/SkyrimNVDA.ini",
     "destination": "Data/SKSE/Plugins/SkyrimNVDA.ini"
   },

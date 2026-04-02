@@ -78,9 +78,6 @@ jobs:
           # NVDA controller DLL -> Root (installed to game root via FOMOD)
           cp "lib/nvdaControllerClient.dll" "$STAGING/Root/"
 
-          # NVDA controller DLL -> also in SKSE/Plugins (for plugin load)
-          cp "lib/nvdaControllerClient.dll" "$STAGING/SKSE/Plugins/"
-
           # ESP + PEX scripts
           cp "autowalk/SkyrimTTS_AutoWalk.esp" "$STAGING/"
           cp "autowalk/SkyrimTTS_AutoWalk.pex" "$STAGING/Scripts/"
