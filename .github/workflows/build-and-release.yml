@@ -15,6 +15,9 @@ on:
 env:
   BUILD_TYPE: Release
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: windows-latest
@@ -75,10 +78,15 @@ jobs:
           # NVDA controller DLL -> Root (installed to game root via FOMOD)
           cp "lib/nvdaControllerClient.dll" "$STAGING/Root/"
 
+          # NVDA controller DLL -> also in SKSE/Plugins (for plugin load)
+          cp "lib/nvdaControllerClient.dll" "$STAGING/SKSE/Plugins/"
+
           # ESP + PEX scripts
           cp "autowalk/SkyrimTTS_AutoWalk.esp" "$STAGING/"
           cp "autowalk/SkyrimTTS_AutoWalk.pex" "$STAGING/Scripts/"
           cp "autowalk/SkyrimTTS_MQ105Fix.pex" "$STAGING/Scripts/"
+          cp "autowalk/SkyrimTTS_MCM.pex" "$STAGING/Scripts/"
+          cp "autowalk/SkyrimTTS_MCM_Native.pex" "$STAGING/Scripts/"
 
           # Sound effects
           cp sounds/aim_loop.wav "$STAGING/Sound/fx/SkyrimTTS/"
