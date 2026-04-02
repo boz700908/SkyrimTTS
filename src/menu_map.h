@@ -181,6 +181,14 @@ static void AddQuestTargetsToMap(RE::PlayerCharacter* player, const RE::NiPoint3
                     if (loc->worldLocMarker) {
                         auto markerPtr = loc->worldLocMarker.get();
                         if (markerPtr) {
+                            // Vérifier que le marqueur est dans un worldspace extérieur
+                            // sinon GetPosition() retourne des coordonnées intérieures inutilisables
+                            auto* markerCell = markerPtr->GetParentCell();
+                            if (markerCell && markerCell->IsInteriorCell()) {
+                                LOG("MapMenu: quest '{}' worldLocMarker for '{}' is in interior cell, skipping",
+                                    objText, loc->GetFullName() ? loc->GetFullName() : "?");
+                                continue;
+                            }
                             rp = markerPtr->GetPosition();
                             foundExit = true;
                             LOG("MapMenu: quest '{}' resolved via worldLocMarker loc='{}' pos=({:.0f},{:.0f},{:.0f})",
@@ -216,6 +224,20 @@ static void AddQuestTargetsToMap(RE::PlayerCharacter* player, const RE::NiPoint3
                     }
                 }
             }
+
+            // Dédoublonnage : ignorer si un marqueur de quête existe déjà à la même position
+            bool duplicate = false;
+            for (auto& existing : g_mapMarkers) {
+                if (!existing.isQuestTarget) continue;
+                float ddx = existing.worldPos.x - rp.x;
+                float ddy = existing.worldPos.y - rp.y;
+                if (ddx * ddx + ddy * ddy < 100.0f * 100.0f) {  // < 100 unités = même endroit
+                    duplicate = true;
+                    LOG("MapMenu: quest '{}' ref={:08X} skipped (duplicate position near {:08X})", objText, fid, existing.formID);
+                    break;
+                }
+            }
+            if (duplicate) continue;
 
             float dx = rp.x - playerPos.x;
             float dy = rp.y - playerPos.y;
