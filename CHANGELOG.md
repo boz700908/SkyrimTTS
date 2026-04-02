@@ -1,15 +1,21 @@
 # Changelog
 
-## v1.3 (2026-04-01)
+## v1.3 (2026-04-02)
 
 ### New features
-- Scanner teleport (Alt+Home): teleport directly to the object selected in the scanner. Useful for getting unstuck in dungeons or reaching hard-to-access quest objectives. Limitations: in interiors, only works within the same cell (no teleporting through loading doors). In exteriors, limited to 3000 units range.
-- Improved mod manager compatibility: nvdaControllerClient.dll is now automatically installed to the game root folder via FOMOD installer — no more manual copying required.
+- Scanner teleport (Alt+Home): teleport directly to the object selected in the scanner. Useful for getting unstuck in dungeons or reaching hard-to-access quest objectives. Limitations: in interiors, only works within the same cell (no teleporting through loading doors). Teleport range is configurable via MCM (default 3000 units). Quest targets have a stricter limit of 1000 units to avoid breaking quest progression.
+- Improved Vortex compatibility: nvdaControllerClient.dll is now automatically installed to the game root folder via FOMOD installer — no more manual copying required for Vortex users.
 - Improved compatibility with modded UIs: GFx value access is now protected with SEH exception handling to prevent crashes with heavily modded setups.
 - MCM settings menu (requires SkyUI): configure the plugin directly in-game via Mod Configuration Menu. Open it from the pause menu under "Mod Configuration", then select "SkyrimNVDA". Three pages are available:
-  - **General**: toggle stealth announcements (Hidden/Detected/Caution) and scanner teleportation on or off.
+  - **General**: toggle stealth announcements (Hidden/Detected/Caution) and scanner teleportation on or off. Adjust scan range and teleport range with sliders. Reset all settings to defaults.
   - **Audio**: adjust the volume of each sound effect (aim, kill, dragon hit) with sliders from 0.0 to 2.0. Changes apply immediately — no restart needed.
-  - **Controls**: rebind the scanner keys. Select a key, press Enter, then press the new key you want. Modifier keys (Shift, Alt) still work the same way with your new key. For example, if you change the Announce key from Home to F5, then F5 announces the object, Shift+F5 starts autowalk, and Alt+F5 teleports — same behavior, different key.
+  - **Controls**: rebind the scanner keys (including teleport key). Select a key, press Enter, then press the new key you want. Modifier keys (Shift, Alt) still work the same way with your new key. For example, if you change the Announce key from Home to F5, then F5 announces the object, Shift+F5 starts autowalk, and Alt+F5 teleports — same behavior, different key.
+- Auto-aim: exact ballistic trajectory calculation — the arrow now follows the mathematically perfect parabolic arc, accounting for projectile speed, gravity, distance, and height difference. Much more accurate at long range.
+- Auto-aim: arrow range detection — the aim sound now stops when the target is out of your arrow's effective range. The range is calculated from real projectile physics data (speed, gravity, drop distance). At lock-on, NVDA announces "out of range" if the target is too far, or "obstructed" if there is an obstacle between you and the target.
+
+### Bug fixes
+- Map: fixed quest markers appearing twice when a quest has multiple targets pointing to the same location
+- Map: fixed quest marker positions for targets inside interiors — distances are now accurate instead of showing ~50,000 units due to interior coordinates being used on the world map
 
 ### Important note about scanner teleport
 Use scanner teleport with caution. Teleporting past quest triggers, doors, or scripted events may break quest progression. It is meant as a last resort when you are stuck, not as a primary navigation method. If a quest seems broken after teleporting, try reloading a previous save.
