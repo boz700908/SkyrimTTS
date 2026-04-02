@@ -455,6 +455,10 @@ static void ScanCell(RE::TESObjectCELL* cell, RE::PlayerCharacter* player, const
             auto diff = playerPos - refPos;
             float dist = diff.Length();
 
+            // Filtre de distance MCM (0 = illimité)
+            float maxRange = g_mcmScanRange.load();
+            if (maxRange > 0.0f && dist > maxRange) continue;
+
             // Détecter les Murs des Mots (triggers invisibles sans nom)
             if (base && base->Is(RE::FormType::Activator)) {
                 auto* vm = RE::SkyrimVM::GetSingleton();
@@ -1574,6 +1578,10 @@ static std::wstring ScannerGetCurrentName() {
 // --- Téléportation scanner (Alt+Home) ---
 // Téléporte le joueur à côté de l'objet sélectionné dans le scanner
 static void ScannerTeleport() {
+    if (!g_mcmTeleportEnabled.load()) {
+        Speak(L"Teleport disabled");
+        return;
+    }
     if (g_scannedFiltered.empty() || g_scanIndex < 0) {
         Speak(L"No target selected");
         return;
@@ -1582,6 +1590,7 @@ static void ScannerTeleport() {
     auto& obj = *g_scannedFiltered[g_scanIndex];
     RE::FormID targetID = obj.formID;
     std::wstring targetName = obj.name;
+    int category = obj.category;
 
     if (targetID == 0) {
         Speak(L"No valid target");
@@ -1593,7 +1602,7 @@ static void ScannerTeleport() {
 
     RE::NiPoint3 cachedPos = obj.lastKnownPos;  // position en cache pour fallback
 
-    task->AddTask([targetID, targetName, cachedPos]() {
+    task->AddTask([targetID, targetName, cachedPos, category]() {
         auto* player = RE::PlayerCharacter::GetSingleton();
         if (!player) return;
 
@@ -1607,9 +1616,21 @@ static void ScannerTeleport() {
             return;
         }
 
-        // Vérification de portée :
-        // Intérieur = même cellule uniquement
-        // Extérieur = distance max 3000 unités
+        // Marqueurs de quête : limite stricte de 1000 unités
+        // (souvent dans une autre cellule, téléporter peut casser la quête)
+        if (category == kCatQuests) {
+            auto playerPos = player->GetPosition();
+            auto targetPos = targetRef->GetPosition();
+            float dist = (playerPos - targetPos).Length();
+            if (dist > 1000.0f) {
+                Speak(L"Quest target is too far to teleport");
+                LOG("ScannerTeleport: blocked - quest target distance {:.0f} > 1000", dist);
+                return;
+            }
+        }
+
+        // Vérification de portée (configurable via MCM)
+        float maxTpDist = g_mcmTeleportRange.load();
         auto* playerCell = player->GetParentCell();
         if (playerCell && playerCell->IsInteriorCell()) {
             auto* targetCell = targetRef->GetParentCell();
@@ -1618,17 +1639,14 @@ static void ScannerTeleport() {
                 LOG("ScannerTeleport: blocked - different interior cell");
                 return;
             }
-        } else {
-            auto playerPos = player->GetPosition();
-            auto targetPos = targetRef->GetPosition();
-            float dx = playerPos.x - targetPos.x;
-            float dy = playerPos.y - targetPos.y;
-            float dist = std::sqrt(dx * dx + dy * dy);
-            if (dist > 3000.0f) {
-                Speak(L"Target is too far");
-                LOG("ScannerTeleport: blocked - distance {:.0f} > 3000", dist);
-                return;
-            }
+        }
+        auto playerPos = player->GetPosition();
+        auto targetPos = targetRef->GetPosition();
+        float dist = (playerPos - targetPos).Length();
+        if (dist > maxTpDist) {
+            Speak(L"Target is too far");
+            LOG("ScannerTeleport: blocked - distance {:.0f} > {:.0f}", dist, maxTpDist);
+            return;
         }
 
         LOG("ScannerTeleport: teleporting to '{}' FormID={:08X}",
@@ -1711,16 +1729,12 @@ static void AimAtPosition(RE::PlayerCharacter* player, const RE::NiPoint3& targe
     RE::NiPoint3 eyePos, eyeDir;
     player->GetEyeVector(eyePos, eyeDir, true);
 
-    // Position de visée (avec prédiction de mouvement si disponible)
-    RE::NiPoint3 aimPos = targetPos;
-    if (compensateGravity && targetVelocity) {
-        float dx0 = targetPos.x - eyePos.x;
-        float dy0 = targetPos.y - eyePos.y;
-        float dist0 = std::sqrt(dx0 * dx0 + dy0 * dy0);
+    // Lire les données balistiques UNE SEULE FOIS
+    float projSpeed = 3600.0f;
+    float projGravity = 0.34f;
+    float weaponSpeed = 1.0f;
 
-        // Estimer la vitesse du projectile pour calculer le temps de vol
-        float projSpeed = 3600.0f;
-        float weaponSpeed = 1.0f;
+    if (compensateGravity) {
         auto* equippedObj = player->GetEquippedObject(false);
         auto* weapon = equippedObj ? equippedObj->As<RE::TESObjectWEAP>() : nullptr;
         if (weapon && weapon->IsBow()) {
@@ -1730,12 +1744,26 @@ static void AimAtPosition(RE::PlayerCharacter* player, const RE::NiPoint3& targe
         if (ammo) {
             auto& ammoData = ammo->GetRuntimeData();
             auto* proj = ammoData.data.projectile;
-            if (proj) projSpeed = proj->data.speed;
+            if (proj) {
+                projSpeed = proj->data.speed;
+                projGravity = proj->data.gravity;
+            }
         }
-        float v = projSpeed * weaponSpeed;
+    }
+
+    float v = projSpeed * weaponSpeed;
+    float worldScale = RE::bhkWorld::GetWorldScale();  // ~0.0142875
+    float g = (compensateGravity && projGravity > 0.0f && worldScale > 0.0f)
+              ? projGravity * 9.81f / worldScale : 0.0f;
+
+    // Prédiction de mouvement : viser là où la cible sera au moment de l'impact
+    RE::NiPoint3 aimPos = targetPos;
+    if (compensateGravity && targetVelocity && v > 0.0f) {
+        float dx0 = targetPos.x - eyePos.x;
+        float dy0 = targetPos.y - eyePos.y;
+        float dist0 = std::sqrt(dx0 * dx0 + dy0 * dy0);
         float flightTime = dist0 / v;
 
-        // Prédiction : viser où la cible sera dans flightTime secondes
         aimPos.x += targetVelocity->x * flightTime;
         aimPos.y += targetVelocity->y * flightTime;
         aimPos.z += targetVelocity->z * flightTime;
@@ -1747,45 +1775,36 @@ static void AimAtPosition(RE::PlayerCharacter* player, const RE::NiPoint3& targe
 
     float yaw = std::atan2(dx, dy);
     float hDist = std::sqrt(dx * dx + dy * dy);
-    float pitch = -std::atan2(dz, hDist);
+    float pitch;
 
-    // Compensation de gravité pour les projectiles (arc)
-    if (compensateGravity && hDist > 100.0f) {
-        float projSpeed = 3600.0f;   // valeur par défaut
-        float projGravity = 0.34f;   // valeur par défaut
-        float weaponSpeed = 1.0f;
+    // Compensation de gravité : formule balistique EXACTE
+    // Résout l'équation de trajectoire parabolique pour trouver l'angle de tir précis.
+    // Discriminant = v⁴ - g(g·d² + 2·Δh·v²)
+    //   > 0 : deux solutions (on prend la trajectoire basse = tir tendu)
+    //   = 0 : distance max, une seule trajectoire possible
+    //   < 0 : cible physiquement hors de portée
+    if (compensateGravity && g > 0.0f && v > 0.0f && hDist > 100.0f) {
+        float v2 = v * v;
+        float v4 = v2 * v2;
+        float disc = v4 - g * (g * hDist * hDist + 2.0f * dz * v2);
 
-        // Lire les vraies données de l'arc et des flèches équipés
-        auto* equippedObj = player->GetEquippedObject(false);  // main droite
-        auto* weapon = equippedObj ? equippedObj->As<RE::TESObjectWEAP>() : nullptr;
-        if (weapon && weapon->IsBow()) {
-            weaponSpeed = weapon->weaponData.speed;
+        if (disc >= 0.0f) {
+            // Solution exacte : trajectoire basse (tir tendu, plus rapide)
+            float sqrtDisc = std::sqrt(disc);
+            float theta = std::atan2(v2 - sqrtDisc, g * hDist);
+            pitch = -theta;  // négatif car Skyrim : pitch < 0 = regarder vers le haut
+
+            LOG("AutoAim: exact ballistic: v={:.0f} g={:.2f} d={:.0f} dz={:.0f} "
+                "theta={:.3f}rad ({:.1f}deg) disc={:.0f}",
+                v, g, hDist, dz, theta, theta * 180.0f / 3.14159f, disc);
+        } else {
+            // Cible physiquement inatteignable — viser directement (meilleur effort)
+            pitch = -std::atan2(dz, hDist);
+            LOG("AutoAim: target unreachable (disc={:.0f}), aiming directly", disc);
         }
-        auto* ammo = player->GetCurrentAmmo();
-        if (ammo) {
-            auto& ammoData = ammo->GetRuntimeData();
-            auto* projectile = ammoData.data.projectile;
-            if (projectile) {
-                projSpeed = projectile->data.speed;
-                projGravity = projectile->data.gravity;
-            }
-        }
-
-        // Vitesse réelle du projectile
-        float v = projSpeed * weaponSpeed;
-
-        // Gravité réelle en unités Skyrim/s²
-        // 1 unité Skyrim = worldScale mètres Havok, donc g_skyrim = 9.81 * projGravity / worldScale
-        float worldScale = RE::bhkWorld::GetWorldScale();  // ~0.0142875
-        float g = projGravity * 9.81f / worldScale;
-
-        // Formule de compensation : angle = arctan(g*d / (2*v²))
-        if (v > 0.0f) {
-            float correction = std::atan2(g * hDist, 2.0f * v * v);
-            pitch -= correction;  // relever le tir
-            LOG("AutoAim: gravity compensation: v={:.0f} g={:.2f} dist={:.0f} correction={:.3f}rad ({:.1f}deg)",
-                v, g, hDist, correction, correction * 180.0f / 3.14159f);
-        }
+    } else {
+        // Pas de compensation (pas d'arc ou trop proche)
+        pitch = -std::atan2(dz, hDist);
     }
 
     player->SetRotationZ(yaw);
@@ -1800,6 +1819,72 @@ static void AimAtPosition(RE::PlayerCharacter* player, const RE::NiPoint3& targe
             tps->freeRotation = {0.f, 0.f};
         }
     }
+}
+
+// Calculer la portée effective maximale de la flèche équipée
+// Prend en compte : vitesse du projectile, gravité, range, lifetime, vitesse de l'arc
+// La portée PRATIQUE est basée sur la chute libre de la flèche : à quelle distance
+// la gravité fait tomber la flèche de plus que la hauteur d'une cible (~200 unités).
+// Au-delà, même avec compensation, les erreurs de physique rendent le tir peu fiable.
+// Retourne la distance max en unités Skyrim, ou 0 si pas de données disponibles
+static float GetArrowEffectiveRange(RE::PlayerCharacter* player) {
+    if (!player) return 0.0f;
+
+    // Récupérer le projectile de la flèche équipée
+    float projSpeed    = 3600.0f;
+    float projGravity  = 0.34f;
+    float projRange    = 0.0f;     // 0 = illimité
+    float projLifetime = 0.0f;     // 0 = illimité
+
+    auto* ammo = player->GetCurrentAmmo();
+    if (ammo) {
+        auto& ammoData = ammo->GetRuntimeData();
+        auto* proj = ammoData.data.projectile;
+        if (proj) {
+            projSpeed    = proj->data.speed;
+            projGravity  = proj->data.gravity;
+            projRange    = proj->data.range;
+            projLifetime = proj->data.lifetime;
+        }
+    }
+
+    // Multiplicateur de vitesse de l'arc
+    float weaponSpeed = 1.0f;
+    auto* equippedObj = player->GetEquippedObject(false);
+    auto* weapon = equippedObj ? equippedObj->As<RE::TESObjectWEAP>() : nullptr;
+    if (weapon && weapon->IsBow()) {
+        weaponSpeed = weapon->weaponData.speed;
+    }
+
+    // Vitesse réelle du projectile (arc bandé = puissance 1.0)
+    float v = projSpeed * weaponSpeed;
+    if (v <= 0.0f) return 0.0f;
+
+    float worldScale = RE::bhkWorld::GetWorldScale();  // ~0.0142875
+    float g = (projGravity > 0.0f && worldScale > 0.0f) ? projGravity * 9.81f / worldScale : 0.0f;
+
+    // Limite 1 : portée définie dans les données du projectile
+    float rangeLimit = (projRange > 0.0f) ? projRange : 999999.0f;
+
+    // Limite 2 : durée de vie × vitesse
+    float lifetimeLimit = (projLifetime > 0.0f) ? v * projLifetime : 999999.0f;
+
+    // Limite 3 : portée balistique PRATIQUE
+    // = distance horizontale où la chute libre (sans compensation) atteint MAX_DROP
+    // Formule : chute = ½·g·t², temps de vol t = d/v → d = v·√(2·MAX_DROP/g)
+    // MAX_DROP = 200 unités ≈ hauteur d'un humanoïde (~2.8 mètres)
+    // Au-delà, la compensation de gravité exige un arc important et les erreurs
+    // de simulation (physique discrète, timing) font rater la cible.
+    constexpr float MAX_DROP = 200.0f;
+    float practicalLimit = (g > 0.0f) ? v * std::sqrt(2.0f * MAX_DROP / g) : 999999.0f;
+
+    float effectiveRange = std::min({rangeLimit, lifetimeLimit, practicalLimit});
+
+    LOG("AutoAim: range: v={:.0f} g={:.2f} projRange={:.0f} lifetime={:.1f} "
+        "rangeLimit={:.0f} lifetimeLimit={:.0f} practical={:.0f} effective={:.0f}",
+        v, g, projRange, projLifetime, rangeLimit, lifetimeLimit, practicalLimit, effectiveRange);
+
+    return effectiveRange;
 }
 
 // Chercher l'ennemi le plus proche via ProcessLists (trouve les dragons en vol)
@@ -1948,17 +2033,24 @@ static void StartAutoAimTracking() {
                         AimAtPosition(p, targetCenter);
                     }
 
-                    // Son en boucle si ligne de vue dégagée
+                    // Vérifier la portée de la flèche
+                    float distToTarget = (p->GetPosition() - t->GetPosition()).Length();
+                    float maxRange = GetArrowEffectiveRange(p);
+                    bool inRange = (maxRange <= 0.0f) || (distToTarget <= maxRange);
+
+                    // Son en boucle si ligne de vue dégagée ET cible à portée
                     bool losUnused = false;
                     bool hasLOS = p->HasLineOfSight(t, losUnused);
-                    if (hasLOS && !g_aimLoopPlaying.load()) {
+                    bool shouldPlay = hasLOS && inRange;
+                    if (shouldPlay && !g_aimLoopPlaying.load()) {
                         PlaySoundLoop(g_soundAimLoopID, g_volumeAim);
                         g_aimLoopPlaying.store(true);
-                        LOG("AutoAim: aim loop started (LOS ok)");
-                    } else if (!hasLOS && g_aimLoopPlaying.load()) {
+                        LOG("AutoAim: aim loop started (LOS ok, in range {:.0f}/{:.0f})", distToTarget, maxRange);
+                    } else if (!shouldPlay && g_aimLoopPlaying.load()) {
                         StopSoundLoop();
                         g_aimLoopPlaying.store(false);
-                        LOG("AutoAim: aim loop stopped (LOS blocked)");
+                        if (!hasLOS) LOG("AutoAim: aim loop stopped (LOS blocked)");
+                        else LOG("AutoAim: aim loop stopped (out of range {:.0f}/{:.0f})", distToTarget, maxRange);
                     }
                 });
             }
@@ -2280,9 +2372,21 @@ static void StartBowAutoAimPolling() {
                         std::wstring name = rawName ? Utf8ToWString(rawName) : L"Enemy";
                         std::wstring msg = name + L", " + std::to_wstring(static_cast<int>(dist));
                         if (dragon) msg += L", Dragon";
+
+                        // Vérifier si la cible est à portée de flèche
+                        float maxRange = GetArrowEffectiveRange(player);
+                        if (maxRange > 0.0f && dist > maxRange) {
+                            msg += L", out of range";
+                        } else {
+                            bool losUnused = false;
+                            if (!player->HasLineOfSight(nearest, losUnused)) {
+                                msg += L", obstructed";
+                            }
+                        }
+
                         Speak(msg);
-                        LOG("AutoAim(bow): locked {} at distance {}{} center=({:.0f},{:.0f},{:.0f})",
-                            rawName ? rawName : "?", dist, dragon ? " [DRAGON]" : "", targetCenter.x, targetCenter.y, targetCenter.z);
+                        LOG("AutoAim(bow): locked {} at distance {:.0f}{} range={:.0f} center=({:.0f},{:.0f},{:.0f})",
+                            rawName ? rawName : "?", dist, dragon ? " [DRAGON]" : "", maxRange, targetCenter.x, targetCenter.y, targetCenter.z);
 
                         // Démarrer la surveillance vol/sol si c'est un dragon
                         if (dragon) StartDragonFlightWatch();
