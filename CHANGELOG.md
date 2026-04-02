@@ -6,6 +6,10 @@
 - Scanner teleport (Alt+Home): teleport directly to the object selected in the scanner. Useful for getting unstuck in dungeons or reaching hard-to-access quest objectives. Limitations: in interiors, only works within the same cell (no teleporting through loading doors). In exteriors, limited to 3000 units range.
 - Improved mod manager compatibility: nvdaControllerClient.dll is now automatically installed to the game root folder via FOMOD installer — no more manual copying required.
 - Improved compatibility with modded UIs: GFx value access is now protected with SEH exception handling to prevent crashes with heavily modded setups.
+- MCM settings menu (requires SkyUI): configure the plugin directly in-game via Mod Configuration Menu. Open it from the pause menu under "Mod Configuration", then select "SkyrimNVDA". Three pages are available:
+  - **General**: toggle stealth announcements (Hidden/Detected/Caution) and scanner teleportation on or off.
+  - **Audio**: adjust the volume of each sound effect (aim, kill, dragon hit) with sliders from 0.0 to 2.0. Changes apply immediately — no restart needed.
+  - **Controls**: rebind the scanner keys. Select a key, press Enter, then press the new key you want. Modifier keys (Shift, Alt) still work the same way with your new key. For example, if you change the Announce key from Home to F5, then F5 announces the object, Shift+F5 starts autowalk, and Alt+F5 teleports — same behavior, different key.
 
 ### Important note about scanner teleport
 Use scanner teleport with caution. Teleporting past quest triggers, doors, or scripted events may break quest progression. It is meant as a last resort when you are stuck, not as a primary navigation method. If a quest seems broken after teleporting, try reloading a previous save.

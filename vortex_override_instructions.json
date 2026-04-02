@@ -1,0 +1,66 @@
+[
+  {
+    "type": "setmodtype",
+    "value": "dinput"
+  },
+  {
+    "type": "copy",
+    "source": "Root/nvdaControllerClient.dll",
+    "destination": "nvdaControllerClient.dll"
+  },
+  {
+    "type": "copy",
+    "source": "SKSE/Plugins/SkyrimNVDA.dll",
+    "destination": "Data/SKSE/Plugins/SkyrimNVDA.dll"
+  },
+  {
+    "type": "copy",
+    "source": "SKSE/Plugins/nvdaControllerClient.dll",
+    "destination": "Data/SKSE/Plugins/nvdaControllerClient.dll"
+  },
+  {
+    "type": "copy",
+    "source": "SKSE/Plugins/SkyrimNVDA.ini",
+    "destination": "Data/SKSE/Plugins/SkyrimNVDA.ini"
+  },
+  {
+    "type": "copy",
+    "source": "Scripts/SkyrimTTS_AutoWalk.pex",
+    "destination": "Data/Scripts/SkyrimTTS_AutoWalk.pex"
+  },
+  {
+    "type": "copy",
+    "source": "Scripts/SkyrimTTS_MQ105Fix.pex",
+    "destination": "Data/Scripts/SkyrimTTS_MQ105Fix.pex"
+  },
+  {
+    "type": "copy",
+    "source": "Scripts/SkyrimTTS_MCM.pex",
+    "destination": "Data/Scripts/SkyrimTTS_MCM.pex"
+  },
+  {
+    "type": "copy",
+    "source": "Scripts/SkyrimTTS_MCM_Native.pex",
+    "destination": "Data/Scripts/SkyrimTTS_MCM_Native.pex"
+  },
+  {
+    "type": "copy",
+    "source": "Sound/fx/SkyrimTTS/aim_loop.wav",
+    "destination": "Data/Sound/fx/SkyrimTTS/aim_loop.wav"
+  },
+  {
+    "type": "copy",
+    "source": "Sound/fx/SkyrimTTS/enemy_death.wav",
+    "destination": "Data/Sound/fx/SkyrimTTS/enemy_death.wav"
+  },
+  {
+    "type": "copy",
+    "source": "Sound/fx/SkyrimTTS/dragon_hit.wav",
+    "destination": "Data/Sound/fx/SkyrimTTS/dragon_hit.wav"
+  },
+  {
+    "type": "copy",
+    "source": "SkyrimTTS_AutoWalk.esp",
+    "destination": "Data/SkyrimTTS_AutoWalk.esp"
+  }
+]

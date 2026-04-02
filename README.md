@@ -34,7 +34,11 @@ From the release archive, copy the following files to the correct locations insi
 
 If the folders SKSE\Plugins\ or Scripts\ do not exist inside Data\, create them.
 
-**Note:** If you install using a mod manager (Vortex, MO2), the FOMOD installer will automatically copy nvdaControllerClient.dll to the Skyrim root folder. No manual copying needed.
+**Important — nvdaControllerClient.dll must be in the Skyrim root folder** (next to SkyrimSE.exe), not in Data. How to do this depends on your mod manager:
+
+- **Vortex**: the file should be copied to the root folder automatically during installation. After installing, check that nvdaControllerClient.dll is present next to SkyrimSE.exe. If not, copy it manually from the archive's Root folder.
+- **Mod Organizer 2**: MO2 does not copy files to the game root by default. You must manually copy nvdaControllerClient.dll from the archive's Root folder to your Skyrim root folder (next to SkyrimSE.exe). If you have the Root Builder plugin installed, this is handled automatically.
+- **Manual installation**: copy nvdaControllerClient.dll to the Skyrim root folder yourself.
 
 ### Step 3: Activate the ESP
 
