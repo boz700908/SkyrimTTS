@@ -303,6 +303,58 @@ static bool ReadJournalSnapshot(JournalSnapshot& snap) {
             }
             case 8:  itemSuffix = "PCQuitPanel.List_mc.selectedEntry.text"; break;
             case 13: itemSuffix = "HelpListPanel.List_mc.selectedEntry.text"; break;
+            case 14: {
+                // HELP_TEXT_STATE : lire le titre + contenu de la page d'aide
+                // On lit htmlText car .text perd les noms de touches (remplacés par <img>)
+                std::string titleStr, htmlStr;
+                GetGFxString(movie, (std::string(SYS_PREFIX) + "HelpTextPanel.HelpTextHolder.TitleText.text").c_str(), titleStr);
+                GetGFxString(movie, (std::string(SYS_PREFIX) + "HelpTextPanel.HelpTextHolder.HelpText.textField.htmlText").c_str(), htmlStr);
+                // Fallback : si htmlText vide, essayer .text
+                if (htmlStr.empty())
+                    GetGFxString(movie, (std::string(SYS_PREFIX) + "HelpTextPanel.HelpTextHolder.HelpText.textField.text").c_str(), htmlStr);
+
+                std::wstring msg;
+                if (!titleStr.empty()) msg = ResolveUIString(movie, titleStr);
+                if (!htmlStr.empty()) {
+                    // Convertir <img src='NomTouche.png'> en [NomTouche] avant de stripper le HTML
+                    std::wstring html = Utf8ToWString(htmlStr);
+                    std::wstring cleaned;
+                    cleaned.reserve(html.size());
+                    size_t i = 0;
+                    while (i < html.size()) {
+                        // Détecter <IMG SRC="..."> ou <img src='...'>  (le jeu utilise des majuscules)
+                        if (i + 4 < html.size() && (html.compare(i, 4, L"<IMG") == 0 || html.compare(i, 4, L"<img") == 0)) {
+                            // Chercher SRC="..." ou src='...'
+                            auto srcPos = html.find(L"SRC=", i);
+                            if (srcPos == std::wstring::npos) srcPos = html.find(L"src=", i);
+                            if (srcPos != std::wstring::npos && srcPos < html.find(L'>', i)) {
+                                size_t quoteStart = srcPos + 4;
+                                wchar_t quote = (quoteStart < html.size()) ? html[quoteStart] : 0;
+                                if (quote == L'\'' || quote == L'"') {
+                                    size_t nameStart = quoteStart + 1;
+                                    size_t nameEnd = html.find(quote, nameStart);
+                                    if (nameEnd != std::wstring::npos) {
+                                        std::wstring filename = html.substr(nameStart, nameEnd - nameStart);
+                                        // Enlever .png
+                                        if (filename.size() > 4 && filename.compare(filename.size() - 4, 4, L".png") == 0)
+                                            filename = filename.substr(0, filename.size() - 4);
+                                        cleaned += filename;
+                                    }
+                                }
+                            }
+                            // Sauter toute la balise <img ...>
+                            auto closePos = html.find(L'>', i);
+                            i = (closePos != std::wstring::npos) ? closePos + 1 : html.size();
+                        } else {
+                            cleaned += html[i++];
+                        }
+                    }
+                    if (!msg.empty()) msg += L". ";
+                    msg += StripMarkupForSpeech(cleaned);
+                }
+                if (!msg.empty()) snap.systemItem = msg;
+                break;
+            }
             case 2: case 5: case 7: case 9: case 10:
                      itemSuffix = "ConfirmPanel.ConfirmText.textField.text"; break;
             default: break;

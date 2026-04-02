@@ -12,6 +12,7 @@
   - **Controls**: rebind the scanner keys (including teleport key). Select a key, press Enter, then press the new key you want. Modifier keys (Shift, Alt) still work the same way with your new key. For example, if you change the Announce key from Home to F5, then F5 announces the object, Shift+F5 starts autowalk, and Alt+F5 teleports — same behavior, different key.
 - Auto-aim: exact ballistic trajectory calculation — the arrow now follows the mathematically perfect parabolic arc, accounting for projectile speed, gravity, distance, and height difference. Much more accurate at long range.
 - Auto-aim: arrow range detection — the aim sound now stops when the target is out of your arrow's effective range. The range is calculated from real projectile physics data (speed, gravity, drop distance). At lock-on, NVDA announces "out of range" if the target is too far, or "obstructed" if there is an obstacle between you and the target.
+- Help menu: the Help pages in the System tab now read their full content, including key/button names (e.g. "Press Mouse1 to attack").
 
 ### Bug fixes
 - Map: fixed quest markers appearing twice when a quest has multiple targets pointing to the same location
