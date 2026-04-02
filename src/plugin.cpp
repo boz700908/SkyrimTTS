@@ -743,33 +743,35 @@ public:
                 if (!anyMenuOpen) {
                     bool shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
 
-                    // Numpad5 = scanner les objets
-                    if (code == RE::BSKeyboardDevice::Keys::kKP_5) {
+                    // Scanner : touches configurables via MCM
+                    uint32_t dxCode = static_cast<uint32_t>(code);
+                    if (dxCode == g_keyScan.load()) {
                         DoScan();
                         continue;
                     }
-                    // PageDown = objet suivant, Shift+PageDown = catégorie suivante
-                    if (code == RE::BSKeyboardDevice::Keys::kPageDown) {
+                    if (dxCode == g_keyNextObject.load()) {
                         if (shift) ScannerNextCategory();
                         else ScannerNextObject();
                         continue;
                     }
-                    // PageUp = objet précédent, Shift+PageUp = catégorie précédente
-                    if (code == RE::BSKeyboardDevice::Keys::kPageUp) {
+                    if (dxCode == g_keyPrevObject.load()) {
                         if (shift) ScannerPrevCategory();
                         else ScannerPrevObject();
                         continue;
                     }
-                    // Home = annoncer objet courant, Shift+Home = autowalk, Alt+Home = téléportation
-                    if (code == RE::BSKeyboardDevice::Keys::kHome) {
+                    if (dxCode == g_keyTeleport.load()) {
                         bool alt = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
-                        if (alt) ScannerTeleport();
-                        else if (shift) ToggleAutoWalk();
+                        if (alt) {
+                            ScannerTeleport();
+                            continue;
+                        }
+                    }
+                    if (dxCode == g_keyAnnounce.load()) {
+                        if (shift) ToggleAutoWalk();
                         else ScannerAnnounceCurrent();
                         continue;
                     }
-                    // End = cycler les sous-catégories
-                    if (code == RE::BSKeyboardDevice::Keys::kEnd) {
+                    if (dxCode == g_keySubcategory.load()) {
                         ScannerCycleSubcategory();
                         continue;
                     }
@@ -1062,6 +1064,97 @@ static void RegisterFurnitureListener() {
 
 // ---------------- Plugin load ----------------
 
+// ---------------- MCM Papyrus native functions ----------------
+
+namespace MCMNative {
+    static const char* SCRIPT_NAME = "SkyrimTTS_MCM_Native";
+
+    void SetStealthAnnounce(RE::StaticFunctionTag*, bool enabled) {
+        g_mcmStealthAnnounce.store(enabled);
+        LOG("MCM: stealth announce = {}", enabled);
+    }
+
+    void SetTeleportEnabled(RE::StaticFunctionTag*, bool enabled) {
+        g_mcmTeleportEnabled.store(enabled);
+        LOG("MCM: teleport = {}", enabled);
+    }
+
+    void SetAimVolume(RE::StaticFunctionTag*, float vol) {
+        g_volumeAim = std::clamp(vol, 0.0f, 2.0f);
+        LOG("MCM: aim volume = {:.2f}", g_volumeAim);
+    }
+
+    void SetKillVolume(RE::StaticFunctionTag*, float vol) {
+        g_volumeKill = std::clamp(vol, 0.0f, 2.0f);
+        LOG("MCM: kill volume = {:.2f}", g_volumeKill);
+    }
+
+    void SetDragonHitVolume(RE::StaticFunctionTag*, float vol) {
+        g_volumeDragonHit = std::clamp(vol, 0.0f, 2.0f);
+        LOG("MCM: dragon hit volume = {:.2f}", g_volumeDragonHit);
+    }
+
+    void SetKeyScan(RE::StaticFunctionTag*, int keyCode) {
+        g_keyScan.store(static_cast<uint32_t>(keyCode));
+        LOG("MCM: key scan = {}", keyCode);
+    }
+
+    void SetKeyAnnounce(RE::StaticFunctionTag*, int keyCode) {
+        g_keyAnnounce.store(static_cast<uint32_t>(keyCode));
+        LOG("MCM: key announce = {}", keyCode);
+    }
+
+    void SetKeyNextObject(RE::StaticFunctionTag*, int keyCode) {
+        g_keyNextObject.store(static_cast<uint32_t>(keyCode));
+        LOG("MCM: key next = {}", keyCode);
+    }
+
+    void SetKeyPrevObject(RE::StaticFunctionTag*, int keyCode) {
+        g_keyPrevObject.store(static_cast<uint32_t>(keyCode));
+        LOG("MCM: key prev = {}", keyCode);
+    }
+
+    void SetKeySubcategory(RE::StaticFunctionTag*, int keyCode) {
+        g_keySubcategory.store(static_cast<uint32_t>(keyCode));
+        LOG("MCM: key subcategory = {}", keyCode);
+    }
+
+    void SetKeyTeleport(RE::StaticFunctionTag*, int keyCode) {
+        g_keyTeleport.store(static_cast<uint32_t>(keyCode));
+        LOG("MCM: key teleport = {}", keyCode);
+    }
+
+    void SetScanRange(RE::StaticFunctionTag*, float range) {
+        g_mcmScanRange.store(range);
+        LOG("MCM: scan range = {:.0f}", range);
+    }
+
+    void SetTeleportRange(RE::StaticFunctionTag*, float range) {
+        g_mcmTeleportRange.store(std::clamp(range, 500.0f, 3000.0f));
+        LOG("MCM: teleport range = {:.0f}", range);
+    }
+
+    bool BindPapyrusFunctions(RE::BSScript::IVirtualMachine* vm) {
+        vm->RegisterFunction("SetStealthAnnounce",  SCRIPT_NAME, SetStealthAnnounce);
+        vm->RegisterFunction("SetTeleportEnabled",   SCRIPT_NAME, SetTeleportEnabled);
+        vm->RegisterFunction("SetAimVolume",         SCRIPT_NAME, SetAimVolume);
+        vm->RegisterFunction("SetKillVolume",        SCRIPT_NAME, SetKillVolume);
+        vm->RegisterFunction("SetDragonHitVolume",   SCRIPT_NAME, SetDragonHitVolume);
+        vm->RegisterFunction("SetKeyScan",           SCRIPT_NAME, SetKeyScan);
+        vm->RegisterFunction("SetKeyAnnounce",       SCRIPT_NAME, SetKeyAnnounce);
+        vm->RegisterFunction("SetKeyNextObject",     SCRIPT_NAME, SetKeyNextObject);
+        vm->RegisterFunction("SetKeyPrevObject",     SCRIPT_NAME, SetKeyPrevObject);
+        vm->RegisterFunction("SetKeySubcategory",    SCRIPT_NAME, SetKeySubcategory);
+        vm->RegisterFunction("SetKeyTeleport",       SCRIPT_NAME, SetKeyTeleport);
+        vm->RegisterFunction("SetScanRange",         SCRIPT_NAME, SetScanRange);
+        vm->RegisterFunction("SetTeleportRange",     SCRIPT_NAME, SetTeleportRange);
+        LOG("MCM native functions registered on {}", SCRIPT_NAME);
+        return true;
+    }
+}
+
+// ---------------------------------------------------------------
+
 SKSEPluginLoad(const SKSE::LoadInterface* skse) {
     SKSE::Init(skse);
 
@@ -1076,6 +1169,8 @@ SKSEPluginLoad(const SKSE::LoadInterface* skse) {
     LOG("SkyrimNVDA starting");
     LOG("CWD: {}", std::filesystem::current_path().string());
     LoadINISettings();
+
+    SKSE::GetPapyrusInterface()->Register(MCMNative::BindPapyrusFunctions);
 
     SKSE::GetMessagingInterface()->RegisterListener([](SKSE::MessagingInterface::Message* msg) {
         if (!msg) return;

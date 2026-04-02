@@ -704,6 +704,21 @@ static std::wstring FormatWeight(double w) {
     return s;
 }
 
+// ---------------- MCM settings ----------------
+
+static std::atomic_bool g_mcmStealthAnnounce{true};   // annonces furtivité
+static std::atomic_bool g_mcmTeleportEnabled{true};    // téléportation scanner
+
+// Touches configurables (DirectX scancodes)
+static std::atomic<uint32_t> g_keyScan{76};           // Numpad 5
+static std::atomic<uint32_t> g_keyNextObject{209};    // Page Down
+static std::atomic<uint32_t> g_keyPrevObject{201};    // Page Up
+static std::atomic<uint32_t> g_keyAnnounce{199};      // Home
+static std::atomic<uint32_t> g_keySubcategory{207};   // End
+static std::atomic<uint32_t> g_keyTeleport{199};      // Home (+ Alt)
+static std::atomic<float> g_mcmScanRange{0.0f};       // 0 = illimité
+static std::atomic<float> g_mcmTeleportRange{3000.0f}; // distance max de téléportation
+
 // ---------------- INI settings ----------------
 
 static float g_volumeAim       = 1.0f;

@@ -208,8 +208,8 @@ static void HUDAdvanceMovie_Hook(RE::IMenu* a_this, float a_interval, std::uint3
         }
     }
 
-    // Statut furtivité (Hidden / Detected / Caution) — suspendre pendant le crafting
-    if (!RE::UI::GetSingleton()->IsMenuOpen(RE::CraftingMenu::MENU_NAME)) {
+    // Statut furtivité (Hidden / Detected / Caution) — suspendre pendant le crafting, désactivable via MCM
+    if (g_mcmStealthAnnounce.load() && !RE::UI::GetSingleton()->IsMenuOpen(RE::CraftingMenu::MENU_NAME)) {
         std::string stealth;
         if (GetGFxString(movie, "_root.HUDMovieBaseInstance.StealthMeterInstance.SneakTextHolder.SneakTextClip.SneakTextInstance.text", stealth)) {
             if (!stealth.empty() && stealth != g_hudPrevStealth) {

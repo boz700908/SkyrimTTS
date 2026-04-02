@@ -38,6 +38,7 @@ static constexpr int MCM_OPT_INPUT   = 8;
 static constexpr const char* MCM_DIALOG_MENU_ENTRY  = "_root.ConfigPanelFader.configPanel.dialog.menuList.selectedEntry.text";
 static constexpr const char* MCM_DIALOG_SLIDER_VAL  = "_root.ConfigPanelFader.configPanel.dialog.sliderPanel.valueTextField.text";
 static constexpr const char* MCM_DIALOG_SLIDER_TEXT = "_root.ConfigPanelFader.configPanel.dialog.sliderPanel.slider.value";
+static constexpr const char* MCM_DIALOG_MESSAGE     = "_root.ConfigPanelFader.configPanel.dialog.textField.text";
 
 // --- État ---
 static std::atomic_bool g_mcmOpen{false};
@@ -152,8 +153,12 @@ static bool ReadMcmSnapshot(McmSnapshot& snap) {
     // Check for active dialog (menu dropdown or slider popup)
     {
         std::string dialogStr;
+        // Message dialog: read confirmation text (e.g. "Reset all settings to defaults?")
+        if (GetGFxString(movie, MCM_DIALOG_MESSAGE, dialogStr) && !dialogStr.empty()) {
+            snap.dialogItem = StripMarkupForSpeech(Utf8ToWString(dialogStr));
+        }
         // Menu dialog: read selected item text
-        if (GetGFxString(movie, MCM_DIALOG_MENU_ENTRY, dialogStr) && !dialogStr.empty()) {
+        else if (GetGFxString(movie, MCM_DIALOG_MENU_ENTRY, dialogStr) && !dialogStr.empty()) {
             snap.dialogItem = Utf8ToWString(dialogStr);
         }
         // Slider dialog: read formatted value text
