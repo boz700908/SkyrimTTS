@@ -190,9 +190,10 @@ static void StartAutoWalk(RE::FormID targetFormID, float stopDistance = 100.0f,
 
     task->AddTask([targetFormID, stopDistance, posX, posY, posZ, useCoords]() {
         // Forcer l'initialisation du mouvement avant de lancer l'IA
-        // (corrige le bug de vitesse lente si autowalk lancé sans marcher après un chargement)
         auto* player = RE::PlayerCharacter::GetSingleton();
         if (player) {
+            // Forcer l'initialisation du mouvement avant de lancer l'IA
+            // (corrige le bug de vitesse lente si autowalk lancé sans marcher après un chargement)
             auto* avo = player->AsActorValueOwner();
             if (avo) {
                 float base = avo->GetBaseActorValue(RE::ActorValue::kSpeedMult);
@@ -247,6 +248,9 @@ static void StartAutoWalk(RE::FormID targetFormID, float stopDistance = 100.0f,
             LOG("AutoWalk: coords mode FormID={:08X} pos=({:.0f},{:.0f},{:.0f})", targetFormID, posX, posY, posZ);
         }
 
+        LOG("AutoWalk: quest running={}, formID={:08X}, handle={:X}",
+            quest->IsRunning(), quest->GetFormID(), handle);
+
         RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback;
         bool ok = vm->DispatchMethodCall(
             handle,
@@ -255,6 +259,8 @@ static void StartAutoWalk(RE::FormID targetFormID, float stopDistance = 100.0f,
             args,
             callback
         );
+
+        LOG("AutoWalk: DispatchMethodCall returned {}", ok);
 
         if (ok) {
             g_autoWalking.store(true);
