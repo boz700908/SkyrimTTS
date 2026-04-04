@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.3.1 (2026-04-03)
+
+### New features
+- Map: location type sub-filter (Alt+End) — cycle through All types, Cities, Towns, Dungeons, Forts, Camps to narrow down markers within the current filter
+- Map: markers are now filtered by current worldspace — Solstheim markers no longer appear when you are in Skyrim and vice versa
+
+### Bug fixes
+- Autowalk: fixed unnatural movement speed — autowalk now runs at normal speed instead of 2.5x
+- Autowalk: fixed player stuck in slow walk after autowalk arrival — speed is now properly restored in all stop scenarios (arrival, cancellation, stuck detection)
+- Autowalk: no longer stops automatically when entering combat — the player decides when to stop
+- Crash fix: protected all GFx UI access with SEH exception handling — fixes crash on startup with heavily modded UIs (e.g. Journals of Jyggalag modlist)
+
 ## v1.3 (2026-04-02)
 
 ### New features
