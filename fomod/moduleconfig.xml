@@ -7,23 +7,4 @@
     <folder source="Sound" destination="Sound"/>
     <file source="SkyrimTTS_AutoWalk.esp" destination="SkyrimTTS_AutoWalk.esp"/>
   </requiredInstallFiles>
-  <installSteps>
-    <installStep name="NVDA Controller">
-      <optionalFileGroups>
-        <group name="NVDAController" type="SelectAll">
-          <plugins>
-            <plugin name="NVDA Controller DLL (required)">
-              <description>Installs nvdaControllerClient.dll to the game root folder. This file is required for the screen reader to work.</description>
-              <files>
-                <file source="Root\nvdaControllerClient.dll" destination="../../nvdaControllerClient.dll"/>
-              </files>
-              <typeDescriptor>
-                <type name="Required"/>
-              </typeDescriptor>
-            </plugin>
-          </plugins>
-        </group>
-      </optionalFileGroups>
-    </installStep>
-  </installSteps>
 </config>
