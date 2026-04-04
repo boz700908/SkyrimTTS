@@ -114,7 +114,7 @@ static void ReadActiveQuestsFromJournal() {
     RE::GFxValue questList;
     bool found = false;
     for (auto* path : listPaths) {
-        if (movie->GetVariable(&questList, path) && questList.IsArray()) {
+        if (SafeGetVariable(movie, questList, path) && questList.IsArray()) {
             LOG("Scanner: journal quest list found at '{}'  size={}", path, questList.GetArraySize());
             found = true;
             break;
@@ -164,7 +164,7 @@ static void ReadActiveQuestsFromJournal() {
     // Lire les quêtes misc individuelles depuis objectiveList
     // Quand "Divers" est dans le journal, objectiveList contient les quêtes misc avec leurs vrais formIDs
     RE::GFxValue objList;
-    if (movie->GetVariable(&objList, "_root.QuestJournalFader.Menu_mc.QuestsFader.Page_mc.objectiveList.entryList") && objList.IsArray()) {
+    if (SafeGetVariable(movie, objList, "_root.QuestJournalFader.Menu_mc.QuestsFader.Page_mc.objectiveList.entryList") && objList.IsArray()) {
         uint32_t objCount = objList.GetArraySize();
         for (uint32_t i = 0; i < objCount; i++) {
             RE::GFxValue objEntry;

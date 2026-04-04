@@ -12,7 +12,7 @@ static ConsoleAdvanceMovie_t* g_origConsoleAdvanceMovie = nullptr;
 // Lire un champ texte GFx via GetMember (GetVariable ne marche pas pour .text sur TextField)
 static bool GetTextFieldText(RE::GFxMovieView* movie, const char* instancePath, const char* fieldName, std::string& out) {
     RE::GFxValue instance;
-    if (!movie->GetVariable(&instance, instancePath)) return false;
+    if (!SafeGetVariable(movie, instance, instancePath)) return false;
     if (!instance.IsObject() && !instance.IsDisplayObject()) return false;
 
     RE::GFxValue field;

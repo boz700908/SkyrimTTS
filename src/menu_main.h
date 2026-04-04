@@ -164,7 +164,7 @@ static std::wstring TryReadSaveLoadEntry(RE::GFxMovieView* movie, bool isCharact
             // corrupt / obsolete: full path reads (same mechanism as .text — traverses selectedEntry getter)
             auto readBool = [&](const std::string& path) -> bool {
                 RE::GFxValue val;
-                if (!movie->GetVariable(&val, path.c_str())) return false;
+                if (!SafeGetVariable(movie, val, path.c_str())) return false;
                 if (val.IsBool())   return val.GetBool();
                 if (val.IsNumber()) return val.GetNumber() != 0.0;
                 return false;

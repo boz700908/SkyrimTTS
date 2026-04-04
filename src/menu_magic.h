@@ -72,7 +72,7 @@ static bool ReadMagicSnapshot(MagicSnapshot& snap) {
         snap.itemName = ResolveUIString(movie, tmp);
 
     RE::GFxValue enabledVal;
-    if (movie->GetVariable(&enabledVal, MagicItemEnabled()))
+    if (SafeGetVariable(movie, enabledVal, MagicItemEnabled()))
         snap.itemEnabled = enabledVal.IsBool() ? enabledVal.GetBool()
                          : (enabledVal.IsNumber() && enabledVal.GetNumber() != 0.0);
 
@@ -81,7 +81,7 @@ static bool ReadMagicSnapshot(MagicSnapshot& snap) {
         snap.equipState = static_cast<int>(equipD);
 
     RE::GFxValue favVal;
-    if (movie->GetVariable(&favVal, MagicItemFav()))
+    if (SafeGetVariable(movie, favVal, MagicItemFav()))
         snap.favorite = favVal.IsBool() ? favVal.GetBool()
                       : (favVal.IsNumber() && favVal.GetNumber() != 0.0);
 
@@ -111,7 +111,7 @@ static bool ReadMagicSnapshot(MagicSnapshot& snap) {
 
             std::string unlockedPath = cardField(("unlocked" + std::to_string(i)).c_str());
             RE::GFxValue unlocked;
-            if (movie->GetVariable(&unlocked, unlockedPath.c_str()))
+            if (SafeGetVariable(movie, unlocked, unlockedPath.c_str()))
                 snap.shoutWords[i].unlocked = unlocked.IsBool() ? unlocked.GetBool()
                     : (unlocked.IsNumber() && unlocked.GetNumber() != 0.0);
         }

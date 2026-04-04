@@ -119,6 +119,14 @@ static std::string WStringToUtf8(const std::wstring& w) {
 // Protection SEH contre les access violations sur des GFxValue corrompus (mods UI)
 // __try/__except ne peut pas être dans une fonction avec des objets C++ (destructeurs),
 // donc on isole les appels dangereux ici.
+static bool SafeGetVariable(RE::GFxMovieView* movie, RE::GFxValue& out, const char* path) {
+    __try {
+        return movie->GetVariable(&out, path);
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
 static bool SafeGetMember(const RE::GFxValue& obj, const char* name, RE::GFxValue* out) {
     __try {
         return obj.GetMember(name, out);
@@ -182,9 +190,7 @@ static bool GetGFxString(RE::GFxMovieView* movie, const char* path, std::string&
     if (!movie || !path) return false;
 
     RE::GFxValue v;
-    if (!movie->GetVariable(&v, path)) {
-        return false;
-    }
+    if (!SafeGetVariable(movie, v, path)) return false;
     return ExtractString(v, out);
 }
 
@@ -192,7 +198,7 @@ static bool GetGFxNumber(RE::GFxMovieView* movie, const char* path, double& out)
     out = 0.0;
     if (!movie || !path) return false;
     RE::GFxValue v;
-    if (!movie->GetVariable(&v, path)) return false;
+    if (!SafeGetVariable(movie, v, path)) return false;
     if (v.IsNumber()) { out = v.GetNumber(); return true; }
     if (SafeIsString(v)) {
         const char* s = SafeGetString(v);
@@ -678,7 +684,7 @@ static void DetectSkyUIFromPlugin() {
 static void DetectSkyUI(RE::GFxMovieView* movie) {
     if (g_skyuiDetectionDone.load(std::memory_order_relaxed)) return;
     RE::GFxValue test;
-    bool isSkyUI = movie->GetVariable(&test, "_root.Menu_mc.inventoryLists") && !test.IsUndefined();
+    bool isSkyUI = SafeGetVariable(movie, test, "_root.Menu_mc.inventoryLists") && !test.IsUndefined();
     g_skyuiMode.store(isSkyUI, std::memory_order_relaxed);
     g_skyuiDetectionDone.store(true, std::memory_order_relaxed);
     LOG("SkyUI detected via GFx fallback: {}", isSkyUI ? "yes" : "no");

@@ -168,7 +168,7 @@ static void AnnounceRaceSexChangeImpl() {
     std::string nameTmp;
     RE::GFxValue nameVisVal;
     const bool nameFieldVisible =
-        movie->GetVariable(&nameVisVal, "_root.RaceSexMenuBaseInstance.RaceSexPanelsInstance.NameEntryInstance._visible") &&
+        SafeGetVariable(movie, nameVisVal, "_root.RaceSexMenuBaseInstance.RaceSexPanelsInstance.NameEntryInstance._visible") &&
         ((nameVisVal.IsBool() && nameVisVal.GetBool()) || (nameVisVal.IsNumber() && nameVisVal.GetNumber() > 0.5));
     GetGFxString(movie, "_root.RaceSexMenuBaseInstance.RaceSexPanelsInstance.NameEntryInstance.TextInputInstance.text", nameTmp);
     // Le champ de nom est toujours "visible" en GFx. On ne peut pas détecter

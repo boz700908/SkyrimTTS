@@ -126,7 +126,7 @@ static void HUDAdvanceMovie_Hook(RE::IMenu* a_this, float a_interval, std::uint3
     // Reset quand le tableau est vide pour relire un message identique qui réapparaît
     {
         RE::GFxValue messagesBlock;
-        if (movie->GetVariable(&messagesBlock, "_root.HUDMovieBaseInstance.MessagesBlock") && messagesBlock.IsObject()) {
+        if (SafeGetVariable(movie, messagesBlock, "_root.HUDMovieBaseInstance.MessagesBlock") && messagesBlock.IsObject()) {
             RE::GFxValue shownArray;
             if (messagesBlock.GetMember("ShownMessageArray", &shownArray) && shownArray.IsArray()) {
                 uint32_t len = shownArray.GetArraySize();

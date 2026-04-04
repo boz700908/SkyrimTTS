@@ -88,12 +88,12 @@ static bool ReadJournalSnapshot(JournalSnapshot& snap) {
 
         // active : booléen sur l'objet centeredEntry (QuestCenteredList.as)
         RE::GFxValue activeVal;
-        if (movie->GetVariable(&activeVal, "_root.QuestJournalFader.Menu_mc.QuestsFader.Page_mc.TitleList_mc.List_mc.centeredEntry.active"))
+        if (SafeGetVariable(movie, activeVal, "_root.QuestJournalFader.Menu_mc.QuestsFader.Page_mc.TitleList_mc.List_mc.centeredEntry.active"))
             snap.questActive = activeVal.IsBool() ? activeVal.GetBool() : (activeVal.IsNumber() && activeVal.GetNumber() != 0.0);
 
         // formID de l'entrée centrée (0 = Divers/Miscellaneous)
         RE::GFxValue formIDVal;
-        if (movie->GetVariable(&formIDVal, "_root.QuestJournalFader.Menu_mc.QuestsFader.Page_mc.TitleList_mc.List_mc.centeredEntry.formID") && formIDVal.IsNumber())
+        if (SafeGetVariable(movie, formIDVal, "_root.QuestJournalFader.Menu_mc.QuestsFader.Page_mc.TitleList_mc.List_mc.centeredEntry.formID") && formIDVal.IsNumber())
             snap.questFormID = formIDVal.GetNumber();
 
         // Divers (formID == 0) : lire l'objectif sélectionné individuellement
@@ -105,7 +105,7 @@ static bool ReadJournalSnapshot(JournalSnapshot& snap) {
 
             // selectedEntry dans objectiveList
             RE::GFxValue selEntry;
-            if (movie->GetVariable(&selEntry, "_root.QuestJournalFader.Menu_mc.QuestsFader.Page_mc.objectiveList.selectedEntry") && selEntry.IsObject()) {
+            if (SafeGetVariable(movie, selEntry, "_root.QuestJournalFader.Menu_mc.QuestsFader.Page_mc.objectiveList.selectedEntry") && selEntry.IsObject()) {
                 RE::GFxValue textVal;
                 if (selEntry.GetMember("text", &textVal) && textVal.IsString()) {
                     std::string s = textVal.GetString();
@@ -118,7 +118,7 @@ static bool ReadJournalSnapshot(JournalSnapshot& snap) {
         } else {
             // Quête normale : lire tous les objectifs en bloc
             RE::GFxValue entryList;
-            if (movie->GetVariable(&entryList, "_root.QuestJournalFader.Menu_mc.QuestsFader.Page_mc.objectiveList.entryList") && entryList.IsArray()) {
+            if (SafeGetVariable(movie, entryList, "_root.QuestJournalFader.Menu_mc.QuestsFader.Page_mc.objectiveList.entryList") && entryList.IsArray()) {
                 const auto len = entryList.GetArraySize();
                 for (std::uint32_t i = 0; i < len; ++i) {
                     RE::GFxValue item;
@@ -156,7 +156,7 @@ static bool ReadJournalSnapshot(JournalSnapshot& snap) {
         // Stats de la catégorie (StatsList_mc.entryList[i].text + .value)
         RE::GFxValue entryList;
         std::string listPath = std::string(STATS_PREFIX) + "StatsList_mc.entryList";
-        if (movie->GetVariable(&entryList, listPath.c_str()) && entryList.IsArray()) {
+        if (SafeGetVariable(movie, entryList, listPath.c_str()) && entryList.IsArray()) {
             const auto len = entryList.GetArraySize();
             for (std::uint32_t i = 0; i < len; ++i) {
                 RE::GFxValue item;

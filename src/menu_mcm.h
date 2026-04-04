@@ -84,7 +84,7 @@ static bool ReadMcmSnapshot(McmSnapshot& snap) {
 
     // Vérifier si le MCM est visible
     RE::GFxValue visVal;
-    if (!movie->GetVariable(&visVal, MCM_VISIBLE) || !visVal.IsBool() || !visVal.GetBool())
+    if (!SafeGetVariable(movie, visVal, MCM_VISIBLE) || !visVal.IsBool() || !visVal.GetBool())
         return false;
     snap.visible = true;
 
@@ -123,7 +123,7 @@ static bool ReadMcmSnapshot(McmSnapshot& snap) {
 
     if (snap.optionIdx >= 0) {
         RE::GFxValue entry;
-        if (movie->GetVariable(&entry, MCM_OPTIONS_ENTRY) && entry.IsObject()) {
+        if (SafeGetVariable(movie, entry, MCM_OPTIONS_ENTRY) && entry.IsObject()) {
             // Option type
             RE::GFxValue typeVal;
             if (entry.GetMember("optionType", &typeVal) && typeVal.IsNumber())

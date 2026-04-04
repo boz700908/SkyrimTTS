@@ -65,7 +65,7 @@ static void MsgBoxPressButtonImpl(int buttonIdx) {
 
     std::string path = "_root.MessageMenu.Buttons.Button" + std::to_string(buttonIdx);
     RE::GFxValue button;
-    if (!movie->GetVariable(&button, path.c_str()) || !button.IsObject()) {
+    if (!SafeGetVariable(movie, button, path.c_str()) || !button.IsObject()) {
         LOG("MsgBox: button {} not found at '{}'", buttonIdx, path);
         return;
     }

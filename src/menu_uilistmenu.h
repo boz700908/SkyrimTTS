@@ -31,9 +31,9 @@ static void AnnounceUIListChangeImpl() {
 
         RE::GFxValue vis;
         RE::GFxValue txt;
-        if (!movie->GetVariable(&vis, visPath.c_str())) continue;
+        if (!SafeGetVariable(movie, vis, visPath.c_str())) continue;
         if (!vis.IsBool() || !vis.GetBool()) continue;
-        if (!movie->GetVariable(&txt, txtPath.c_str()) || !txt.IsString()) continue;
+        if (!SafeGetVariable(movie, txt, txtPath.c_str()) || !txt.IsString()) continue;
 
         std::string s = txt.GetString();
         if (s.empty()) continue;
