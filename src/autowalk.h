@@ -83,6 +83,11 @@ static void StartAutoWalkMonitor() {
                         auto* p = RE::PlayerCharacter::GetSingleton();
                         if (p) {
                             p->SetAIDriven(false);
+                            auto* avo = p->AsActorValueOwner();
+                            if (avo) {
+                                float base = avo->GetBaseActorValue(RE::ActorValue::kSpeedMult);
+                                avo->SetActorValue(RE::ActorValue::kSpeedMult, base);
+                            }
                             p->EvaluatePackage();
                         }
                     });
@@ -136,6 +141,11 @@ static void StartAutoWalkMonitor() {
                         auto* p = RE::PlayerCharacter::GetSingleton();
                         if (p) {
                             p->SetAIDriven(false);
+                            auto* avo = p->AsActorValueOwner();
+                            if (avo) {
+                                float base = avo->GetBaseActorValue(RE::ActorValue::kSpeedMult);
+                                avo->SetActorValue(RE::ActorValue::kSpeedMult, base);
+                            }
                             p->EvaluatePackage();
                         }
                     });
@@ -163,6 +173,11 @@ static void StartAutoWalkMonitor() {
                         auto* p = RE::PlayerCharacter::GetSingleton();
                         if (p) {
                             p->SetAIDriven(false);
+                            auto* avo = p->AsActorValueOwner();
+                            if (avo) {
+                                float base = avo->GetBaseActorValue(RE::ActorValue::kSpeedMult);
+                                avo->SetActorValue(RE::ActorValue::kSpeedMult, base);
+                            }
                             p->EvaluatePackage();
                         }
                     });
