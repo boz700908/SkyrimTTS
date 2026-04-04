@@ -26,3 +26,12 @@ vcpkg_installed/
 
 # Logs
 *.log
+
+# Game assets — not code, should not be in repo
+*.swf
+*.as
+*.wav
+UI/
+gfx/
+release/
+sounds/
