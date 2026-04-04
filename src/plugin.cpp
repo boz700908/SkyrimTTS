@@ -718,7 +718,9 @@ public:
                     continue;
                 }
                 if (code == RE::BSKeyboardDevice::Keys::kEnd) {
-                    MapCycleFilter();
+                    bool alt = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
+                    if (alt) MapCycleSubFilter();
+                    else MapCycleFilter();
                     continue;
                 }
                 if (code == RE::BSKeyboardDevice::Keys::kEnter) {

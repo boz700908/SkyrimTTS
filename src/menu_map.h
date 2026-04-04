@@ -25,11 +25,32 @@ static const wchar_t* g_mapFilterNames[] = {
     L"Quest Targets"
 };
 
+// Sous-catégories par type de lieu (Alt+End)
+enum class MapSubFilter : int {
+    AllTypes = 0,
+    Cities,
+    Towns,
+    Dungeons,
+    Forts,
+    Camps,
+    COUNT
+};
+
+static const wchar_t* g_mapSubFilterNames[] = {
+    L"All types",
+    L"Cities",
+    L"Towns",
+    L"Dungeons",
+    L"Forts",
+    L"Camps"
+};
+
 // --- Marqueur de carte ---
 struct MapMarkerInfo {
     RE::FormID    formID{0};
     std::wstring  name;
     std::wstring  typeName;
+    RE::MARKER_TYPE markerType{RE::MARKER_TYPE::kNone};  // pour le sous-filtre par type
     float         distance{0.0f};
     std::wstring  direction;
     bool          discovered{false};
@@ -42,6 +63,7 @@ struct MapMarkerInfo {
 static std::vector<MapMarkerInfo>  g_mapMarkers;
 static std::vector<int>            g_mapFiltered;   // indices dans g_mapMarkers
 static MapFilter                   g_mapFilter{MapFilter::All};
+static MapSubFilter                g_mapSubFilter{MapSubFilter::AllTypes};
 static int                         g_mapIndex{-1};
 static std::atomic_bool            g_mapOpen{false};
 static std::atomic_bool            g_mapReady{false};   // true quand BuildMapMarkerList terminé
@@ -330,6 +352,7 @@ static void BuildMapMarkerList() {
             marker.formID = ref->GetFormID();
             marker.name = Utf8ToWString(rawName);
             marker.typeName = GetMarkerTypeName(markerType);
+            marker.markerType = markerType;
             marker.distance = dist;
             marker.direction = GetDirectionString(dx, dy);
             marker.discovered = canTravel;
@@ -341,17 +364,33 @@ static void BuildMapMarkerList() {
         }
     };
 
-    // Scanner le worldspace principal du joueur
-    if (worldSpace->persistentCell) {
-        scanPersistentCell(worldSpace->persistentCell);
-        LOG("MapMenu: scanned player worldspace '{}', {} markers so far", worldSpace->GetName(), markerCount);
+    // Trouver le worldspace racine (ex: si on est dans Blancherive, remonter à Tamriel)
+    auto* rootWorld = worldSpace;
+    while (rootWorld->parentWorld) {
+        rootWorld = rootWorld->parentWorld;
+    }
+    LOG("MapMenu: root worldspace = '{}' ({:08X})", rootWorld->GetName(), rootWorld->GetFormID());
+
+    // Scanner le worldspace racine
+    if (rootWorld->persistentCell) {
+        scanPersistentCell(rootWorld->persistentCell);
+        LOG("MapMenu: scanned root worldspace '{}', {} markers so far", rootWorld->GetName(), markerCount);
     }
 
-    // Scanner aussi tous les autres worldspaces (pour les villes, DLC, etc.)
+    // Scanner les worldspaces enfants de la racine (villes, etc.)
+    // Exclure les worldspaces indépendants (Solstheim quand on est à Bordeciel et inversement)
     auto& worldSpaces = dataHandler->GetFormArray<RE::TESWorldSpace>();
     for (auto* ws : worldSpaces) {
-        if (!ws || ws == worldSpace) continue;  // déjà scanné
+        if (!ws || ws == rootWorld) continue;  // déjà scanné
         if (!ws->persistentCell) continue;
+
+        // N'inclure que les worldspaces qui descendent de la même racine
+        bool sameRoot = false;
+        for (auto* parent = ws->parentWorld; parent; parent = parent->parentWorld) {
+            if (parent == rootWorld) { sameRoot = true; break; }
+        }
+        if (!sameRoot) continue;
+
         int before = markerCount;
         scanPersistentCell(ws->persistentCell);
         if (markerCount > before) {
@@ -377,31 +416,64 @@ static void BuildMapMarkerList() {
 }
 
 // --- Appliquer le filtre ---
+static bool MatchesSubFilter(const MapMarkerInfo& m) {
+    if (g_mapSubFilter == MapSubFilter::AllTypes) return true;
+    if (m.isQuestTarget) return true;  // les quêtes passent toujours
+
+    int t = static_cast<int>(m.markerType);
+    switch (g_mapSubFilter) {
+        case MapSubFilter::Cities:
+            // kCity (1) + all Castle/Capitol types (35-58)
+            return m.markerType == RE::MARKER_TYPE::kCity || t >= 35;
+        case MapSubFilter::Towns:
+            return m.markerType == RE::MARKER_TYPE::kTown ||
+                   m.markerType == RE::MARKER_TYPE::kSettlement;
+        case MapSubFilter::Dungeons:
+            return m.markerType == RE::MARKER_TYPE::kCave ||
+                   m.markerType == RE::MARKER_TYPE::kNordicRuins ||
+                   m.markerType == RE::MARKER_TYPE::kDwemerRuin ||
+                   m.markerType == RE::MARKER_TYPE::kDragonLair;
+        case MapSubFilter::Forts:
+            return m.markerType == RE::MARKER_TYPE::kFort ||
+                   m.markerType == RE::MARKER_TYPE::kImperialTower ||
+                   m.markerType == RE::MARKER_TYPE::kNordicTower;
+        case MapSubFilter::Camps:
+            return m.markerType == RE::MARKER_TYPE::kCamp ||
+                   m.markerType == RE::MARKER_TYPE::kImperialCamp ||
+                   m.markerType == RE::MARKER_TYPE::kStormcloakCamp ||
+                   m.markerType == RE::MARKER_TYPE::kGiantCamp ||
+                   m.markerType == RE::MARKER_TYPE::kOrcStronghold;
+        default: return true;
+    }
+}
+
 static void ApplyMapFilter() {
     g_mapFiltered.clear();
 
     for (int i = 0; i < static_cast<int>(g_mapMarkers.size()); i++) {
         auto& m = g_mapMarkers[i];
+
+        // Filtre principal
+        bool passMain = false;
         switch (g_mapFilter) {
-            case MapFilter::All:
-                g_mapFiltered.push_back(i);
-                break;
-            case MapFilter::Discovered:
-                if (m.discovered) g_mapFiltered.push_back(i);
-                break;
-            case MapFilter::Undiscovered:
-                if (!m.discovered && !m.isQuestTarget) g_mapFiltered.push_back(i);
-                break;
-            case MapFilter::QuestTargets:
-                if (m.isQuestTarget) g_mapFiltered.push_back(i);
-                break;
+            case MapFilter::All:          passMain = true; break;
+            case MapFilter::Discovered:   passMain = m.discovered; break;
+            case MapFilter::Undiscovered: passMain = !m.discovered && !m.isQuestTarget; break;
+            case MapFilter::QuestTargets: passMain = m.isQuestTarget; break;
             default: break;
         }
+        if (!passMain) continue;
+
+        // Sous-filtre par type
+        if (!MatchesSubFilter(m)) continue;
+
+        g_mapFiltered.push_back(i);
     }
 
     g_mapIndex = g_mapFiltered.empty() ? -1 : 0;
-    LOG("MapMenu: filter '{}' -> {} markers",
+    LOG("MapMenu: filter '{}' sub '{}' -> {} markers",
         WStringToUtf8(g_mapFilterNames[static_cast<int>(g_mapFilter)]),
+        WStringToUtf8(g_mapSubFilterNames[static_cast<int>(g_mapSubFilter)]),
         g_mapFiltered.size());
 }
 
@@ -657,6 +729,29 @@ static void MapSetReference() {
     Speak(L"Reference: " + g_mapReferenceName + L". Distances from this marker");
 }
 
+// --- Sous-filtre par type de lieu (Alt+End) ---
+static void MapCycleSubFilter() {
+    if (!g_mapReady.load()) {
+        Speak(L"Loading markers");
+        return;
+    }
+
+    int next = (static_cast<int>(g_mapSubFilter) + 1) % static_cast<int>(MapSubFilter::COUNT);
+    g_mapSubFilter = static_cast<MapSubFilter>(next);
+
+    ApplyMapFilter();
+
+    std::wstring msg = g_mapSubFilterNames[static_cast<int>(g_mapSubFilter)];
+    msg += L", " + std::to_wstring(g_mapFiltered.size()) + L" markers";
+    if (!g_mapFiltered.empty()) {
+        int idx = g_mapFiltered[0];
+        if (idx >= 0 && idx < static_cast<int>(g_mapMarkers.size())) {
+            msg += L". " + FormatMapMarkerAnnounce(g_mapMarkers[idx]);
+        }
+    }
+    Speak(msg);
+}
+
 // --- Placer un marqueur personnalisé (P) ---
 static void MapPlaceCustomMarker() {
     if (!g_mapReady.load() || g_mapFiltered.empty() || g_mapIndex < 0) {
@@ -695,6 +790,7 @@ static void MapCycleFilter() {
 
     int next = (static_cast<int>(g_mapFilter) + 1) % static_cast<int>(MapFilter::COUNT);
     g_mapFilter = static_cast<MapFilter>(next);
+    g_mapSubFilter = MapSubFilter::AllTypes;  // reset sous-filtre
 
     ApplyMapFilter();
 
@@ -788,6 +884,7 @@ static void OnMapOpen() {
     g_mapOpen.store(true);
     g_mapReady.store(false);
     g_mapFilter = MapFilter::All;
+    g_mapSubFilter = MapSubFilter::AllTypes;
     g_mapMarkers.clear();
     g_mapFiltered.clear();
     g_mapIndex = -1;
