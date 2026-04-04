@@ -258,6 +258,15 @@ CHANGELOG.txt, README.txt, GUIDE.txt, GUIDE_FR.txt, LISEZMOI.txt
 ### Commits atomiques
 Faire un commit par changement logique (un bug = un commit, une feature = un commit). Ne pas regrouper.
 
+### Fichiers interdits dans le repo
+Ne JAMAIS commiter de fichiers game assets ou binaires dans le repo Git :
+- `.swf` (fichiers Flash du jeu)
+- `.as` (scripts ActionScript decompiles)
+- `.wav` (sons)
+- Dossiers `UI/`, `gfx/`, `release/`, `sounds/`
+- Les releases vont dans GitHub Releases, pas dans le repo
+Le `.gitignore` est configure pour bloquer ces fichiers. Ne pas le modifier pour les inclure.
+
 ### Release : TOUJOURS en Release build
 La DLL Release fait ~1 Mo, la Debug ~5 Mo. La Debug depend de DLL developpeur (MSVCP140D.dll) que les joueurs n'ont pas. Le CI verifie automatiquement la taille.
 
