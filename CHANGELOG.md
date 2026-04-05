@@ -10,7 +10,12 @@
 - Autowalk: fixed unnatural movement speed — autowalk now runs at normal speed instead of 2.5x
 - Autowalk: fixed player stuck in slow walk after autowalk arrival — speed is now properly restored in all stop scenarios (arrival, cancellation, stuck detection)
 - Autowalk: no longer stops automatically when entering combat — the player decides when to stop
+- Autowalk: starting autowalk now automatically disables aim lock (X) and toggle lock-on (Shift+X) to prevent camera conflicts
 - Crash fix: protected all GFx UI access with SEH exception handling — fixes crash on startup with heavily modded UIs (e.g. Journals of Jyggalag modlist)
+- Scanner: quest markers now follow the correct waypoint in dungeons — quests like "Escape Helgen" have multiple invisible waypoints that guide you through corridors and rooms. Previously, the scanner always pointed to the first waypoint (near the entrance). Now it follows the same waypoint as the compass, updating as you progress through the dungeon
+- Scanner: pressing Home on a quest target now refreshes the waypoint in real-time — if the quest stage changes (e.g. you pass a trigger in a dungeon), the marker updates immediately without needing to rescan
+- Scanner: distances are now recalculated in real-time when navigating with Page Up/Down — previously distances were only updated when pressing Home
+- Scanner: fixed inconsistent distances between Home and Page Up/Down — Home was using the 3D mesh center (much higher for tall objects like standing stones) while Page Up/Down used the base position, causing large discrepancies
 
 ## v1.3 (2026-04-02)
 
