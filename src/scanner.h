@@ -114,8 +114,8 @@ static void ReadActiveQuestsFromJournal() {
     RE::GFxValue questList;
     bool found = false;
     for (auto* path : listPaths) {
-        if (SafeGetVariable(movie, questList, path) && questList.IsArray()) {
-            LOG("Scanner: journal quest list found at '{}'  size={}", path, questList.GetArraySize());
+        if (SafeGetVariable(movie, questList, path) && SafeIsArray(questList)) {
+            LOG("Scanner: journal quest list found at '{}'  size={}", path, SafeGetArraySize(questList));
             found = true;
             break;
         }
@@ -125,30 +125,30 @@ static void ReadActiveQuestsFromJournal() {
         return;
     }
 
-    uint32_t count = questList.GetArraySize();
+    uint32_t count = SafeGetArraySize(questList);
     g_activeQuestFormIDs.clear();
     g_miscQuestsActive = false;  // reset, sera mis à true si une entrée Misc est active
 
     LOG("Scanner: journal list has {} entries, dumping all:", count);
     for (uint32_t i = 0; i < count; i++) {
         RE::GFxValue entry;
-        if (!questList.GetElement(i, &entry) || !entry.IsObject()) continue;
+        if (!questList.GetElement(i, &entry) || !SafeIsObject(entry)) continue;
 
         RE::GFxValue activeVal, formIDVal;
         bool isActive = false;
         uint32_t formID = 0;
 
         if (entry.GetMember("active", &activeVal)) {
-            isActive = activeVal.IsBool() ? activeVal.GetBool() : (activeVal.IsNumber() && activeVal.GetNumber() != 0.0);
+            isActive = SafeIsBool(activeVal) ? SafeGetBool(activeVal) : (SafeIsNumber(activeVal) && SafeGetNumber(activeVal) != 0.0);
         }
-        if (entry.GetMember("formID", &formIDVal) && formIDVal.IsNumber()) {
-            formID = static_cast<uint32_t>(formIDVal.GetNumber());
+        if (entry.GetMember("formID", &formIDVal) && SafeIsNumber(formIDVal)) {
+            formID = static_cast<uint32_t>(SafeGetNumber(formIDVal));
         }
 
         // Log chaque entrée
         RE::GFxValue textVal;
         std::string entryText = "?";
-        if (entry.GetMember("text", &textVal) && textVal.IsString()) entryText = textVal.GetString();
+        if (entry.GetMember("text", &textVal) && SafeIsString(textVal)) entryText = SafeGetString(textVal);
         LOG("Scanner: journal entry[{}] text='{}' formID={:08X} active={}", i, entryText, formID, isActive);
 
         if (formID == 0) {
@@ -164,27 +164,27 @@ static void ReadActiveQuestsFromJournal() {
     // Lire les quêtes misc individuelles depuis objectiveList
     // Quand "Divers" est dans le journal, objectiveList contient les quêtes misc avec leurs vrais formIDs
     RE::GFxValue objList;
-    if (SafeGetVariable(movie, objList, "_root.QuestJournalFader.Menu_mc.QuestsFader.Page_mc.objectiveList.entryList") && objList.IsArray()) {
-        uint32_t objCount = objList.GetArraySize();
+    if (SafeGetVariable(movie, objList, "_root.QuestJournalFader.Menu_mc.QuestsFader.Page_mc.objectiveList.entryList") && SafeIsArray(objList)) {
+        uint32_t objCount = SafeGetArraySize(objList);
         for (uint32_t i = 0; i < objCount; i++) {
             RE::GFxValue objEntry;
-            if (!objList.GetElement(i, &objEntry) || !objEntry.IsObject()) continue;
+            if (!objList.GetElement(i, &objEntry) || !SafeIsObject(objEntry)) continue;
 
             RE::GFxValue objFormIDVal, objActiveVal;
             uint32_t objFormID = 0;
             bool objActive = false;
 
-            if (objEntry.GetMember("formID", &objFormIDVal) && objFormIDVal.IsNumber())
-                objFormID = static_cast<uint32_t>(objFormIDVal.GetNumber());
+            if (objEntry.GetMember("formID", &objFormIDVal) && SafeIsNumber(objFormIDVal))
+                objFormID = static_cast<uint32_t>(SafeGetNumber(objFormIDVal));
             if (objEntry.GetMember("active", &objActiveVal))
-                objActive = objActiveVal.IsBool() ? objActiveVal.GetBool() : (objActiveVal.IsNumber() && objActiveVal.GetNumber() != 0.0);
+                objActive = SafeIsBool(objActiveVal) ? SafeGetBool(objActiveVal) : (SafeIsNumber(objActiveVal) && SafeGetNumber(objActiveVal) != 0.0);
 
             // formID != 0 = quête misc individuelle (formID=0 serait l'entrée Divers elle-même)
             if (objFormID != 0 && objActive) {
                 g_activeQuestFormIDs.insert(objFormID);
                 RE::GFxValue objTextVal;
                 std::string objText = "?";
-                if (objEntry.GetMember("text", &objTextVal) && objTextVal.IsString()) objText = objTextVal.GetString();
+                if (objEntry.GetMember("text", &objTextVal) && SafeIsString(objTextVal)) objText = SafeGetString(objTextVal);
                 LOG("Scanner: misc quest active FormID={:08X} text='{}'", objFormID, objText);
             }
         }
@@ -765,6 +765,16 @@ static void DoScanInternal() {
                 }
                 auto* targetRef = refSmartPtr.get();
 
+                // Vérifier les conditions CTDA du target (comme le fait la boussole)
+                // Seul le target dont les conditions sont remplies est affiché
+                // On passe la ref cible en second paramètre pour les conditions ref-based
+                if (target->conditions.head != nullptr) {
+                    if (!target->conditions.IsTrue(player, targetRef)) {
+                        LOG("Scanner: target[{}] conditions not met, skipping", t);
+                        continue;
+                    }
+                }
+
                 auto refPos = targetRef->GetPosition();
                 const char* refName = targetRef->GetDisplayFullName();
                 auto* refCell = targetRef->GetParentCell();
@@ -871,24 +881,24 @@ static void DoScanInternal() {
                             auto hudMenu = ui->GetMenu(RE::HUDMenu::MENU_NAME);
                             if (hudMenu && hudMenu->uiMovie) {
                                 RE::GFxValue hudRoot;
-                                if (hudMenu->uiMovie->GetVariable(&hudRoot, "_root.HUDMovieBaseInstance") && hudRoot.IsObject()) {
+                                if (hudMenu->uiMovie->GetVariable(&hudRoot, "_root.HUDMovieBaseInstance") && SafeIsObject(hudRoot)) {
                                     RE::GFxValue dataArr;
-                                    if (hudRoot.GetMember("CompassTargetDataA", &dataArr) && dataArr.IsArray()) {
+                                    if (hudRoot.GetMember("CompassTargetDataA", &dataArr) && SafeIsArray(dataArr)) {
                                         RE::GFxValue qtVal, qdVal;
                                         float qt = -1, qd = -1;
-                                        if (hudRoot.GetMember("CompassMarkerQuest", &qtVal) && qtVal.IsNumber())
-                                            qt = static_cast<float>(qtVal.GetNumber());
-                                        if (hudRoot.GetMember("CompassMarkerQuestDoor", &qdVal) && qdVal.IsNumber())
-                                            qd = static_cast<float>(qdVal.GetNumber());
-                                        uint32_t arrSize = dataArr.GetArraySize();
+                                        if (hudRoot.GetMember("CompassMarkerQuest", &qtVal) && SafeIsNumber(qtVal))
+                                            qt = static_cast<float>(SafeGetNumber(qtVal));
+                                        if (hudRoot.GetMember("CompassMarkerQuestDoor", &qdVal) && SafeIsNumber(qdVal))
+                                            qd = static_cast<float>(SafeGetNumber(qdVal));
+                                        uint32_t arrSize = SafeGetArraySize(dataArr);
                                         for (uint32_t ci = 0; ci + 3 < arrSize; ci += 4) {
                                             RE::GFxValue hVal, tVal;
                                             dataArr.GetElement(ci, &hVal);
                                             dataArr.GetElement(ci + 2, &tVal);
-                                            if (!tVal.IsNumber()) continue;
-                                            float tp = static_cast<float>(tVal.GetNumber());
-                                            if ((tp == qt || tp == qd) && hVal.IsNumber()) {
-                                                compassHeading = static_cast<float>(hVal.GetNumber());
+                                            if (!SafeIsNumber(tVal)) continue;
+                                            float tp = static_cast<float>(SafeGetNumber(tVal));
+                                            if ((tp == qt || tp == qd) && SafeIsNumber(hVal)) {
+                                                compassHeading = static_cast<float>(SafeGetNumber(hVal));
                                                 break;
                                             }
                                         }
@@ -1270,8 +1280,23 @@ static void ScannerNextObject() {
     g_scanIndex++;
     if (g_scanIndex >= static_cast<int>(g_scannedFiltered.size()))
         g_scanIndex = 0;
+    // Recalculer la distance en temps réel
+    auto& nextObj = *g_scannedFiltered[g_scanIndex];
+    auto* p = RE::PlayerCharacter::GetSingleton();
+    if (p) {
+        auto* refForm = RE::TESForm::LookupByID(nextObj.formID);
+        auto* ref = refForm ? refForm->AsReference() : nullptr;
+        if (ref && ref->Is3DLoaded()) {
+            auto diff = p->GetPosition() - ref->GetPosition();
+            nextObj.distance = diff.Length();
+            nextObj.zDiff = ref->GetPosition().z - p->GetPosition().z;
+        } else if (nextObj.lastKnownPos.x != 0 || nextObj.lastKnownPos.y != 0) {
+            auto diff = p->GetPosition() - nextObj.lastKnownPos;
+            nextObj.distance = diff.Length();
+        }
+    }
     std::wstring pos = L". " + std::to_wstring(g_scanIndex + 1) + L" of " + std::to_wstring(g_scannedFiltered.size());
-    Speak(FormatObjectAnnounce(*g_scannedFiltered[g_scanIndex]) + pos);
+    Speak(FormatObjectAnnounce(nextObj) + pos);
 }
 
 static void ScannerPrevObject() {
@@ -1288,8 +1313,23 @@ static void ScannerPrevObject() {
     g_scanIndex--;
     if (g_scanIndex < 0)
         g_scanIndex = static_cast<int>(g_scannedFiltered.size()) - 1;
+    // Recalculer la distance en temps réel
+    auto& prevObj = *g_scannedFiltered[g_scanIndex];
+    auto* p = RE::PlayerCharacter::GetSingleton();
+    if (p) {
+        auto* refForm = RE::TESForm::LookupByID(prevObj.formID);
+        auto* ref = refForm ? refForm->AsReference() : nullptr;
+        if (ref && ref->Is3DLoaded()) {
+            auto diff = p->GetPosition() - ref->GetPosition();
+            prevObj.distance = diff.Length();
+            prevObj.zDiff = ref->GetPosition().z - p->GetPosition().z;
+        } else if (prevObj.lastKnownPos.x != 0 || prevObj.lastKnownPos.y != 0) {
+            auto diff = p->GetPosition() - prevObj.lastKnownPos;
+            prevObj.distance = diff.Length();
+        }
+    }
     std::wstring pos = L". " + std::to_wstring(g_scanIndex + 1) + L" of " + std::to_wstring(g_scannedFiltered.size());
-    Speak(FormatObjectAnnounce(*g_scannedFiltered[g_scanIndex]) + pos);
+    Speak(FormatObjectAnnounce(prevObj) + pos);
 }
 
 // --- Changer de catégorie (rescan + filtre, saute les catégories vides) ---
@@ -1347,6 +1387,61 @@ static void ScannerPrevCategoryImpl() {
 static RE::NiPoint3 GetActorCenter(RE::Actor* actor);
 static void AimAtPosition(RE::PlayerCharacter* player, const RE::NiPoint3& targetPos, bool compensateGravity, const RE::NiPoint3* targetVelocity);
 
+// Rafraîchir le target de quête courant (conditions CTDA ont pu changer)
+static void RefreshQuestTarget(ScannedObject& obj) {
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    if (!player) return;
+    auto playerPos = player->GetPosition();
+
+    auto& objectives = REL::RelocateMemberIfNewer<RE::BSTArray<RE::BGSInstancedQuestObjective>>(
+        SKSE::RUNTIME_SSE_1_6_629, player, 0x580, 0x588);
+
+    for (auto& inst : objectives) {
+        if (!inst.Objective) continue;
+        if (inst.InstanceState != RE::QUEST_OBJECTIVE_STATE::kDisplayed) continue;
+        auto* quest = inst.Objective->ownerQuest;
+        if (!quest || !quest->IsActive()) continue;
+
+        auto rawFlags = quest->data.flags.underlying();
+        if ((rawFlags & 0x20) == 0) continue;
+
+        auto* questObj = inst.Objective;
+        std::string objText = questObj->displayText.c_str();
+        std::wstring objNameW = Utf8ToWString(objText.c_str());
+        if (objNameW != obj.name) continue;
+
+        // Trouvé l'objectif correspondant — chercher le bon target
+        for (uint32_t t = 0; t < questObj->numTargets; t++) {
+            auto* target = questObj->targets[t];
+            if (!target) continue;
+
+            RE::ObjectRefHandle refHandle;
+            quest->CreateRefHandleByAliasID(refHandle, target->alias);
+            if (!refHandle) continue;
+            auto refPtr = refHandle.get();
+            if (!refPtr) continue;
+            auto* targetRef = refPtr.get();
+            if (!targetRef) continue;
+
+            // Vérifier les conditions CTDA
+            if (target->conditions.head != nullptr) {
+                if (!target->conditions.IsTrue(player, targetRef)) continue;
+            }
+
+            // Ce target est le bon — mettre à jour
+            auto refPos = targetRef->GetPosition();
+            obj.formID = targetRef->GetFormID();
+            obj.lastKnownPos = refPos;
+            auto diff = playerPos - refPos;
+            obj.distance = diff.Length();
+            obj.zDiff = refPos.z - playerPos.z;
+            LOG("Scanner: quest target refreshed to FormID={:08X} dist={:.0f}", obj.formID, obj.distance);
+            return;
+        }
+        return;  // objectif trouvé mais pas de target valide
+    }
+}
+
 static void ScannerAnnounceCurrent() {
     if (g_scannedFiltered.empty() || g_scanIndex < 0) {
         Speak(L"No object selected");
@@ -1354,6 +1449,11 @@ static void ScannerAnnounceCurrent() {
     }
 
     auto& obj = *g_scannedFiltered[g_scanIndex];
+
+    // Rafraîchir le target de quête si les conditions ont changé (nouveau stage)
+    if (obj.category == kCatQuests) {
+        RefreshQuestTarget(obj);
+    }
 
     // Vérifier que l'objet est encore valide
     auto* refForm = RE::TESForm::LookupByID(obj.formID);
@@ -1381,25 +1481,25 @@ static void ScannerAnnounceCurrent() {
                     auto hudMenu = ui->GetMenu(RE::HUDMenu::MENU_NAME);
                     if (hudMenu && hudMenu->uiMovie) {
                         RE::GFxValue hudRoot;
-                        if (hudMenu->uiMovie->GetVariable(&hudRoot, "_root.HUDMovieBaseInstance") && hudRoot.IsObject()) {
+                        if (hudMenu->uiMovie->GetVariable(&hudRoot, "_root.HUDMovieBaseInstance") && SafeIsObject(hudRoot)) {
                             RE::GFxValue dataArr;
-                            if (hudRoot.GetMember("CompassTargetDataA", &dataArr) && dataArr.IsArray()) {
+                            if (hudRoot.GetMember("CompassTargetDataA", &dataArr) && SafeIsArray(dataArr)) {
                                 RE::GFxValue questTypeVal, questDoorTypeVal;
                                 float questType = -1, questDoorType = -1;
-                                if (hudRoot.GetMember("CompassMarkerQuest", &questTypeVal) && questTypeVal.IsNumber())
-                                    questType = static_cast<float>(questTypeVal.GetNumber());
-                                if (hudRoot.GetMember("CompassMarkerQuestDoor", &questDoorTypeVal) && questDoorTypeVal.IsNumber())
-                                    questDoorType = static_cast<float>(questDoorTypeVal.GetNumber());
+                                if (hudRoot.GetMember("CompassMarkerQuest", &questTypeVal) && SafeIsNumber(questTypeVal))
+                                    questType = static_cast<float>(SafeGetNumber(questTypeVal));
+                                if (hudRoot.GetMember("CompassMarkerQuestDoor", &questDoorTypeVal) && SafeIsNumber(questDoorTypeVal))
+                                    questDoorType = static_cast<float>(SafeGetNumber(questDoorTypeVal));
 
-                                uint32_t arrSize = dataArr.GetArraySize();
+                                uint32_t arrSize = SafeGetArraySize(dataArr);
                                 for (uint32_t i = 0; i + 3 < arrSize; i += 4) {
                                     RE::GFxValue headingVal, typeVal;
                                     dataArr.GetElement(i, &headingVal);
                                     dataArr.GetElement(i + 2, &typeVal);
-                                    if (!typeVal.IsNumber()) continue;
-                                    float type = static_cast<float>(typeVal.GetNumber());
-                                    if ((type == questType || type == questDoorType) && headingVal.IsNumber()) {
-                                        float compassHeading = static_cast<float>(headingVal.GetNumber());
+                                    if (!SafeIsNumber(typeVal)) continue;
+                                    float type = static_cast<float>(SafeGetNumber(typeVal));
+                                    if ((type == questType || type == questDoorType) && SafeIsNumber(headingVal)) {
+                                        float compassHeading = static_cast<float>(SafeGetNumber(headingVal));
                                         float yaw = compassHeading * 3.14159265f / 180.0f;
                                         player->SetRotationZ(yaw);
                                         player->SetRotationX(0);
@@ -1467,21 +1567,21 @@ static void ScannerAnnounceCurrent() {
                 auto hudMenu = ui->GetMenu(RE::HUDMenu::MENU_NAME);
                 if (hudMenu && hudMenu->uiMovie) {
                     RE::GFxValue hudRoot;
-                    if (hudMenu->uiMovie->GetVariable(&hudRoot, "_root.HUDMovieBaseInstance") && hudRoot.IsObject()) {
+                    if (hudMenu->uiMovie->GetVariable(&hudRoot, "_root.HUDMovieBaseInstance") && SafeIsObject(hudRoot)) {
                         RE::GFxValue dataArr;
-                        if (hudRoot.GetMember("CompassTargetDataA", &dataArr) && dataArr.IsArray()) {
+                        if (hudRoot.GetMember("CompassTargetDataA", &dataArr) && SafeIsArray(dataArr)) {
                             RE::GFxValue questTypeVal;
-                            if (hudRoot.GetMember("CompassMarkerQuest", &questTypeVal) && questTypeVal.IsNumber()) {
-                                float questType = static_cast<float>(questTypeVal.GetNumber());
-                                for (uint32_t i = 0; i < dataArr.GetArraySize(); i++) {
+                            if (hudRoot.GetMember("CompassMarkerQuest", &questTypeVal) && SafeIsNumber(questTypeVal)) {
+                                float questType = static_cast<float>(SafeGetNumber(questTypeVal));
+                                for (uint32_t i = 0; i < SafeGetArraySize(dataArr); i++) {
                                     RE::GFxValue entry;
-                                    if (!dataArr.GetElement(i, &entry) || !entry.IsObject()) continue;
+                                    if (!dataArr.GetElement(i, &entry) || !SafeIsObject(entry)) continue;
                                     RE::GFxValue typeVal;
-                                    if (!entry.GetMember("type", &typeVal) || !typeVal.IsNumber()) continue;
-                                    if (static_cast<float>(typeVal.GetNumber()) != questType) continue;
+                                    if (!entry.GetMember("type", &typeVal) || !SafeIsNumber(typeVal)) continue;
+                                    if (static_cast<float>(SafeGetNumber(typeVal)) != questType) continue;
                                     RE::GFxValue headingVal;
-                                    if (!entry.GetMember("heading", &headingVal) || !headingVal.IsNumber()) continue;
-                                    float heading = static_cast<float>(headingVal.GetNumber());
+                                    if (!entry.GetMember("heading", &headingVal) || !SafeIsNumber(headingVal)) continue;
+                                    float heading = static_cast<float>(SafeGetNumber(headingVal));
                                     float yaw = player->GetAngleZ() + heading;
                                     player->SetRotationZ(yaw);
                                     player->SetRotationX(0.0f);
@@ -1531,9 +1631,12 @@ static void ScannerAnnounceCurrent() {
             }
         }
 
-        auto diff = playerPos - targetPos;
+        // Distance calculée depuis GetPosition() (base de l'objet, cohérent avec le scan)
+        // targetPos (centre 3D) est utilisé uniquement pour l'orientation caméra
+        auto basePos = ref->GetPosition();
+        auto diff = playerPos - basePos;
         obj.distance = diff.Length();
-        obj.zDiff = targetPos.z - playerPos.z;
+        obj.zDiff = basePos.z - playerPos.z;
 
         // Rotation caméra vers l'objet depuis les yeux (précis pour le crosshair)
         AimAtPosition(player, targetPos, false, nullptr);

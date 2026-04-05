@@ -188,6 +188,11 @@ static void AddQuestTargetsToMap(RE::PlayerCharacter* player, const RE::NiPoint3
             auto* ref = sp.get();
             if (!ref) continue;
 
+            // Vérifier les conditions CTDA du target (comme la boussole)
+            if (tgt->conditions.head != nullptr) {
+                if (!tgt->conditions.IsTrue(player, ref)) continue;
+            }
+
             RE::FormID fid = ref->GetFormID();
 
             auto rp = ref->GetPosition();
@@ -545,9 +550,9 @@ static void LogMapCameraState(const char* context) {
 
     // Log le marqueur GFx sélectionné
     auto& mapMenuGfx = rd2.unk30540;
-    if (mapMenuGfx.IsObject()) {
+    if (SafeIsObject(mapMenuGfx)) {
         RE::GFxValue selMarker;
-        if (mapMenuGfx.GetMember("SelectedMarker", &selMarker) && selMarker.IsObject()) {
+        if (mapMenuGfx.GetMember("SelectedMarker", &selMarker) && SafeIsObject(selMarker)) {
             RE::GFxValue lbl, xv, yv, vis;
             selMarker.GetMember("_label", &lbl);
             selMarker.GetMember("_x", &xv);
@@ -555,10 +560,10 @@ static void LogMapCameraState(const char* context) {
             selMarker.GetMember("_visible", &vis);
             LOG("MapMenu[{}]: GFx selected='{}' x={:.1f} y={:.1f} visible={}",
                 context,
-                (lbl.IsString() ? lbl.GetString() : "?"),
-                (xv.IsNumber() ? xv.GetNumber() : -1),
-                (yv.IsNumber() ? yv.GetNumber() : -1),
-                (vis.IsNumber() || vis.IsBool()) ? (vis.IsNumber() ? (vis.GetNumber() != 0) : vis.GetBool()) : false);
+                (SafeIsString(lbl) ? SafeGetString(lbl) : "?"),
+                (SafeIsNumber(xv) ? SafeGetNumber(xv) : -1),
+                (SafeIsNumber(yv) ? SafeGetNumber(yv) : -1),
+                (SafeIsNumber(vis) || SafeIsBool(vis)) ? (SafeIsNumber(vis) ? (SafeGetNumber(vis) != 0) : SafeGetBool(vis)) : false);
         } else {
             LOG("MapMenu[{}]: GFx no marker selected", context);
         }
@@ -948,8 +953,8 @@ static void PollMapTooltip() {
     RE::GFxValue titleVal;
     if (mapMenu->uiMovie->GetVariable(&titleVal,
             "_root.MarkerDescriptionHolder.Description.Title.text") &&
-        titleVal.IsString()) {
-        std::string title = titleVal.GetString();
+        SafeIsString(titleVal)) {
+        std::string title = SafeGetString(titleVal);
         if (!title.empty() && title != "Marker Name" && title != g_mapLastTooltip) {
             g_mapLastTooltip = title;
             Speak(Utf8ToWString(title.c_str()));
