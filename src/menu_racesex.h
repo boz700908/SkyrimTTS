@@ -169,7 +169,7 @@ static void AnnounceRaceSexChangeImpl() {
     RE::GFxValue nameVisVal;
     const bool nameFieldVisible =
         SafeGetVariable(movie, nameVisVal, "_root.RaceSexMenuBaseInstance.RaceSexPanelsInstance.NameEntryInstance._visible") &&
-        ((nameVisVal.IsBool() && nameVisVal.GetBool()) || (nameVisVal.IsNumber() && nameVisVal.GetNumber() > 0.5));
+        ((SafeIsBool(nameVisVal) && SafeGetBool(nameVisVal)) || (SafeIsNumber(nameVisVal) && SafeGetNumber(nameVisVal) > 0.5));
     GetGFxString(movie, "_root.RaceSexMenuBaseInstance.RaceSexPanelsInstance.NameEntryInstance.TextInputInstance.text", nameTmp);
     // Le champ de nom est toujours "visible" en GFx. On ne peut pas détecter
     // quand le joueur entre en mode saisie de nom. On lit simplement les

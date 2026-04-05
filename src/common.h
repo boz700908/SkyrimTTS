@@ -135,16 +135,86 @@ static bool SafeGetMember(const RE::GFxValue& obj, const char* name, RE::GFxValu
     }
 }
 
+// Validation rapide : le pointeur interne du GFxValue doit être dans un range d'adresse raisonnable
+// Un GFxValue corrompu peut avoir des données UTF-16 brutes au lieu d'un pointeur
+static bool SafeGFxValueLooksValid(const RE::GFxValue& v) {
+    __try {
+        // Lire le type brut — si ça crash, la valeur est corrompue
+        auto type = v.GetType();
+        // Le type doit être dans le range valide (0-15)
+        return static_cast<int>(type) >= 0 && static_cast<int>(type) <= 15;
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
 static bool SafeIsString(const RE::GFxValue& v) {
-    __try { return v.IsString(); } __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
+    __try {
+        if (!SafeGFxValueLooksValid(v)) return false;
+        return v.IsString();
+    } __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
 static bool SafeIsObject(const RE::GFxValue& v) {
-    __try { return v.IsObject(); } __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
+    __try {
+        if (!SafeGFxValueLooksValid(v)) return false;
+        return v.IsObject();
+    } __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
 static const char* SafeGetString(const RE::GFxValue& v) {
-    __try { return v.GetString(); } __except(EXCEPTION_EXECUTE_HANDLER) { return nullptr; }
+    __try {
+        if (!SafeGFxValueLooksValid(v)) return nullptr;
+        return v.GetString();
+    } __except(EXCEPTION_EXECUTE_HANDLER) { return nullptr; }
+}
+
+static bool SafeIsNumber(const RE::GFxValue& v) {
+    __try {
+        if (!SafeGFxValueLooksValid(v)) return false;
+        return v.IsNumber();
+    } __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
+static double SafeGetNumber(const RE::GFxValue& v) {
+    __try {
+        if (!SafeGFxValueLooksValid(v)) return 0.0;
+        return v.GetNumber();
+    } __except(EXCEPTION_EXECUTE_HANDLER) { return 0.0; }
+}
+
+static bool SafeIsBool(const RE::GFxValue& v) {
+    __try {
+        if (!SafeGFxValueLooksValid(v)) return false;
+        return v.IsBool();
+    } __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
+static bool SafeGetBool(const RE::GFxValue& v) {
+    __try {
+        if (!SafeGFxValueLooksValid(v)) return false;
+        return v.GetBool();
+    } __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
+static bool SafeIsArray(const RE::GFxValue& v) {
+    __try {
+        if (!SafeGFxValueLooksValid(v)) return false;
+        return v.IsArray();
+    } __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
+static uint32_t SafeGetArraySize(const RE::GFxValue& v) {
+    __try {
+        if (!SafeGFxValueLooksValid(v)) return 0;
+        return v.GetArraySize();
+    } __except(EXCEPTION_EXECUTE_HANDLER) { return 0; }
+}
+
+static bool SafeGetElement(const RE::GFxValue& arr, uint32_t idx, RE::GFxValue* out) {
+    __try {
+        return arr.GetElement(idx, out);
+    } __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
 static bool ExtractString(const RE::GFxValue& v, std::string& out) {

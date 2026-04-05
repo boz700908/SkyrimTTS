@@ -73,8 +73,8 @@ static bool ReadMagicSnapshot(MagicSnapshot& snap) {
 
     RE::GFxValue enabledVal;
     if (SafeGetVariable(movie, enabledVal, MagicItemEnabled()))
-        snap.itemEnabled = enabledVal.IsBool() ? enabledVal.GetBool()
-                         : (enabledVal.IsNumber() && enabledVal.GetNumber() != 0.0);
+        snap.itemEnabled = SafeIsBool(enabledVal) ? SafeGetBool(enabledVal)
+                         : (SafeIsNumber(enabledVal) && SafeGetNumber(enabledVal) != 0.0);
 
     double equipD = 0.0;
     if (GetGFxNumber(movie, MagicItemEquip(), equipD))
@@ -82,8 +82,8 @@ static bool ReadMagicSnapshot(MagicSnapshot& snap) {
 
     RE::GFxValue favVal;
     if (SafeGetVariable(movie, favVal, MagicItemFav()))
-        snap.favorite = favVal.IsBool() ? favVal.GetBool()
-                      : (favVal.IsNumber() && favVal.GetNumber() != 0.0);
+        snap.favorite = SafeIsBool(favVal) ? SafeGetBool(favVal)
+                      : (SafeIsNumber(favVal) && SafeGetNumber(favVal) != 0.0);
 
     // --- itemInfo ---
     auto cardField = [](const char* field) {
@@ -112,8 +112,8 @@ static bool ReadMagicSnapshot(MagicSnapshot& snap) {
             std::string unlockedPath = cardField(("unlocked" + std::to_string(i)).c_str());
             RE::GFxValue unlocked;
             if (SafeGetVariable(movie, unlocked, unlockedPath.c_str()))
-                snap.shoutWords[i].unlocked = unlocked.IsBool() ? unlocked.GetBool()
-                    : (unlocked.IsNumber() && unlocked.GetNumber() != 0.0);
+                snap.shoutWords[i].unlocked = SafeIsBool(unlocked) ? SafeGetBool(unlocked)
+                    : (SafeIsNumber(unlocked) && SafeGetNumber(unlocked) != 0.0);
         }
 
     } else if (snap.itemType == MAGIC_ICT_ACTIVE_EFFECT) {

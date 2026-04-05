@@ -165,8 +165,8 @@ static std::wstring TryReadSaveLoadEntry(RE::GFxMovieView* movie, bool isCharact
             auto readBool = [&](const std::string& path) -> bool {
                 RE::GFxValue val;
                 if (!SafeGetVariable(movie, val, path.c_str())) return false;
-                if (val.IsBool())   return val.GetBool();
-                if (val.IsNumber()) return val.GetNumber() != 0.0;
+                if (SafeIsBool(val))   return SafeGetBool(val);
+                if (SafeIsNumber(val)) return SafeGetNumber(val) != 0.0;
                 return false;
             };
             if (readBool(eb + ".corrupt"))  { LOG("SaveLoad entry: corrupt");  return prefix + L"Corrupt save"; }

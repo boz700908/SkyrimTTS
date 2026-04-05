@@ -84,7 +84,7 @@ static bool ReadMcmSnapshot(McmSnapshot& snap) {
 
     // Vérifier si le MCM est visible
     RE::GFxValue visVal;
-    if (!SafeGetVariable(movie, visVal, MCM_VISIBLE) || !visVal.IsBool() || !visVal.GetBool())
+    if (!SafeGetVariable(movie, visVal, MCM_VISIBLE) || !SafeIsBool(visVal) || !SafeGetBool(visVal))
         return false;
     snap.visible = true;
 
@@ -123,30 +123,30 @@ static bool ReadMcmSnapshot(McmSnapshot& snap) {
 
     if (snap.optionIdx >= 0) {
         RE::GFxValue entry;
-        if (SafeGetVariable(movie, entry, MCM_OPTIONS_ENTRY) && entry.IsObject()) {
+        if (SafeGetVariable(movie, entry, MCM_OPTIONS_ENTRY) && SafeIsObject(entry)) {
             // Option type
             RE::GFxValue typeVal;
-            if (entry.GetMember("optionType", &typeVal) && typeVal.IsNumber())
-                snap.optionType = static_cast<int>(typeVal.GetNumber());
+            if (entry.GetMember("optionType", &typeVal) && SafeIsNumber(typeVal))
+                snap.optionType = static_cast<int>(SafeGetNumber(typeVal));
 
             // Option text (label)
             RE::GFxValue textVal;
-            if (entry.GetMember("text", &textVal) && textVal.IsString()) {
-                std::string s = textVal.GetString();
+            if (entry.GetMember("text", &textVal) && SafeIsString(textVal)) {
+                std::string s = SafeGetString(textVal);
                 if (!s.empty()) snap.optionText = Utf8ToWString(s);
             }
 
             // String value — résoudre les clés de traduction ($Medium, $On, etc.)
             RE::GFxValue strVal;
-            if (entry.GetMember("strValue", &strVal) && strVal.IsString()) {
-                std::string s = strVal.GetString();
+            if (entry.GetMember("strValue", &strVal) && SafeIsString(strVal)) {
+                std::string s = SafeGetString(strVal);
                 if (!s.empty()) snap.optionStrValue = ResolveUIString(movie, s);
             }
 
             // Numeric value
             RE::GFxValue numVal;
-            if (entry.GetMember("numValue", &numVal) && numVal.IsNumber())
-                snap.optionNumValue = numVal.GetNumber();
+            if (entry.GetMember("numValue", &numVal) && SafeIsNumber(numVal))
+                snap.optionNumValue = SafeGetNumber(numVal);
         }
     }
 

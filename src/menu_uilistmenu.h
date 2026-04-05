@@ -32,10 +32,10 @@ static void AnnounceUIListChangeImpl() {
         RE::GFxValue vis;
         RE::GFxValue txt;
         if (!SafeGetVariable(movie, vis, visPath.c_str())) continue;
-        if (!vis.IsBool() || !vis.GetBool()) continue;
-        if (!SafeGetVariable(movie, txt, txtPath.c_str()) || !txt.IsString()) continue;
+        if (!SafeIsBool(vis) || !SafeGetBool(vis)) continue;
+        if (!SafeGetVariable(movie, txt, txtPath.c_str()) || !SafeIsString(txt)) continue;
 
-        std::string s = txt.GetString();
+        std::string s = SafeGetString(txt);
         if (s.empty()) continue;
         // Ignorer les placeholders par défaut du SWF (avant que Papyrus remplisse les items)
         if (s == "text" || s == "texte" || s == "Text") continue;

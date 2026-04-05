@@ -126,23 +126,23 @@ static void HUDAdvanceMovie_Hook(RE::IMenu* a_this, float a_interval, std::uint3
     // Reset quand le tableau est vide pour relire un message identique qui réapparaît
     {
         RE::GFxValue messagesBlock;
-        if (SafeGetVariable(movie, messagesBlock, "_root.HUDMovieBaseInstance.MessagesBlock") && messagesBlock.IsObject()) {
+        if (SafeGetVariable(movie, messagesBlock, "_root.HUDMovieBaseInstance.MessagesBlock") && SafeIsObject(messagesBlock)) {
             RE::GFxValue shownArray;
-            if (messagesBlock.GetMember("ShownMessageArray", &shownArray) && shownArray.IsArray()) {
-                uint32_t len = shownArray.GetArraySize();
+            if (messagesBlock.GetMember("ShownMessageArray", &shownArray) && SafeIsArray(shownArray)) {
+                uint32_t len = SafeGetArraySize(shownArray);
                 if (len == 0) {
                     g_hudPrevMessage.clear();
                 } else {
                     for (uint32_t i = 0; i < len; i++) {
                         RE::GFxValue entry;
-                        if (!shownArray.GetElement(i, &entry) || !entry.IsObject()) continue;
+                        if (!shownArray.GetElement(i, &entry) || !SafeIsObject(entry)) continue;
                         RE::GFxValue textClip;
-                        if (!entry.GetMember("TextFieldClip", &textClip) || !textClip.IsObject()) continue;
+                        if (!entry.GetMember("TextFieldClip", &textClip) || !SafeIsObject(textClip)) continue;
                         RE::GFxValue tf1;
-                        if (!textClip.GetMember("tf1", &tf1) || !tf1.IsObject()) continue;
+                        if (!textClip.GetMember("tf1", &tf1) || !SafeIsObject(tf1)) continue;
                         RE::GFxValue htmlText;
-                        if (!tf1.GetMember("htmlText", &htmlText) || !htmlText.IsString()) continue;
-                        std::string msg = htmlText.GetString();
+                        if (!tf1.GetMember("htmlText", &htmlText) || !SafeIsString(htmlText)) continue;
+                        std::string msg = SafeGetString(htmlText);
                         if (!msg.empty() && msg != g_hudPrevMessage) {
                             g_hudPrevMessage = msg;
                             std::wstring wmsg = StripMarkupForSpeech(Utf8ToWString(msg));

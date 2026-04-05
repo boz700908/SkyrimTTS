@@ -13,17 +13,17 @@ static ConsoleAdvanceMovie_t* g_origConsoleAdvanceMovie = nullptr;
 static bool GetTextFieldText(RE::GFxMovieView* movie, const char* instancePath, const char* fieldName, std::string& out) {
     RE::GFxValue instance;
     if (!SafeGetVariable(movie, instance, instancePath)) return false;
-    if (!instance.IsObject() && !instance.IsDisplayObject()) return false;
+    if (!SafeIsObject(instance) && !instance.IsDisplayObject()) return false;
 
     RE::GFxValue field;
     if (!instance.GetMember(fieldName, &field)) return false;
-    if (!field.IsObject() && !field.IsDisplayObject()) return false;
+    if (!SafeIsObject(field) && !field.IsDisplayObject()) return false;
 
     RE::GFxValue textVal;
     if (!field.GetMember("text", &textVal)) return false;
-    if (!textVal.IsString()) return false;
+    if (!SafeIsString(textVal)) return false;
 
-    out = textVal.GetString();
+    out = SafeGetString(textVal);
     return true;
 }
 

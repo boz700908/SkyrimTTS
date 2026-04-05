@@ -69,8 +69,8 @@ static bool ReadInventorySnapshot(InventorySnapshot& snap) {
     {
         RE::GFxValue favVal;
         if (SafeGetVariable(movie, favVal, itemFav))
-            snap.favorite = favVal.IsBool() ? favVal.GetBool()
-                          : favVal.IsNumber() ? (favVal.GetNumber() != 0.0) : false;
+            snap.favorite = SafeIsBool(favVal) ? SafeGetBool(favVal)
+                          : SafeIsNumber(favVal) ? (SafeGetNumber(favVal) != 0.0) : false;
     }
     if (GetGFxString(movie, catPath, tmp) && !tmp.empty())
         snap.catText = ResolveUIString(movie, tmp);
@@ -435,7 +435,7 @@ static void SkyUISortColumn(int columnIndex, int stateIndex, const wchar_t* labe
         const char* layoutPath = "_root.Menu_mc.inventoryLists.itemList.layout";
 
         RE::GFxValue layout;
-        if (SafeGetVariable(movie, layout, layoutPath) && layout.IsObject()) {
+        if (SafeGetVariable(movie, layout, layoutPath) && SafeIsObject(layout)) {
             RE::GFxValue args[2];
             args[0].SetNumber(static_cast<double>(columnIndex));
             args[1].SetNumber(static_cast<double>(stateIndex));

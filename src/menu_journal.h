@@ -89,12 +89,12 @@ static bool ReadJournalSnapshot(JournalSnapshot& snap) {
         // active : booléen sur l'objet centeredEntry (QuestCenteredList.as)
         RE::GFxValue activeVal;
         if (SafeGetVariable(movie, activeVal, "_root.QuestJournalFader.Menu_mc.QuestsFader.Page_mc.TitleList_mc.List_mc.centeredEntry.active"))
-            snap.questActive = activeVal.IsBool() ? activeVal.GetBool() : (activeVal.IsNumber() && activeVal.GetNumber() != 0.0);
+            snap.questActive = SafeIsBool(activeVal) ? SafeGetBool(activeVal) : (SafeIsNumber(activeVal) && SafeGetNumber(activeVal) != 0.0);
 
         // formID de l'entrée centrée (0 = Divers/Miscellaneous)
         RE::GFxValue formIDVal;
-        if (SafeGetVariable(movie, formIDVal, "_root.QuestJournalFader.Menu_mc.QuestsFader.Page_mc.TitleList_mc.List_mc.centeredEntry.formID") && formIDVal.IsNumber())
-            snap.questFormID = formIDVal.GetNumber();
+        if (SafeGetVariable(movie, formIDVal, "_root.QuestJournalFader.Menu_mc.QuestsFader.Page_mc.TitleList_mc.List_mc.centeredEntry.formID") && SafeIsNumber(formIDVal))
+            snap.questFormID = SafeGetNumber(formIDVal);
 
         // Divers (formID == 0) : lire l'objectif sélectionné individuellement
         if (snap.questFormID == 0.0) {
@@ -105,29 +105,29 @@ static bool ReadJournalSnapshot(JournalSnapshot& snap) {
 
             // selectedEntry dans objectiveList
             RE::GFxValue selEntry;
-            if (SafeGetVariable(movie, selEntry, "_root.QuestJournalFader.Menu_mc.QuestsFader.Page_mc.objectiveList.selectedEntry") && selEntry.IsObject()) {
+            if (SafeGetVariable(movie, selEntry, "_root.QuestJournalFader.Menu_mc.QuestsFader.Page_mc.objectiveList.selectedEntry") && SafeIsObject(selEntry)) {
                 RE::GFxValue textVal;
-                if (selEntry.GetMember("text", &textVal) && textVal.IsString()) {
-                    std::string s = textVal.GetString();
+                if (selEntry.GetMember("text", &textVal) && SafeIsString(textVal)) {
+                    std::string s = SafeGetString(textVal);
                     if (!s.empty()) snap.miscObjText = ResolveUIString(movie, s);
                 }
                 RE::GFxValue actVal;
                 if (selEntry.GetMember("active", &actVal))
-                    snap.miscObjActive = actVal.IsBool() ? actVal.GetBool() : (actVal.IsNumber() && actVal.GetNumber() != 0.0);
+                    snap.miscObjActive = SafeIsBool(actVal) ? SafeGetBool(actVal) : (SafeIsNumber(actVal) && SafeGetNumber(actVal) != 0.0);
             }
         } else {
             // Quête normale : lire tous les objectifs en bloc
             RE::GFxValue entryList;
-            if (SafeGetVariable(movie, entryList, "_root.QuestJournalFader.Menu_mc.QuestsFader.Page_mc.objectiveList.entryList") && entryList.IsArray()) {
-                const auto len = entryList.GetArraySize();
+            if (SafeGetVariable(movie, entryList, "_root.QuestJournalFader.Menu_mc.QuestsFader.Page_mc.objectiveList.entryList") && SafeIsArray(entryList)) {
+                const auto len = SafeGetArraySize(entryList);
                 for (std::uint32_t i = 0; i < len; ++i) {
                     RE::GFxValue item;
                     entryList.GetElement(i, &item);
-                    if (!item.IsObject()) continue;
+                    if (!SafeIsObject(item)) continue;
 
                     RE::GFxValue textVal;
-                    if (!item.GetMember("text", &textVal) || !textVal.IsString()) continue;
-                    std::string txt = textVal.GetString();
+                    if (!item.GetMember("text", &textVal) || !SafeIsString(textVal)) continue;
+                    std::string txt = SafeGetString(textVal);
                     if (txt.empty()) continue;
 
                     QuestObjective obj;
@@ -136,7 +136,7 @@ static bool ReadJournalSnapshot(JournalSnapshot& snap) {
                     auto readBool = [&](const char* field) -> bool {
                         RE::GFxValue v;
                         if (!item.GetMember(field, &v)) return false;
-                        return v.IsBool() ? v.GetBool() : (v.IsNumber() && v.GetNumber() != 0.0);
+                        return SafeIsBool(v) ? SafeGetBool(v) : (SafeIsNumber(v) && SafeGetNumber(v) != 0.0);
                     };
                     obj.active    = readBool("active");
                     obj.completed = readBool("completed");
@@ -156,16 +156,16 @@ static bool ReadJournalSnapshot(JournalSnapshot& snap) {
         // Stats de la catégorie (StatsList_mc.entryList[i].text + .value)
         RE::GFxValue entryList;
         std::string listPath = std::string(STATS_PREFIX) + "StatsList_mc.entryList";
-        if (SafeGetVariable(movie, entryList, listPath.c_str()) && entryList.IsArray()) {
-            const auto len = entryList.GetArraySize();
+        if (SafeGetVariable(movie, entryList, listPath.c_str()) && SafeIsArray(entryList)) {
+            const auto len = SafeGetArraySize(entryList);
             for (std::uint32_t i = 0; i < len; ++i) {
                 RE::GFxValue item;
                 entryList.GetElement(i, &item);
-                if (!item.IsObject()) continue;
+                if (!SafeIsObject(item)) continue;
 
                 RE::GFxValue textVal;
-                if (!item.GetMember("text", &textVal) || !textVal.IsString()) continue;
-                std::string txt = textVal.GetString();
+                if (!item.GetMember("text", &textVal) || !SafeIsString(textVal)) continue;
+                std::string txt = SafeGetString(textVal);
                 if (txt.empty()) continue;
 
                 StatEntry entry;
@@ -173,12 +173,12 @@ static bool ReadJournalSnapshot(JournalSnapshot& snap) {
 
                 RE::GFxValue valueVal;
                 if (item.GetMember("value", &valueVal)) {
-                    if (valueVal.IsNumber()) {
-                        double v = valueVal.GetNumber();
+                    if (SafeIsNumber(valueVal)) {
+                        double v = SafeGetNumber(valueVal);
                         long long iv = static_cast<long long>(v);
                         entry.value = std::to_wstring(iv);
-                    } else if (valueVal.IsString()) {
-                        entry.value = Utf8ToWString(valueVal.GetString());
+                    } else if (SafeIsString(valueVal)) {
+                        entry.value = Utf8ToWString(SafeGetString(valueVal));
                     }
                 }
                 snap.statsEntries.push_back(std::move(entry));
@@ -391,7 +391,7 @@ static void AnnounceJournalChangeImpl() {
             if (menu && menu->uiMovie) {
                 RE::GFxValue vis;
                 if (menu->uiMovie->GetVariable(&vis, "_root.ConfigPanelFader._visible") &&
-                    vis.IsBool() && vis.GetBool()) {
+                    SafeIsBool(vis) && SafeGetBool(vis)) {
                     // MCM est ouvert
                     if (!g_mcmOpen.load(std::memory_order_relaxed)) {
                         g_mcmOpen.store(true);
