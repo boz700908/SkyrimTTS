@@ -68,9 +68,35 @@ static void StartAutoWalkMonitor() {
     g_autoWalkHasRepathed = false;
 
     g_autoWalkMonitor = std::jthread([](std::stop_token stoken) {
+        bool packageFlagsSet = false;
+        int recoveryAttempt = 0;  // 0=aucun, 1=saut tenté, 2=repath tenté
+
         while (!stoken.stop_requested()) {
             std::this_thread::sleep_for(std::chrono::milliseconds(250));
             if (!g_autoWalking.load()) break;
+
+            // Configurer les flags du package Travel (une seule fois, quand le package est actif)
+            if (!packageFlagsSet) {
+                auto* task = SKSE::GetTaskInterface();
+                if (task) {
+                    task->AddTask([]() {
+                        auto* p = RE::PlayerCharacter::GetSingleton();
+                        if (!p) return;
+                        auto* process = p->GetActorRuntimeData().currentProcess;
+                        if (!process) return;
+                        auto* pkg = process->GetRunningPackage();
+                        if (pkg) {
+                            pkg->packData.packFlags.set(RE::PACKAGE_DATA::GeneralFlag::kAllowSwimming);
+                            pkg->packData.packFlags.set(RE::PACKAGE_DATA::GeneralFlag::kMaintainSpeedAtGoal);
+                            pkg->packData.packFlags.set(RE::PACKAGE_DATA::GeneralFlag::kUnlocksDoorsAtPackageStart);
+                            pkg->packData.packFlags.set(RE::PACKAGE_DATA::GeneralFlag::kPreferredSpeed);
+                            pkg->packData.maxSpeed = RE::PACKAGE_DATA::PreferredSpeed::kRun;
+                            LOG("AutoWalk: package flags set (swim, doors, run, maintainSpeed)");
+                        }
+                    });
+                }
+                packageFlagsSet = true;
+            }
 
             // Annuler si le joueur appuie sur une touche de mouvement ou manette
             if (IsMovementInputActive()) {
@@ -153,7 +179,7 @@ static void StartAutoWalkMonitor() {
                 break;
             }
 
-            // Détection de blocage : si le joueur n'a pas bougé de >5 unités en 250ms
+            // Détection de blocage améliorée
             auto movedDiff = playerPos - g_autoWalkLastPos;
             float movedDist = movedDiff.Length();
             if (movedDist < 5.0f) {
@@ -161,12 +187,44 @@ static void StartAutoWalkMonitor() {
             } else {
                 g_autoWalkStuckTimer = 0.0f;
                 g_autoWalkLastPos = playerPos;
+                recoveryAttempt = 0;  // reset des tentatives de récupération
             }
 
-            if (g_autoWalkStuckTimer > 20.0f) {
+            // Récupération progressive de blocage
+            if (g_autoWalkStuckTimer > 3.0f && recoveryAttempt == 0) {
+                // Étape 1 : tenter un saut pour passer l'obstacle
+                LOG("AutoWalk: stuck for 3s, attempting jump");
+                auto* taskIf = SKSE::GetTaskInterface();
+                if (taskIf) {
+                    taskIf->AddTask([]() {
+                        auto* p = RE::PlayerCharacter::GetSingleton();
+                        if (p) {
+                            p->NotifyAnimationGraph("JumpStandingStart");
+                        }
+                    });
+                }
+                recoveryAttempt = 1;
+            } else if (g_autoWalkStuckTimer > 6.0f && recoveryAttempt == 1) {
+                // Étape 2 : recalculer le chemin (réévaluer le package)
+                LOG("AutoWalk: stuck for 6s, re-evaluating package");
+                auto* taskIf = SKSE::GetTaskInterface();
+                if (taskIf) {
+                    taskIf->AddTask([]() {
+                        auto* p = RE::PlayerCharacter::GetSingleton();
+                        if (p) {
+                            p->SetAIDriven(false);
+                            p->EvaluatePackage();
+                            p->SetAIDriven(true);
+                            p->EvaluatePackage();
+                        }
+                    });
+                }
+                recoveryAttempt = 2;
+            } else if (g_autoWalkStuckTimer > 10.0f) {
+                // Étape 3 : abandonner
                 Speak(L"Can't reach target");
                 g_autoWalking.store(false);
-                LOG("AutoWalk: stuck for 3s, giving up");
+                LOG("AutoWalk: stuck for 10s, giving up");
                 auto* taskIf = SKSE::GetTaskInterface();
                 if (taskIf) {
                     taskIf->AddTask([]() {
@@ -221,6 +279,14 @@ static void StartAutoWalk(RE::FormID targetFormID, float stopDistance = 100.0f,
             // S'assurer que l'IA est bien désactivée avant de la réactiver
             player->SetAIDriven(false);
             player->EvaluatePackage();
+
+            // Activer kTryStep pour monter les escaliers automatiquement
+            auto* charCtrl = player->GetCharController();
+            if (charCtrl) {
+                charCtrl->flags.set(RE::CHARACTER_FLAGS::kTryStep);
+                charCtrl->flags.set(RE::CHARACTER_FLAGS::kCanJump);
+                LOG("AutoWalk: kTryStep + kCanJump enabled");
+            }
         }
 
         auto* quest = RE::TESForm::LookupByEditorID<RE::TESQuest>("SkyrimTTS_AutoWalkQuest");
@@ -400,6 +466,14 @@ static void ToggleAutoWalk() {
         return;
     }
 
+    // Désactiver l'aimlock et le toggle lock-on avant de marcher
+    // (sinon la caméra tremble et le joueur ne bouge pas)
+    if (g_autoAimTracking.load()) StopAutoAim();
+    if (g_toggleLockOn.load()) {
+        StopToggleLockOn();
+        LOG("AutoWalk: disabled toggle lock-on before walking");
+    }
+
     RE::FormID targetID = ScannerGetCurrentFormID();
     if (targetID == 0) {
         Speak(L"No target selected. Scan first.");
@@ -439,19 +513,19 @@ static void ToggleAutoWalk() {
             if (hudMenu && hudMenu->uiMovie) {
                 // Lire CompassTargetDataA depuis le HUD
                 RE::GFxValue hudRoot;
-                if (hudMenu->uiMovie->GetVariable(&hudRoot, "_root.HUDMovieBaseInstance") && hudRoot.IsObject()) {
+                if (hudMenu->uiMovie->GetVariable(&hudRoot, "_root.HUDMovieBaseInstance") && SafeIsObject(hudRoot)) {
                     RE::GFxValue dataArr;
-                    if (hudRoot.GetMember("CompassTargetDataA", &dataArr) && dataArr.IsArray()) {
-                        uint32_t arrSize = dataArr.GetArraySize();
+                    if (hudRoot.GetMember("CompassTargetDataA", &dataArr) && SafeIsArray(dataArr)) {
+                        uint32_t arrSize = SafeGetArraySize(dataArr);
                         LOG("AutoWalk: CompassTargetDataA size={}", arrSize);
 
                         // Lire les types de marqueurs de la boussole
                         RE::GFxValue questTypeVal, questDoorTypeVal;
                         float questType = -1, questDoorType = -1;
-                        if (hudRoot.GetMember("CompassMarkerQuest", &questTypeVal) && questTypeVal.IsNumber())
-                            questType = static_cast<float>(questTypeVal.GetNumber());
-                        if (hudRoot.GetMember("CompassMarkerQuestDoor", &questDoorTypeVal) && questDoorTypeVal.IsNumber())
-                            questDoorType = static_cast<float>(questDoorTypeVal.GetNumber());
+                        if (hudRoot.GetMember("CompassMarkerQuest", &questTypeVal) && SafeIsNumber(questTypeVal))
+                            questType = static_cast<float>(SafeGetNumber(questTypeVal));
+                        if (hudRoot.GetMember("CompassMarkerQuestDoor", &questDoorTypeVal) && SafeIsNumber(questDoorTypeVal))
+                            questDoorType = static_cast<float>(SafeGetNumber(questDoorTypeVal));
 
                         LOG("AutoWalk: quest marker types: quest={:.0f} questDoor={:.0f}", questType, questDoorType);
 
@@ -461,12 +535,12 @@ static void ToggleAutoWalk() {
                             dataArr.GetElement(i, &headingVal);      // heading
                             dataArr.GetElement(i + 2, &typeVal);     // type
 
-                            if (!typeVal.IsNumber()) continue;
-                            float type = static_cast<float>(typeVal.GetNumber());
+                            if (!SafeIsNumber(typeVal)) continue;
+                            float type = static_cast<float>(SafeGetNumber(typeVal));
 
                             if (type == questType || type == questDoorType) {
-                                if (headingVal.IsNumber()) {
-                                    compassHeading = static_cast<float>(headingVal.GetNumber());
+                                if (SafeIsNumber(headingVal)) {
+                                    compassHeading = static_cast<float>(SafeGetNumber(headingVal));
                                     LOG("AutoWalk: found compass quest marker heading={:.1f} type={:.0f}", compassHeading, type);
                                     break;
                                 }
