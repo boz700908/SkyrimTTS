@@ -30,8 +30,10 @@ vcpkg_installed/
 # Game assets — not code, should not be in repo
 *.swf
 *.as
-*.wav
 UI/
 gfx/
 release/
-sounds/
+sounds/samples/
+
+# Plugin sounds (needed for CI release build)
+!sounds/*.wav
