@@ -68,35 +68,15 @@ static void StartAutoWalkMonitor() {
     g_autoWalkHasRepathed = false;
 
     g_autoWalkMonitor = std::jthread([](std::stop_token stoken) {
-        bool packageFlagsSet = false;
         int recoveryAttempt = 0;  // 0=aucun, 1=saut tenté, 2=repath tenté
+        bool diagLogged = false;  // diagnostic de blocage loggé une seule fois par incident
+        float lastDistMounted = -1.0f;  // mode cheval : tracking de la progression vers la cible
+                                         // (un cheval bouge en saccades sur le navmesh, un seuil
+                                         //  de mouvement basé sur la position est trop strict)
 
         while (!stoken.stop_requested()) {
             std::this_thread::sleep_for(std::chrono::milliseconds(250));
             if (!g_autoWalking.load()) break;
-
-            // Configurer les flags du package Travel (une seule fois, quand le package est actif)
-            if (!packageFlagsSet) {
-                auto* task = SKSE::GetTaskInterface();
-                if (task) {
-                    task->AddTask([]() {
-                        auto* p = RE::PlayerCharacter::GetSingleton();
-                        if (!p) return;
-                        auto* process = p->GetActorRuntimeData().currentProcess;
-                        if (!process) return;
-                        auto* pkg = process->GetRunningPackage();
-                        if (pkg) {
-                            pkg->packData.packFlags.set(RE::PACKAGE_DATA::GeneralFlag::kAllowSwimming);
-                            pkg->packData.packFlags.set(RE::PACKAGE_DATA::GeneralFlag::kMaintainSpeedAtGoal);
-                            pkg->packData.packFlags.set(RE::PACKAGE_DATA::GeneralFlag::kUnlocksDoorsAtPackageStart);
-                            pkg->packData.packFlags.set(RE::PACKAGE_DATA::GeneralFlag::kPreferredSpeed);
-                            pkg->packData.maxSpeed = RE::PACKAGE_DATA::PreferredSpeed::kRun;
-                            LOG("AutoWalk: package flags set (swim, doors, run, maintainSpeed)");
-                        }
-                    });
-                }
-                packageFlagsSet = true;
-            }
 
             // Annuler si le joueur appuie sur une touche de mouvement ou manette
             if (IsMovementInputActive()) {
@@ -107,15 +87,14 @@ static void StartAutoWalkMonitor() {
                 if (taskIf) {
                     taskIf->AddTask([]() {
                         auto* p = RE::PlayerCharacter::GetSingleton();
-                        if (p) {
-                            p->SetAIDriven(false);
-                            auto* avo = p->AsActorValueOwner();
-                            if (avo) {
-                                float base = avo->GetBaseActorValue(RE::ActorValue::kSpeedMult);
-                                avo->SetActorValue(RE::ActorValue::kSpeedMult, base);
-                            }
-                            p->EvaluatePackage();
+                        if (!p) return;
+                        p->SetAIDriven(false);
+                        auto* avo = p->AsActorValueOwner();
+                        if (avo) {
+                            float base = avo->GetBaseActorValue(RE::ActorValue::kSpeedMult);
+                            avo->SetActorValue(RE::ActorValue::kSpeedMult, base);
                         }
+                        p->EvaluatePackage();
                     });
                 }
                 break;
@@ -124,6 +103,7 @@ static void StartAutoWalkMonitor() {
             auto* player = RE::PlayerCharacter::GetSingleton();
             if (!player) continue;
 
+            const bool isMounted = player->IsOnMount();
             auto playerPos = player->GetPosition();
             float dist = 0.0f;
 
@@ -142,10 +122,9 @@ static void StartAutoWalkMonitor() {
                     if (taskIf) {
                         taskIf->AddTask([]() {
                             auto* p = RE::PlayerCharacter::GetSingleton();
-                            if (p) {
-                                p->SetAIDriven(false);
-                                p->EvaluatePackage();
-                            }
+                            if (!p) return;
+                            p->SetAIDriven(false);
+                            p->EvaluatePackage();
                         });
                     }
                     break;
@@ -161,75 +140,237 @@ static void StartAutoWalkMonitor() {
                 Speak(L"Arrived at " + g_autoWalkTarget);
                 g_autoWalking.store(false);
                 LOG("AutoWalk: arrived, distance {}", dist);
+                RE::FormID targetID = g_autoWalkTargetID;
                 auto* taskIf = SKSE::GetTaskInterface();
                 if (taskIf) {
-                    taskIf->AddTask([]() {
+                    taskIf->AddTask([targetID]() {
                         auto* p = RE::PlayerCharacter::GetSingleton();
-                        if (p) {
-                            p->SetAIDriven(false);
-                            auto* avo = p->AsActorValueOwner();
-                            if (avo) {
-                                float base = avo->GetBaseActorValue(RE::ActorValue::kSpeedMult);
-                                avo->SetActorValue(RE::ActorValue::kSpeedMult, base);
+                        if (!p) return;
+
+                        p->SetAIDriven(false);
+                        auto* avo = p->AsActorValueOwner();
+                        if (avo) {
+                            float base = avo->GetBaseActorValue(RE::ActorValue::kSpeedMult);
+                            avo->SetActorValue(RE::ActorValue::kSpeedMult, base);
+                        }
+                        p->EvaluatePackage();
+
+                        if (targetID != 0) {
+                            // Orienter le joueur vers la cible (crosshair dessus)
+                            auto* targetForm = RE::TESForm::LookupByID(targetID);
+                            if (targetForm) {
+                                auto* targetRef = targetForm->AsReference();
+                                if (targetRef) {
+                                    auto targetPos = targetRef->GetPosition();
+                                    auto playerPos = p->GetPosition();
+                                    float dx = targetPos.x - playerPos.x;
+                                    float dy = targetPos.y - playerPos.y;
+                                    float dz = targetPos.z - playerPos.z;
+                                    float yaw = std::atan2(dx, dy);
+                                    if (yaw < 0) yaw += 2.0f * 3.14159265f;
+                                    p->data.angle.z = yaw;
+                                    float hDist = std::sqrt(dx * dx + dy * dy);
+                                    if (hDist > 1.0f) {
+                                        float pitch = -std::atan2(dz, hDist);
+                                        p->data.angle.x = pitch;
+                                    }
+                                    LOG("AutoWalk: oriented toward target yaw={:.2f} pitch={:.2f}", yaw, p->data.angle.x);
+                                }
                             }
-                            p->EvaluatePackage();
                         }
                     });
                 }
                 break;
             }
 
-            // Détection de blocage améliorée
-            auto movedDiff = playerPos - g_autoWalkLastPos;
-            float movedDist = movedDiff.Length();
-            if (movedDist < 5.0f) {
-                g_autoWalkStuckTimer += 0.25f;
+            // Détection de blocage — deux stratégies selon le mode
+            if (isMounted) {
+                // Mode cheval : un cheval bouge en saccades sur le navmesh
+                // (il s'arrête à chaque waypoint pour recalculer). Un seuil de
+                // mouvement basé sur la position est trop strict. À la place,
+                // on vérifie simplement que la distance à la cible diminue.
+                if (lastDistMounted < 0.0f) {
+                    lastDistMounted = dist;  // init au premier tick
+                } else if (dist < lastDistMounted - 5.0f) {
+                    // Progression nette détectée → reset du timer
+                    g_autoWalkStuckTimer = 0.0f;
+                    lastDistMounted = dist;
+                    diagLogged = false;
+                } else {
+                    g_autoWalkStuckTimer += 0.25f;
+                }
             } else {
-                g_autoWalkStuckTimer = 0.0f;
-                g_autoWalkLastPos = playerPos;
-                recoveryAttempt = 0;  // reset des tentatives de récupération
+                // Mode pied : détection classique basée sur le delta de position
+                auto movedDiff = playerPos - g_autoWalkLastPos;
+                float movedDist = movedDiff.Length();
+                if (movedDist < 5.0f) {
+                    g_autoWalkStuckTimer += 0.25f;
+                } else {
+                    g_autoWalkStuckTimer = 0.0f;
+                    g_autoWalkLastPos = playerPos;
+                    recoveryAttempt = 0;  // reset des tentatives de récupération
+                    diagLogged = false;   // prêt à logger le prochain blocage
+                }
             }
 
-            // Récupération progressive de blocage
-            if (g_autoWalkStuckTimer > 3.0f && recoveryAttempt == 0) {
-                // Étape 1 : tenter un saut pour passer l'obstacle
-                LOG("AutoWalk: stuck for 3s, attempting jump");
+            // Diagnostic de blocage (se déclenche une seule fois à 4s)
+            if (g_autoWalkStuckTimer > 4.0f && !diagLogged) {
+                diagLogged = true;
+                LOG("=== AutoWalk STUCK DIAGNOSTIC ===");
+                LOG("  Player pos: ({:.0f}, {:.0f}, {:.0f})", playerPos.x, playerPos.y, playerPos.z);
+
+                // Cible
+                if (g_autoWalkTargetPos.x != 0 || g_autoWalkTargetPos.y != 0) {
+                    LOG("  Target (coords): ({:.0f}, {:.0f}, {:.0f}) dist={:.0f}",
+                        g_autoWalkTargetPos.x, g_autoWalkTargetPos.y, g_autoWalkTargetPos.z, dist);
+                } else {
+                    auto* tf = RE::TESForm::LookupByID(g_autoWalkTargetID);
+                    if (tf) {
+                        auto* tr = tf->AsReference();
+                        if (tr) {
+                            auto tp = tr->GetPosition();
+                            auto* tc = tr->GetParentCell();
+                            LOG("  Target (formID=0x{:08X}): ({:.0f}, {:.0f}, {:.0f}) cell='{}' dist={:.0f}",
+                                g_autoWalkTargetID, tp.x, tp.y, tp.z,
+                                tc && tc->GetName() ? tc->GetName() : "?", dist);
+                        }
+                    }
+                }
+
+                // Exécuter le reste du diagnostic sur le thread UI
                 auto* taskIf = SKSE::GetTaskInterface();
                 if (taskIf) {
                     taskIf->AddTask([]() {
                         auto* p = RE::PlayerCharacter::GetSingleton();
-                        if (p) {
-                            p->NotifyAnimationGraph("JumpStandingStart");
+                        if (!p) return;
+
+                        // 1. Package IA en cours
+                        auto* process = p->GetActorRuntimeData().currentProcess;
+                        if (process) {
+                            auto* pkg = process->GetRunningPackage();
+                            if (pkg) {
+                                LOG("  Running package: formID=0x{:08X} type={}",
+                                    pkg->GetFormID(),
+                                    static_cast<int>(pkg->packData.packType.underlying()));
+                            } else {
+                                LOG("  Running package: NONE (IA may have abandoned)");
+                            }
+
+                            // 2. Vitesses de pathing (dans high process data)
+                            auto* hpd = process->high;
+                            if (hpd) {
+                                auto& desiredSpeed = hpd->pathingDesiredMovementSpeed;
+                                auto& currentSpeed = hpd->pathingCurrentMovementSpeed;
+                                float dMag = std::sqrt(desiredSpeed.x * desiredSpeed.x +
+                                                       desiredSpeed.y * desiredSpeed.y +
+                                                       desiredSpeed.z * desiredSpeed.z);
+                                float cMag = std::sqrt(currentSpeed.x * currentSpeed.x +
+                                                       currentSpeed.y * currentSpeed.y +
+                                                       currentSpeed.z * currentSpeed.z);
+                                LOG("  Path speed: desired={:.1f} current={:.1f} (ratio={:.0f}%)",
+                                    dMag, cMag, dMag > 0.1f ? (cMag / dMag * 100.0f) : 0.0f);
+                                if (dMag > 0.5f && cMag < 0.5f) {
+                                    LOG("  -> IA is trying to move but BLOCKED by physics");
+                                } else if (dMag < 0.5f) {
+                                    LOG("  -> IA has NO movement intent (path broken or no navmesh)");
+                                }
+                            }
                         }
+
+                        // 3. Character controller state
+                        auto ctrlPtr = p->GetCharController();
+                        if (ctrlPtr) {
+                            auto state = ctrlPtr->context.currentState;
+                            auto want = ctrlPtr->wantState;
+                            const char* stateStr = "?";
+                            switch (state) {
+                                case RE::hkpCharacterStateType::kOnGround: stateStr = "OnGround"; break;
+                                case RE::hkpCharacterStateType::kJumping:  stateStr = "Jumping"; break;
+                                case RE::hkpCharacterStateType::kInAir:    stateStr = "InAir"; break;
+                                case RE::hkpCharacterStateType::kClimbing: stateStr = "Climbing"; break;
+                                case RE::hkpCharacterStateType::kSwimming: stateStr = "Swimming"; break;
+                                default: break;
+                            }
+                            LOG("  Character state: {} (want={})", stateStr, static_cast<int>(want));
+                        }
+
+                        // 4. SpeedMult actuel
+                        auto* avo = p->AsActorValueOwner();
+                        if (avo) {
+                            float sm = avo->GetActorValue(RE::ActorValue::kSpeedMult);
+                            float base = avo->GetBaseActorValue(RE::ActorValue::kSpeedMult);
+                            LOG("  SpeedMult: current={:.0f} base={:.0f}", sm, base);
+                        }
+
+                        // 5. Cellule courante
+                        auto* cell = p->GetParentCell();
+                        if (cell) {
+                            LOG("  Player cell: '{}' (interior={})",
+                                cell->GetName() ? cell->GetName() : "?", cell->IsInteriorCell());
+                        }
+
                     });
                 }
-                recoveryAttempt = 1;
-            } else if (g_autoWalkStuckTimer > 6.0f && recoveryAttempt == 1) {
-                // Étape 2 : recalculer le chemin (réévaluer le package)
-                LOG("AutoWalk: stuck for 6s, re-evaluating package");
-                auto* taskIf = SKSE::GetTaskInterface();
-                if (taskIf) {
-                    taskIf->AddTask([]() {
-                        auto* p = RE::PlayerCharacter::GetSingleton();
-                        if (p) {
+                LOG("=== END STUCK DIAGNOSTIC ===");
+            }
+
+            // Récupération progressive de blocage — deux stratégies selon le mode
+            if (isMounted) {
+                // Mode cheval : pas de récupération agressive (saut/toggle AIDriven
+                // casseraient le Travel package). Le cheval pathfind tout seul, on
+                // lui laisse jusqu'à 30 secondes pour débloquer une situation avant
+                // d'abandonner.
+                if (g_autoWalkStuckTimer > 30.0f) {
+                    Speak(L"Horse stuck");
+                    g_autoWalking.store(false);
+                    LOG("AutoWalk: horse stuck for 30s, giving up");
+                    // On ne touche pas directement au joueur ici — StopAutoWalk
+                    // fera le cleanup via OnStopWalking côté Papyrus (qui restaure
+                    // HorseRef/Traveler proprement).
+                    auto* taskIf = SKSE::GetTaskInterface();
+                    if (taskIf) {
+                        taskIf->AddTask([]() {
+                            StopAutoWalk();
+                        });
+                    }
+                    break;
+                }
+            } else {
+                // Mode pied : récupération progressive 3s / 6s / 10s
+                if (g_autoWalkStuckTimer > 3.0f && recoveryAttempt == 0) {
+                    // Étape 1 : simuler un appui sur Espace pour déclencher un saut directionnel
+                    LOG("AutoWalk: stuck for 3s, simulating Space press for directional jump");
+                    keybd_event(VK_SPACE, 0, 0, 0);
+                    std::thread([]() {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(150));
+                        keybd_event(VK_SPACE, 0, KEYEVENTF_KEYUP, 0);
+                    }).detach();
+                    recoveryAttempt = 1;
+                } else if (g_autoWalkStuckTimer > 6.0f && recoveryAttempt < 2) {
+                    // Étape 2 : recalculer le chemin (réévaluer le package)
+                    LOG("AutoWalk: stuck for 6s, re-evaluating package");
+                    auto* taskIf = SKSE::GetTaskInterface();
+                    if (taskIf) {
+                        taskIf->AddTask([]() {
+                            auto* p = RE::PlayerCharacter::GetSingleton();
+                            if (!p) return;
                             p->SetAIDriven(false);
                             p->EvaluatePackage();
                             p->SetAIDriven(true);
                             p->EvaluatePackage();
-                        }
-                    });
-                }
-                recoveryAttempt = 2;
-            } else if (g_autoWalkStuckTimer > 10.0f) {
-                // Étape 3 : abandonner
-                Speak(L"Can't reach target");
-                g_autoWalking.store(false);
-                LOG("AutoWalk: stuck for 10s, giving up");
-                auto* taskIf = SKSE::GetTaskInterface();
-                if (taskIf) {
-                    taskIf->AddTask([]() {
-                        auto* p = RE::PlayerCharacter::GetSingleton();
-                        if (p) {
+                        });
+                    }
+                    recoveryAttempt = 2;
+                } else if (g_autoWalkStuckTimer > 10.0f) {
+                    // Étape 3 : abandonner
+                    Speak(L"Can't reach target");
+                    g_autoWalking.store(false);
+                    LOG("AutoWalk: stuck for 10s, giving up");
+                    auto* taskIf = SKSE::GetTaskInterface();
+                    if (taskIf) {
+                        taskIf->AddTask([]() {
+                            auto* p = RE::PlayerCharacter::GetSingleton();
+                            if (!p) return;
                             p->SetAIDriven(false);
                             auto* avo = p->AsActorValueOwner();
                             if (avo) {
@@ -237,10 +378,10 @@ static void StartAutoWalkMonitor() {
                                 avo->SetActorValue(RE::ActorValue::kSpeedMult, base);
                             }
                             p->EvaluatePackage();
-                        }
-                    });
+                        });
+                    }
+                    break;
                 }
-                break;
             }
         }
     });
@@ -262,7 +403,6 @@ static void StartAutoWalk(RE::FormID targetFormID, float stopDistance = 100.0f,
     bool useCoords = (posX != 0.f || posY != 0.f || posZ != 0.f);
 
     task->AddTask([targetFormID, stopDistance, posX, posY, posZ, useCoords]() {
-        // Forcer l'initialisation du mouvement avant de lancer l'IA
         auto* player = RE::PlayerCharacter::GetSingleton();
         if (player) {
             // Forcer l'initialisation du mouvement avant de lancer l'IA
@@ -315,6 +455,7 @@ static void StartAutoWalk(RE::FormID targetFormID, float stopDistance = 100.0f,
             return;
         }
 
+        // 5 paramètres : aiFormID, afStopDistance, afX, afY, afZ
         // Mode coordonnées : formID=0 + position x,y,z
         // Mode normal : formID valide + 0,0,0
         auto* args = RE::MakeFunctionArguments(
@@ -369,21 +510,17 @@ static void StopAutoWalk() {
     if (!task) return;
 
     task->AddTask([]() {
-        // Sécurité C++ : remettre AI driven même si Papyrus échoue
         auto* player = RE::PlayerCharacter::GetSingleton();
         if (player) {
             player->SetAIDriven(false);
-            player->EvaluatePackage();
-
-            // Restaurer SpeedMult à sa valeur de base
             auto* avo = player->AsActorValueOwner();
             if (avo) {
                 float base = avo->GetBaseActorValue(RE::ActorValue::kSpeedMult);
                 avo->SetActorValue(RE::ActorValue::kSpeedMult, base);
                 LOG("AutoWalk: restored SpeedMult to base={}", base);
             }
-
             LOG("AutoWalk: C++ safety reset AIDriven=false");
+            player->EvaluatePackage();
         }
 
         auto* quest = RE::TESForm::LookupByEditorID<RE::TESQuest>("SkyrimTTS_AutoWalkQuest");
@@ -466,6 +603,8 @@ static void ToggleAutoWalk() {
         return;
     }
 
+    LOG("AutoWalk: ToggleAutoWalk called");
+
     // Désactiver l'aimlock et le toggle lock-on avant de marcher
     // (sinon la caméra tremble et le joueur ne bouge pas)
     if (g_autoAimTracking.load()) StopAutoAim();
@@ -497,6 +636,43 @@ static void ToggleAutoWalk() {
             Speak(L"Walking to " + targetName);
             StartAutoWalk(targetID, 150.0f, pos.x, pos.y, pos.z);
             return;
+        }
+
+        // Cas spécifique : cible de quête dans la MÊME cellule que le joueur, résolue
+        // par le scanner via le PASS 1 (ignore CTDA).
+        // La ref n'est pas 3D-loaded (alias de quête qui n'est pas encore vraiment spawn
+        // dans le monde, ex: Pierre de dragon à Bleak Falls Barrow alors qu'on est déjà
+        // dans le donjon), mais on a quand même une position valide dans obj.lastKnownPos
+        // (celle qu'on utilise pour afficher la distance dans le scanner).
+        // → On marche directement vers ces coordonnées.
+        //
+        // IMPORTANT : on ne fait ça que si la cible est dans la même cellule. Pour les
+        // cibles cross-cell (ex: joueur dehors, cible dans un donjon), on garde la
+        // logique boussole historique (recherche de porte d'entrée) — c'est ce qui
+        // fonctionnait avant pour ces cas-là.
+        if (g_scanIndex >= 0 && g_scanIndex < static_cast<int>(g_scannedFiltered.size())) {
+            auto& currentObj = *g_scannedFiltered[g_scanIndex];
+            if (currentObj.category == kCatQuests &&
+                (currentObj.lastKnownPos.x != 0 || currentObj.lastKnownPos.y != 0)) {
+                // Vérifier que la ref target est dans la même cellule que le joueur.
+                // Si ref est null (LookupByID a échoué), on ne fait rien → fallback boussole.
+                auto* playerForSameCellCheck = RE::PlayerCharacter::GetSingleton();
+                auto* playerCellCheck = playerForSameCellCheck ? playerForSameCellCheck->GetParentCell() : nullptr;
+                auto* targetCellCheck = ref ? ref->GetParentCell() : nullptr;
+                if (ref && playerCellCheck && targetCellCheck == playerCellCheck) {
+                    auto pos = currentObj.lastKnownPos;
+                    LOG("AutoWalk: dynamic FormID {:08X} quest target in same cell, using scanner lastKnownPos=({:.0f},{:.0f},{:.0f})",
+                        targetID, pos.x, pos.y, pos.z);
+                    Speak(L"Walking to " + targetName);
+                    StartAutoWalk(targetID, 150.0f, pos.x, pos.y, pos.z);
+                    return;
+                } else {
+                    LOG("AutoWalk: dynamic FormID {:08X} quest target not in same cell (ref={}, playerCell={}, targetCell={}), falling back to compass",
+                        targetID, ref ? "ok" : "null",
+                        playerCellCheck ? "ok" : "null",
+                        targetCellCheck ? "ok" : "null");
+                }
+            }
         }
 
         LOG("AutoWalk: dynamic FormID {:08X}, searching for entrance door via compass", targetID);
@@ -688,10 +864,10 @@ static void ToggleAutoWalk() {
             auto& obj = *g_scannedFiltered[g_scanIndex];
             StartAutoWalk(targetID, 100.0f, obj.lastKnownPos.x, obj.lastKnownPos.y, obj.lastKnownPos.z);
         } else {
-            StartAutoWalk(targetID, 100.0f);  // fallback
+            StartAutoWalk(targetID, 100.0f, 0.f, 0.f, 0.f);  // fallback
         }
     } else {
-        StartAutoWalk(targetID, 100.0f);
+        StartAutoWalk(targetID, 100.0f, 0.f, 0.f, 0.f);
     }
 }
 

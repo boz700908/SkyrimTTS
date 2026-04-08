@@ -18,6 +18,7 @@ EndEvent
 ObjectReference CurrentTarget
 float fStopDistance = 100.0
 bool IsWalking = false
+bool MountedMode = false   ; true si le walk en cours utilise le mode "mounted"
 float CheckInterval = 0.25
 
 ; === Called from C++ via DispatchMethodCall ===
@@ -59,6 +60,102 @@ Function OnWalkToTarget(int aiFormID, float afStopDistance, float afX = 0.0, flo
         tempMarker.SetPosition(afX, afY, afZ)
         StartWalkToRef(tempMarker, afStopDistance)
     endIf
+EndFunction
+
+; === MOUNTED MODE — Called from C++ when player is on a horse ===
+; OPTION B : on redirige l'alias Traveler vers le CHEVAL au lieu du joueur.
+; Notre Travel package est attaché au Traveler alias (via ALPC dans l'ESP), donc
+; en changeant l'alias on transfère l'exécution du package au cheval. Le cheval est
+; un Actor avec son propre AI complet, il peut exécuter un Travel package nativement.
+; Pas besoin de Game.SetPlayerAIDriven : c'est le cheval qui agit, pas le joueur.
+Function OnWalkToTargetMounted(int aiFormID, float afStopDistance, float afX, float afY, float afZ, int aiMountFormID)
+    ; Récupérer le cheval
+    Form mountForm = Game.GetForm(aiMountFormID)
+    if mountForm == None
+        Debug.Trace("SkyrimTTS:AutoWalkMounted - Invalid mount FormID: " + aiMountFormID)
+        return
+    endIf
+    Actor mountActor = mountForm as Actor
+    if mountActor == None
+        Debug.Trace("SkyrimTTS:AutoWalkMounted - Mount form is not an Actor: " + aiMountFormID)
+        return
+    endIf
+    Debug.Trace("SkyrimTTS:AutoWalkMounted - Mount actor resolved: " + mountActor)
+
+    if aiFormID != 0
+        Form targetForm = Game.GetForm(aiFormID)
+        if targetForm == None
+            Debug.Trace("SkyrimTTS:AutoWalkMounted - Invalid target FormID: " + aiFormID)
+            return
+        endIf
+
+        ObjectReference targetRef = targetForm as ObjectReference
+        if targetRef == None
+            Debug.Trace("SkyrimTTS:AutoWalkMounted - Not an ObjectReference: " + aiFormID)
+            return
+        endIf
+
+        if IsWalking
+            StopWalkingInternal(false)
+        endIf
+
+        fStopDistance = afStopDistance
+        StartWalkToRefMounted(targetRef, afStopDistance, mountActor)
+    else
+        Debug.Trace("SkyrimTTS:AutoWalkMounted - Walking to coordinates: " + afX + ", " + afY + ", " + afZ)
+
+        if IsWalking
+            StopWalkingInternal(false)
+        endIf
+
+        fStopDistance = afStopDistance
+
+        ObjectReference tempMarker = PlayerRef.PlaceAtMe(Game.GetForm(0x10), 1, true, true)
+        tempMarker.SetPosition(afX, afY, afZ)
+        StartWalkToRefMounted(tempMarker, afStopDistance, mountActor)
+    endIf
+EndFunction
+
+; === MOUNTED MODE start helper ===
+Function StartWalkToRefMounted(ObjectReference target, float stopDist, Actor mountActor)
+    if IsWalking
+        StopWalkingInternal(false)
+    endIf
+
+    fStopDistance = stopDist
+    CurrentTarget = target
+    MountedMode = true
+
+    float dist = PlayerRef.GetDistance(CurrentTarget)
+    Debug.Trace("SkyrimTTS:AutoWalkMounted - StartWalkToRefMounted, distance: " + dist)
+
+    if dist <= fStopDistance
+        Debug.Trace("SkyrimTTS:AutoWalkMounted - Already within range: " + dist)
+        MountedMode = false
+        return
+    endIf
+
+    ; OPTION B — Étape clé : rediriger l'alias Traveler vers le CHEVAL.
+    ; Notre Travel package est attaché à l'alias Traveler (via ALPC dans l'ESP).
+    ; En changeant la ref de l'alias, le package va s'exécuter sur le cheval
+    ; au lieu du joueur. Le cheval est un Actor avec son propre AI, il peut
+    ; exécuter le package nativement sans avoir besoin d'AIDriven.
+    Traveler.ForceRefTo(mountActor)
+    Debug.Trace("SkyrimTTS:AutoWalkMounted - Traveler alias redirected to mount: " + Traveler.GetReference())
+
+    ; Remplir DstMarker comme d'habitude (la cible ne change pas)
+    DstMarker.ForceRefTo(target)
+    Debug.Trace("SkyrimTTS:AutoWalkMounted - DstMarker set to " + DstMarker.GetReference())
+
+    ; Réveiller l'AI du cheval pour qu'il prenne en compte son nouveau package
+    mountActor.EvaluatePackage()
+    Debug.Trace("SkyrimTTS:AutoWalkMounted - mount.EvaluatePackage called")
+
+    ; PAS de Game.SetPlayerAIDriven : on n'a pas besoin de driver le joueur,
+    ; c'est le cheval qui est maintenant l'acteur du package Travel.
+
+    IsWalking = true
+    RegisterForSingleUpdate(CheckInterval)
 EndFunction
 
 ; === Called from C++ to stop walking ===
@@ -104,13 +201,35 @@ Function StopWalkingInternal(bool abNotify)
     UnregisterForUpdate()
     ; Clear DstMarker so the Travel package deactivates
     DstMarker.Clear()
-    ; Restore player control and normal speed
-    PlayerRef.SetActorValue("SpeedMult", 100.0)
-    Game.SetPlayerAIDriven(false)
-    PlayerRef.EvaluatePackage()
+
+    if MountedMode
+        ; OPTION B : restaurer l'alias Traveler vers le PlayerRef pour que les
+        ; futurs autowalks à pied fonctionnent correctement.
+        ; On capture aussi la ref actuelle (le cheval) pour pouvoir EvaluatePackage
+        ; dessus afin qu'il revienne à son comportement normal.
+        Actor mountActor = Traveler.GetReference() as Actor
+        Traveler.ForceRefTo(PlayerRef)
+        Debug.Trace("SkyrimTTS:AutoWalkMounted - Traveler restored to PlayerRef")
+
+        if mountActor != None
+            mountActor.EvaluatePackage()
+            Debug.Trace("SkyrimTTS:AutoWalkMounted - mount.EvaluatePackage called (cleanup)")
+        endIf
+
+        ; Pas besoin de SetPlayerAIDriven(false) puisqu'on ne l'a jamais activé en mounted.
+        PlayerRef.EvaluatePackage()
+        Debug.Trace("SkyrimTTS:AutoWalkMounted - Stopped")
+    else
+        ; Mode à pied : restaurer le contrôle joueur.
+        ; Note : on ne touche PAS à SpeedMult — on ne l'a jamais boosté, donc rien à restaurer.
+        Game.SetPlayerAIDriven(false)
+        PlayerRef.EvaluatePackage()
+        Debug.Trace("SkyrimTTS:AutoWalk - Stopped")
+    endIf
+
     CurrentTarget = None
     IsWalking = false
-    Debug.Trace("SkyrimTTS:AutoWalk - Stopped")
+    MountedMode = false
 EndFunction
 
 ; === Start walking: fill DstMarker alias, let AI package handle pathfinding ===
@@ -134,8 +253,8 @@ Function StartWalkToRef(ObjectReference target, float stopDist)
     DstMarker.ForceRefTo(target)
     Debug.Trace("SkyrimTTS:AutoWalk - DstMarker set to " + DstMarker.GetReference())
 
-    ; Boost speed during autowalk
-    PlayerRef.SetActorValue("SpeedMult", 250.0)
+    ; Note : on ne touche PAS à SpeedMult — l'IA pathfinding gère la vitesse naturellement.
+    ; Forcer SpeedMult à 250 causait un mouvement à 2.5x la vitesse normale (bug v1.3.1).
 
     ; Take away player control, let AI run the Travel package
     Game.SetPlayerAIDriven(true)
