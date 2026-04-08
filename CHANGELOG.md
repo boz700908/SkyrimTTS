@@ -1,9 +1,62 @@
 # Changelog
 
+## v1.4 (2026-04-07)
+
+### New features
+- MCM: new "Bow auto aim" toggle in the General page — disable bow auto-aim entirely if you want to use vanilla bow combat without the assistance system
+- MCM: new "Gamepad" page to remap controller button assignments — for each action (next object, previous object, announce, autowalk/fast travel, teleport, vitals, sneak toggle, POV toggle, lock enemy, set reference on map), pick which button to use from a dropdown of all controller buttons (D-pad, A/B/X/Y, LS/RS click, RB, Start, Back). LB stays fixed as the modifier key.
+- Gamepad support: full scanner, autowalk and map control with an Xbox/PlayStation controller using LB as a modifier key
+  - **Scanner (in game)**
+    - LB + D-pad Down/Up: next/previous scanned object (down = farther, up = closer)
+    - LB + D-pad Left: announce current target (Home equivalent)
+    - LB + Right stick Left/Right: change category (All, NPCs, Doors, etc.)
+    - LB + Right stick Up/Down: change sub-filter
+    - LB + A: start/stop autowalk
+    - LB + B: teleport to scanned target
+    - LB + Y: announce health, magicka, stamina
+    - LB + LS click: toggle sneak (crouch/stand)
+    - LB + RS click: toggle first/third person camera
+    - RS click alone: lock nearest enemy
+  - **Map menu**
+    - LB + D-pad Down/Up: next/previous marker in current filter (sorted by distance)
+    - LB + D-pad Left: announce marker details
+    - LB + D-pad Right: set reference point for distance calculation
+    - LB + A: fast travel to selected marker (custom system, more reliable than vanilla)
+    - LB + Right stick Left/Right: cycle location sub-filter (All types → Cities → Towns → Dungeons → Forts → Camps)
+    - LB + Right stick Up/Down: cycle main filter (All → Discovered → Undiscovered → Quest Targets)
+  - **Automatic remapping**
+    - Sprint: remapped from LB to LS click (no manual config needed)
+    - Sneak: remapped from LS click to LB+LS (no manual config needed)
+    - Map context: A, Y, D-pad Left and any button you assign to scanner combos are disabled in the map context to avoid conflicts with our combos
+  - Left stick movement cancels autowalk (same as WASD on keyboard)
+- Autowalk: mounted autowalk — you can now launch autowalk while riding a horse and the horse itself will path to the destination instead of forcing you to dismount. Mount your horse manually first, then trigger autowalk like usual (Shift+Home on keyboard or LB+A on gamepad) — the plugin detects that you are riding and transparently switches to mounted mode. The horse paths on the navmesh at normal riding speed with full collision and obstacle handling, which is more reliable than walking on foot for long outdoor trips.
+  - **Stuck detection is more patient on horseback** — horses move in bursts while recalculating waypoints, so the normal 3/6/10 second recovery cycle (jump, repath, give up) is replaced by a simple 30 second timeout that only triggers if you make no real progress toward the target
+  - **Known limitation on horse controls after stopping** — after a mounted autowalk stops (arrival, user cancel, stuck timeout), the player stays on the horse but the keyboard controls (WASD) for the horse are temporarily lost. Dismount and remount manually (E twice) to regain control of your horse. This is a Skyrim engine quirk that affects every mod using the mounted travel pattern (SkyTrek SE has the same bug); a full night of investigation could not work around it without breaking the travel start itself
+- Autowalk: player now automatically faces the target on arrival — the crosshair points directly at the door or object, ready for activation
+- Autowalk: better stuck recovery — when blocked, the plugin now simulates a real Space jump (preserves forward velocity, like pressing Space while running) instead of a standing jump
+- Autowalk: detailed stuck diagnostic — when stuck for more than 4 seconds, the log now reports player position, target position, AI package state, desired vs current movement speed, character controller state and current cell, to help diagnose why navigation is failing
+- Scanner: improved quest target detection — when all quest target conditions fail (e.g. Bleak Falls Barrow's Dragonstone, which is not yet placed in the world during your first visit), the scanner now falls back to resolving the quest alias without checking conditions, so the marker still appears with a usable position. The historical behavior for working quests (multiple waypoints in dungeons like Helgen) is preserved exactly.
+
+### Bug fixes
+- Scanner: fixed quest distance inconsistency when pressing Home — `RefreshQuestTarget` now uses the same logic as the main scan (worldLocMarker resolution for cross-cell targets, 2D distance), so the distance announced on Home matches the one shown when navigating with Page Up/Down. Previously the Home key could announce 47000 units instead of the real ~5700 because it used raw interior coordinates.
+- Map: location type sub-filter (Home+Arrow Down/Up) — cycle through All types, Cities, Towns, Dungeons, Forts, Camps to narrow down markers within the current filter
+- Map: markers are now filtered by current worldspace — Solstheim markers no longer appear when you are in Skyrim and vice versa
+- Autowalk: fixed unnatural movement speed — autowalk now runs at normal speed instead of 2.5x
+- Autowalk: fixed player stuck in slow walk after autowalk arrival — speed is now properly restored in all stop scenarios (arrival, cancellation, stuck detection)
+- Autowalk: no longer stops automatically when entering combat — the player decides when to stop
+- Autowalk: starting autowalk now automatically disables aim lock (X) and toggle lock-on (Shift+X) to prevent camera conflicts
+- Autowalk: when targeting a quest objective whose reference is not yet spawned in the world (e.g. Dragonstone before defeating the Draugr Overlord), the autowalk now uses the position resolved by the scanner instead of incorrectly trying to find a dungeon entrance via the compass
+- Crash fix: protected all GFx UI access with SEH exception handling — fixes crash on startup with heavily modded UIs (e.g. Journals of Jyggalag modlist)
+- Crash fix: protected the engine translation table lookup with SEH — prevents random crashes in the main menu when the scrap heap recycles memory while we read translations
+- Scanner: quest markers now follow the correct waypoint in dungeons — quests like "Escape Helgen" have multiple invisible waypoints that guide you through corridors and rooms. Previously, the scanner always pointed to the first waypoint (near the entrance). Now it follows the same waypoint as the compass, updating as you progress through the dungeon
+- Scanner: pressing Home on a quest target now refreshes the waypoint in real-time — if the quest stage changes (e.g. you pass a trigger in a dungeon), the marker updates immediately without needing to rescan
+- Scanner: distances are now recalculated in real-time when navigating with Page Up/Down — previously distances were only updated when pressing Home
+- Scanner: fixed inconsistent distances between Home and Page Up/Down — Home was using the 3D mesh center (much higher for tall objects like standing stones) while Page Up/Down used the base position, causing large discrepancies
+
 ## v1.3.1 (2026-04-03)
 
 ### New features
-- Map: location type sub-filter (Alt+End) — cycle through All types, Cities, Towns, Dungeons, Forts, Camps to narrow down markers within the current filter
+- Map: location type sub-filter (Home+Arrow Down/Up) — cycle through All types, Cities, Towns, Dungeons, Forts, Camps to narrow down markers within the current filter
 - Map: markers are now filtered by current worldspace — Solstheim markers no longer appear when you are in Skyrim and vice versa
 
 ### Bug fixes
