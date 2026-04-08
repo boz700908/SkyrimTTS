@@ -16,3 +16,16 @@ Function SetKeySubcategory(int keyCode) Global Native
 Function SetKeyTeleport(int keyCode) Global Native
 Function SetScanRange(float range) Global Native
 Function SetTeleportRange(float range) Global Native
+Function SetAutoAimEnabled(bool enabled) Global Native
+
+; Gamepad button configuration (index dans la liste partagée)
+Function SetGpScanNext(int idx) Global Native
+Function SetGpScanPrev(int idx) Global Native
+Function SetGpScanAnnounce(int idx) Global Native
+Function SetGpMapSetRef(int idx) Global Native
+Function SetGpPrimary(int idx) Global Native
+Function SetGpTeleport(int idx) Global Native
+Function SetGpVitals(int idx) Global Native
+Function SetGpSneak(int idx) Global Native
+Function SetGpPOV(int idx) Global Native
+Function SetGpLockEnemy(int idx) Global Native

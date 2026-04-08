@@ -456,6 +456,25 @@ static void LoadTranslationFile() {
 }
 
 // Priorité : BSScaleformTranslator (inclut mods) → fichier Translate_*.txt → fallback nettoyé
+// Helper SEH pour accéder à translationMap.find() sans crash
+static bool TranslateKeyFromEngine(RE::BSScaleformTranslator* translator, const RE::BSFixedStringW& lookupKey, const wchar_t** outResult) {
+    __try {
+        auto& translationMap = translator->translator.translationMap;
+        auto it = translationMap.find(lookupKey);
+        if (it != translationMap.end()) {
+            *outResult = it->second.c_str();
+            return true;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        static bool loggedOnce = false;
+        if (!loggedOnce) {
+            LOG("WARNING: TranslateKey SEH exception — falling back to file");
+            loggedOnce = true;
+        }
+    }
+    return false;
+}
+
 static std::wstring TranslateKey(const std::string& key) {
     if (key.empty() || key[0] != '$') return Utf8ToWString(key);
 
@@ -475,10 +494,9 @@ static std::wstring TranslateKey(const std::string& key) {
     if (cachedTranslator) {
         std::wstring wideKey = Utf8ToWString(key);
         RE::BSFixedStringW lookupKey(wideKey.c_str());
-        auto& translationMap = cachedTranslator->translator.translationMap;
-        auto it = translationMap.find(lookupKey);
-        if (it != translationMap.end()) {
-            std::wstring result(it->second.c_str());
+        const wchar_t* rawResult = nullptr;
+        if (TranslateKeyFromEngine(cachedTranslator, lookupKey, &rawResult) && rawResult) {
+            std::wstring result(rawResult);
             static std::string lastHitKey;
             if (key != lastHitKey) {
                 LOG("Translate hit (engine): {} -> {}", key, WStringToUtf8(result));
@@ -783,7 +801,51 @@ static std::wstring FormatWeight(double w) {
 // ---------------- MCM settings ----------------
 
 static std::atomic_bool g_mcmStealthAnnounce{true};   // annonces furtivité
+static std::atomic_bool g_gamepadNeedsRemap{false};    // flag pour demander un remap gamepad depuis le HUD hook
 static std::atomic_bool g_mcmTeleportEnabled{true};    // téléportation scanner
+static std::atomic_bool g_mcmAutoAimEnabled{true};     // visée auto à l'arc (système complet)
+
+// ---------------- Gamepad button configuration ----------------
+// Liste partagée des boutons manette (indices utilisés dans MCM + C++)
+// L'ordre DOIT correspondre au MCM Papyrus
+constexpr size_t GAMEPAD_BUTTON_COUNT = 14;
+static const std::uint32_t g_gamepadButtonCodes[GAMEPAD_BUTTON_COUNT] = {
+    0x0001,  // 0: D-pad Up
+    0x0002,  // 1: D-pad Down
+    0x0004,  // 2: D-pad Left
+    0x0008,  // 3: D-pad Right
+    0x1000,  // 4: A
+    0x2000,  // 5: B
+    0x4000,  // 6: X
+    0x8000,  // 7: Y
+    0x0040,  // 8: LS click (Left Thumb)
+    0x0080,  // 9: RS click (Right Thumb)
+    0x0200,  // 10: RB (Right Shoulder)
+    0x0010,  // 11: Start
+    0x0020,  // 12: Back
+    0xFFFF,  // 13: None (désactivé)
+};
+
+// Index par défaut pour chaque action configurable
+// Note : "Next" = objet plus loin, "Prev" = objet plus proche.
+// Convention intuitive : D-pad Bas pour aller vers le suivant (plus loin),
+// D-pad Haut pour remonter vers le plus proche.
+static std::atomic<int> g_gpIdxScanNext{1};       // D-pad Down (plus loin)
+static std::atomic<int> g_gpIdxScanPrev{0};       // D-pad Up (plus proche)
+static std::atomic<int> g_gpIdxScanAnnounce{2};   // D-pad Left
+static std::atomic<int> g_gpIdxMapSetRef{3};      // D-pad Right
+static std::atomic<int> g_gpIdxPrimary{4};        // A (autowalk / fast travel)
+static std::atomic<int> g_gpIdxTeleport{5};       // B
+static std::atomic<int> g_gpIdxVitals{7};         // Y
+static std::atomic<int> g_gpIdxSneak{8};          // LS click
+static std::atomic<int> g_gpIdxPOV{9};            // RS click (with LB)
+static std::atomic<int> g_gpIdxLockEnemy{9};      // RS click (without LB)
+
+// Helper : convertit un index en code de bouton manette
+static std::uint32_t GpIndexToCode(int idx) {
+    if (idx < 0 || idx >= static_cast<int>(GAMEPAD_BUTTON_COUNT)) return 0xFFFF;
+    return g_gamepadButtonCodes[idx];
+}
 
 // Touches configurables (DirectX scancodes)
 static std::atomic<uint32_t> g_keyScan{76};           // Numpad 5

@@ -26,7 +26,16 @@
 #include "menu_console.h"
 #include "scanner.h"
 #include "autowalk.h"
-// #include "pathfinding.h"  // Désactivé — en développement, Alt+Home pour activer
+#include "pathfinding.h"
+#include "quest_nav.h"
+
+// ---------------- Gamepad state (déclaré tôt pour accès depuis MenuListener) ----------------
+static std::atomic_bool g_lbHeld{false};               // LB maintenu = mode scanner
+static std::atomic_bool g_lbWasModifier{false};         // LB a été utilisé comme modificateur
+static std::atomic_bool g_gamepadDetected{false};       // true dès qu'on reçoit un événement gamepad
+static std::atomic_int  g_gamepadRemapCount{0};         // combien de fois on a appliqué le remap
+static std::uint32_t g_savedControls = 0;               // état des contrôles sauvegardé avant LB
+static bool g_controlsDisabled = false;                  // true si on a désactivé les contrôles
 
 // ---------------- Menu open/close listener ----------------
 
@@ -316,6 +325,15 @@ public:
             } else {
                 OnMapClose();
                 if (g_tweenOpen.load()) g_tweenForeground.store(true);
+                // CRITIQUE : si LB était maintenu sur la carte (LB+A → fast travel),
+                // ne PAS restaurer g_savedControls (qui contient l'état minimal de la carte = 0x02).
+                // Le jeu remet déjà les contrôles gameplay tout seul à la fermeture de la carte.
+                // On efface juste notre flag pour que LB release ne tente pas de restaurer.
+                if (g_controlsDisabled) {
+                    g_controlsDisabled = false;
+                    LOG("GAMEPAD: Map closed with LB held — clearing flag without restoring (game handles it)");
+                }
+                g_lbHeld.store(false);
             }
         }
 
@@ -419,6 +437,93 @@ static void RegisterMenuListener() {
     }
 }
 
+// g_gamepadNeedsRemap déclaré dans common.h
+// g_lbHeld, g_lbWasModifier, g_gamepadDetected, g_gamepadRemapCount, g_controlsDisabled
+// déclarés plus haut (avant MenuListener)
+static ULONGLONG g_lastStickUpTime = 0;                 // throttle stick droit haut
+static ULONGLONG g_lastStickDownTime = 0;               // throttle stick droit bas
+static ULONGLONG g_lastStickLeftTime = 0;               // throttle stick droit gauche
+static ULONGLONG g_lastStickRightTime = 0;              // throttle stick droit droite
+static constexpr ULONGLONG STICK_REPEAT_MS = 300;       // délai entre chaque déclenchement stick
+static constexpr float STICK_THRESHOLD = 0.5f;          // seuil de déclenchement du stick
+
+// Helper : vérifie si un menu est ouvert (évite duplication)
+static bool IsAnyMenuOpen() {
+    return g_invOpen.load() || g_containerOpen.load() || g_barterOpen.load() || g_craftingOpen.load() ||
+           g_journalOpen.load() || g_magicOpen.load() || g_mainOpen.load() || g_dialogueOpen.load() ||
+           g_raceSexOpen.load() || g_tweenOpen.load() || g_statsOpen.load() || g_favOpen.load() ||
+           g_msgBoxOpen.load() || g_uiListMenuOpen.load() || g_mapOpen.load();
+}
+
+// Remap sprint de LB vers LS et sneak de LS vers rien (géré par LB+LS dans notre code)
+// Dans le contexte carte, désactive les boutons configurables qui ont une action native
+// Retourne true si un remap a été effectué (false = déjà OK)
+static bool RemapGamepadControls() {
+    auto* controlMap = RE::ControlMap::GetSingleton();
+    if (!controlMap) return false;
+
+    bool changed = false;
+    auto targetSprint = static_cast<std::uint16_t>(RE::BSWin32GamepadDevice::Key::kLeftThumb);
+    constexpr auto kMapCtxId = static_cast<size_t>(RE::UserEvents::INPUT_CONTEXT_ID::kMap);
+
+    // Boutons que l'utilisateur a assignés à des combos LB+X sur la carte
+    // → doivent être désactivés dans le contexte carte pour éviter les conflits
+    const std::uint16_t mapBlockedKeys[] = {
+        static_cast<std::uint16_t>(GpIndexToCode(g_gpIdxScanNext.load())),
+        static_cast<std::uint16_t>(GpIndexToCode(g_gpIdxScanPrev.load())),
+        static_cast<std::uint16_t>(GpIndexToCode(g_gpIdxScanAnnounce.load())),
+        static_cast<std::uint16_t>(GpIndexToCode(g_gpIdxMapSetRef.load())),
+        static_cast<std::uint16_t>(GpIndexToCode(g_gpIdxPrimary.load())),
+        static_cast<std::uint16_t>(GpIndexToCode(g_gpIdxVitals.load())),
+    };
+
+    for (size_t ctxIdx = 0; ctxIdx < RE::UserEvents::INPUT_CONTEXT_ID::kTotal; ctxIdx++) {
+        auto* ctx = controlMap->controlMap[ctxIdx];
+        if (!ctx) continue;
+        for (auto& mapping : ctx->deviceMappings[RE::INPUT_DEVICE::kGamepad]) {
+            // Sprint → LS click (tous contextes)
+            if (mapping.eventID == RE::BSFixedString("Sprint") && mapping.inputKey != targetSprint) {
+                LOG("GAMEPAD: Remapping Sprint 0x{:04X} → 0x{:04X} (LS) ctx={}", mapping.inputKey, targetSprint, ctxIdx);
+                mapping.inputKey = targetSprint;
+                changed = true;
+            }
+            // Sneak → désactivé (tous contextes)
+            if (mapping.eventID == RE::BSFixedString("Sneak") && mapping.inputKey != 0xFFFF) {
+                LOG("GAMEPAD: Remapping Sneak 0x{:04X} → disabled ctx={}", mapping.inputKey, ctxIdx);
+                mapping.inputKey = 0xFFFF;
+                changed = true;
+            }
+            // Dans le contexte CARTE uniquement : désactiver les boutons utilisés par nos combos
+            if (ctxIdx == kMapCtxId) {
+                for (std::uint16_t blockedKey : mapBlockedKeys) {
+                    if (blockedKey != 0xFFFF && mapping.inputKey == blockedKey) {
+                        LOG("GAMEPAD MAP: Remapping event '{}' from 0x{:04X} → disabled",
+                            mapping.eventID.c_str(), blockedKey);
+                        mapping.inputKey = 0xFFFF;
+                        changed = true;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    return changed;
+}
+
+// Toggle sneak programmatiquement (LB + LS click)
+static void ToggleSneakGamepad() {
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    if (!player) return;
+    bool wasSneaking = player->IsSneaking();
+    // AsActorState() gère automatiquement l'offset SSE/AE
+    auto* state = player->AsActorState();
+    if (state) {
+        state->actorState1.sneaking = wasSneaking ? 0 : 1;
+    }
+    Speak(wasSneaking ? L"Standing" : L"Sneaking");
+    LOG("GAMEPAD: ToggleSneak → {}", wasSneaking ? "Standing" : "Sneaking");
+}
+
 // ---------------- Input listener ----------------
 
 class InputListener : public RE::BSTEventSink<RE::InputEvent*> {
@@ -426,11 +531,300 @@ public:
     RE::BSEventNotifyControl ProcessEvent(RE::InputEvent* const* a_event, RE::BSTEventSource<RE::InputEvent*>*) {
         if (!a_event || !*a_event) return RE::BSEventNotifyControl::kContinue;
 
+        // Remap gamepad demandé par le HUD hook (premières secondes après chargement)
+        if (g_gamepadNeedsRemap.exchange(false)) {
+            RemapGamepadControls();
+        }
+
         for (auto e = *a_event; e; e = e->next) {
+            // --- Stick droit : catégories/filtres quand LB maintenu ---
+            if (e->GetEventType() == RE::INPUT_EVENT_TYPE::kThumbstick) {
+                auto* stick = static_cast<RE::ThumbstickEvent*>(e);
+                if (stick && stick->IsRight() && g_lbHeld.load()) {
+                    ULONGLONG now = GetTickCount64();
+                    bool mapMode = g_mapOpen.load();
+                    bool canAct = mapMode || !IsAnyMenuOpen();
+
+                    if (canAct) {
+                        // Scanner : Stick droit droite/gauche = catégorie
+                        // Map     : Stick droit droite/gauche = SOUS-filtre (Cities, Towns...)
+                        if (stick->xValue > STICK_THRESHOLD && (now - g_lastStickRightTime) > STICK_REPEAT_MS) {
+                            g_lastStickRightTime = now;
+                            g_lbWasModifier.store(true);
+                            if (mapMode) {
+                                LOG("GAMEPAD MAP: RStick RIGHT → MapCycleSubFilter (next)");
+                                MapCycleSubFilter();
+                            } else {
+                                LOG("GAMEPAD: RStick RIGHT → ScannerNextCategory");
+                                ScannerNextCategory();
+                            }
+                        } else if (stick->xValue < -STICK_THRESHOLD && (now - g_lastStickLeftTime) > STICK_REPEAT_MS) {
+                            g_lastStickLeftTime = now;
+                            g_lbWasModifier.store(true);
+                            if (mapMode) {
+                                LOG("GAMEPAD MAP: RStick LEFT → MapCyclePrevSubFilter");
+                                MapCyclePrevSubFilter();
+                            } else {
+                                LOG("GAMEPAD: RStick LEFT → ScannerPrevCategory");
+                                ScannerPrevCategory();
+                            }
+                        }
+                        // Scanner : Stick droit haut/bas = sous-catégorie
+                        // Map     : Stick droit haut/bas = filtre principal (Discovered, Undiscovered...)
+                        //           Bas = next → Discovered en premier (après All qui est l'état initial)
+                        if (stick->yValue > STICK_THRESHOLD && (now - g_lastStickUpTime) > STICK_REPEAT_MS) {
+                            g_lastStickUpTime = now;
+                            g_lbWasModifier.store(true);
+                            if (mapMode) {
+                                LOG("GAMEPAD MAP: RStick UP → MapCyclePrevFilter");
+                                MapCyclePrevFilter();
+                            } else {
+                                LOG("GAMEPAD: RStick UP → ScannerCycleSubcategory");
+                                ScannerCycleSubcategory();
+                            }
+                        } else if (stick->yValue < -STICK_THRESHOLD && (now - g_lastStickDownTime) > STICK_REPEAT_MS) {
+                            g_lastStickDownTime = now;
+                            g_lbWasModifier.store(true);
+                            if (mapMode) {
+                                LOG("GAMEPAD MAP: RStick DOWN → MapCycleFilter (next)");
+                                MapCycleFilter();
+                            } else {
+                                LOG("GAMEPAD: RStick DOWN → ScannerCycleSubcategory");
+                                ScannerCycleSubcategory();
+                            }
+                        }
+                    }
+                }
+                // Stick gauche : annuler autowalk OU naviguer le menu en croix
+                if (stick && stick->IsLeft()) {
+                    float magnitude = std::sqrt(stick->xValue * stick->xValue + stick->yValue * stick->yValue);
+                    if (magnitude > STICK_THRESHOLD) {
+                        // Tween menu (menu en croix) ouvert → annoncer la direction
+                        if (g_tweenForeground.load(std::memory_order_relaxed)) {
+                            int targetFrame = 0;
+                            // Déterminer la direction dominante
+                            if (std::abs(stick->yValue) > std::abs(stick->xValue)) {
+                                targetFrame = stick->yValue > 0 ? 2 : 5;  // haut=2, bas=5
+                            } else {
+                                targetFrame = stick->xValue < 0 ? 3 : 4;  // gauche=3, droite=4
+                            }
+                            int prev = g_lastTweenFrame.exchange(targetFrame);
+                            if (prev != targetFrame) {
+                                LOG("GAMEPAD: LStick tween direction frame={}", targetFrame);
+                                AnnounceTweenNavKey(targetFrame);
+                            }
+                        }
+                        // Sinon, annuler l'autowalk
+                        else if (g_autoWalking.load()) {
+                            LOG("GAMEPAD: Left stick movement during autowalk → stopping");
+                            Speak(L"Stopping");
+                            StopAutoWalk();
+                        }
+                    }
+                }
+                continue;
+            }
+
             if (e->GetEventType() != RE::INPUT_EVENT_TYPE::kButton) continue;
 
             auto* btn = e->AsButtonEvent();
-            if (!btn || !btn->IsDown()) continue;
+            if (!btn) continue;
+
+            // --- Gamepad : gestion LB comme modificateur ---
+            if (btn->GetDevice() == RE::INPUT_DEVICE::kGamepad) {
+                auto gpCode = btn->GetIDCode();
+
+                // Premier événement gamepad
+                if (!g_gamepadDetected.exchange(true)) {
+                    LOG("GAMEPAD: First gamepad event received");
+                }
+                // Vérifier et ré-appliquer le remap si le jeu l'a écrasé (les 20 premiers events)
+                if (g_gamepadRemapCount.load() < 20) {
+                    if (RemapGamepadControls()) {
+                        LOG("GAMEPAD: Remap re-applied (attempt {})", g_gamepadRemapCount.load());
+                    }
+                    g_gamepadRemapCount++;
+                }
+
+                // Tracker l'état de LB
+                if (gpCode == RE::BSWin32GamepadDevice::Key::kLeftShoulder) {
+                    if (btn->IsDown()) {
+                        g_lbHeld.store(true);
+                        g_lbWasModifier.store(false);
+                        // Désactiver les contrôles gameplay SEULEMENT hors menus
+                        // (Sur la carte, A et D-pad Left sont déjà remap via ControlMap)
+                        if (!IsAnyMenuOpen()) {
+                            auto* cm = RE::ControlMap::GetSingleton();
+                            if (cm && !g_controlsDisabled) {
+                                g_savedControls = cm->enabledControls.underlying();
+                                constexpr auto mask = static_cast<std::uint32_t>(RE::UserEvents::USER_EVENT_FLAG::kMovement) |
+                                                      static_cast<std::uint32_t>(RE::UserEvents::USER_EVENT_FLAG::kActivate) |
+                                                      static_cast<std::uint32_t>(RE::UserEvents::USER_EVENT_FLAG::kFighting) |
+                                                      static_cast<std::uint32_t>(RE::UserEvents::USER_EVENT_FLAG::kSneaking) |
+                                                      static_cast<std::uint32_t>(RE::UserEvents::USER_EVENT_FLAG::kJumping) |
+                                                      static_cast<std::uint32_t>(RE::UserEvents::USER_EVENT_FLAG::kMainFour) |
+                                                      static_cast<std::uint32_t>(RE::UserEvents::USER_EVENT_FLAG::kPOVSwitch);
+                                cm->enabledControls = static_cast<RE::UserEvents::USER_EVENT_FLAG>(cm->enabledControls.underlying() & ~mask);
+                                g_controlsDisabled = true;
+                                LOG("GAMEPAD: LB pressed — controls disabled (saved=0x{:08X})", g_savedControls);
+                            }
+                        } else {
+                            LOG("GAMEPAD: LB pressed (in menu, no control mask)");
+                        }
+                    } else if (btn->IsUp()) {
+                        g_lbHeld.store(false);
+                        if (g_controlsDisabled) {
+                            auto* cm = RE::ControlMap::GetSingleton();
+                            if (cm) {
+                                cm->enabledControls = static_cast<RE::UserEvents::USER_EVENT_FLAG>(g_savedControls);
+                            }
+                            g_controlsDisabled = false;
+                            LOG("GAMEPAD: LB released — controls restored (0x{:08X})", g_savedControls);
+                        } else {
+                            LOG("GAMEPAD: LB released");
+                        }
+                    }
+                    continue;
+                }
+
+                // Tween menu (menu en croix) ouvert : D-pad navigue les directions
+                if (g_tweenForeground.load(std::memory_order_relaxed) && btn->IsDown() && !g_lbHeld.load()) {
+                    int targetFrame = 0;
+                    if      (gpCode == RE::BSWin32GamepadDevice::Key::kUp)    targetFrame = 2;
+                    else if (gpCode == RE::BSWin32GamepadDevice::Key::kLeft)  targetFrame = 3;
+                    else if (gpCode == RE::BSWin32GamepadDevice::Key::kRight) targetFrame = 4;
+                    else if (gpCode == RE::BSWin32GamepadDevice::Key::kDown)  targetFrame = 5;
+                    if (targetFrame > 0) {
+                        int prev = g_lastTweenFrame.exchange(targetFrame);
+                        if (prev != targetFrame) {
+                            LOG("GAMEPAD: D-pad tween direction frame={}", targetFrame);
+                            AnnounceTweenNavKey(targetFrame);
+                        }
+                    }
+                }
+
+                // Charger les mappings configurables (une fois par frame suffit)
+                const auto keyNext     = GpIndexToCode(g_gpIdxScanNext.load());
+                const auto keyPrev     = GpIndexToCode(g_gpIdxScanPrev.load());
+                const auto keyAnnounce = GpIndexToCode(g_gpIdxScanAnnounce.load());
+                const auto keyMapSetRef= GpIndexToCode(g_gpIdxMapSetRef.load());
+                const auto keyPrimary  = GpIndexToCode(g_gpIdxPrimary.load());
+                const auto keyTeleport = GpIndexToCode(g_gpIdxTeleport.load());
+                const auto keyVitals   = GpIndexToCode(g_gpIdxVitals.load());
+                const auto keySneak    = GpIndexToCode(g_gpIdxSneak.load());
+                const auto keyPOV      = GpIndexToCode(g_gpIdxPOV.load());
+                const auto keyLockEnemy= GpIndexToCode(g_gpIdxLockEnemy.load());
+
+                // Si LB est maintenu, intercepter les combos
+                if (g_lbHeld.load() && btn->IsDown()) {
+                    g_lbWasModifier.store(true);
+
+                    // --- Carte ouverte : combos spécifiques map ---
+                    if (g_mapOpen.load()) {
+                        if (gpCode == keyNext) {
+                            LOG("GAMEPAD MAP: LB+Next → MapNextMarker");
+                            MapNextMarker();
+                            continue;
+                        }
+                        if (gpCode == keyPrev) {
+                            LOG("GAMEPAD MAP: LB+Prev → MapPrevMarker");
+                            MapPrevMarker();
+                            continue;
+                        }
+                        if (gpCode == keyAnnounce) {
+                            LOG("GAMEPAD MAP: LB+Announce → MapAnnounceDetails");
+                            MapAnnounceDetails();
+                            continue;
+                        }
+                        if (gpCode == keyMapSetRef) {
+                            LOG("GAMEPAD MAP: LB+SetRef → MapSetReference");
+                            MapSetReference();
+                            continue;
+                        }
+                        if (gpCode == keyPrimary) {
+                            LOG("GAMEPAD MAP: LB+Primary → MapFastTravel");
+                            MapFastTravel();
+                            continue;
+                        }
+                        // Les autres boutons ne sont pas interceptés sur la carte
+                        continue;
+                    }
+
+                    // --- Autres menus ouverts : ignorer les combos scanner ---
+                    if (IsAnyMenuOpen()) {
+                        LOG("GAMEPAD: LB+0x{:04X} ignored (menu open)", gpCode);
+                        continue;
+                    }
+
+                    // --- Hors menu : combos scanner ---
+                    if (gpCode == keyNext) {
+                        LOG("GAMEPAD: LB+Next → ScannerNextObject");
+                        ScannerNextObject();
+                        continue;
+                    }
+                    if (gpCode == keyPrev) {
+                        LOG("GAMEPAD: LB+Prev → ScannerPrevObject");
+                        ScannerPrevObject();
+                        continue;
+                    }
+                    if (gpCode == keyAnnounce) {
+                        LOG("GAMEPAD: LB+Announce → ScannerAnnounceCurrent");
+                        ScannerAnnounceCurrent();
+                        continue;
+                    }
+                    if (gpCode == keyPrimary) {
+                        LOG("GAMEPAD: LB+Primary → ToggleAutoWalk");
+                        ToggleAutoWalk();
+                        continue;
+                    }
+                    if (gpCode == keyVitals) {
+                        LOG("GAMEPAD: LB+Vitals → AnnouncePlayerVitals");
+                        AnnouncePlayerVitals();
+                        continue;
+                    }
+                    if (gpCode == keyTeleport) {
+                        LOG("GAMEPAD: LB+Teleport → ScannerTeleport");
+                        ScannerTeleport();
+                        continue;
+                    }
+                    if (gpCode == keySneak) {
+                        LOG("GAMEPAD: LB+Sneak → ToggleSneak");
+                        ToggleSneakGamepad();
+                        continue;
+                    }
+                    if (gpCode == keyPOV) {
+                        LOG("GAMEPAD: LB+POV → TogglePOV");
+                        auto* camera = RE::PlayerCamera::GetSingleton();
+                        if (camera) {
+                            if (camera->IsInFirstPerson()) {
+                                camera->ForceThirdPerson();
+                                Speak(L"Third person");
+                            } else {
+                                camera->ForceFirstPerson();
+                                Speak(L"First person");
+                            }
+                        }
+                        continue;
+                    }
+
+                    LOG("GAMEPAD: LB+0x{:04X} — combo non reconnu", gpCode);
+                }
+
+                // Lock enemy (appui seul sans LB)
+                if (gpCode == keyLockEnemy && btn->IsDown() && !g_lbHeld.load()) {
+                    if (!IsAnyMenuOpen()) {
+                        LOG("GAMEPAD: LockEnemy → LockNearestEnemy");
+                        LockNearestEnemy();
+                    }
+                    continue;
+                }
+
+                // Gamepad sans LB : ne pas traiter ici, laisser le jeu gérer
+                continue;
+            }
+
+            // --- Clavier : traitement existant (inchangé) ---
+            if (!btn->IsDown()) continue;
 
             auto code = btn->GetIDCode();
 
@@ -462,6 +856,13 @@ public:
                     continue;
                 }
             }
+
+            // N = toggle quest audio navigation (DÉSACTIVÉ — moins précis que le mod de Diokiri)
+            // Le code reste en place dans quest_nav.h pour reprise ultérieure
+            // if (code == RE::BSKeyboardDevice::Keys::kN) {
+            //     ToggleQuestNav();
+            //     continue;
+            // }
 
             // F6 = racesex diagnostic
             if (code == RE::BSKeyboardDevice::Keys::kF6) {
@@ -718,9 +1119,13 @@ public:
                     continue;
                 }
                 if (code == RE::BSKeyboardDevice::Keys::kEnd) {
-                    bool alt = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
-                    if (alt) MapCycleSubFilter();
-                    else MapCycleFilter();
+                    MapCycleFilter();
+                    continue;
+                }
+                // Home + Flèche Bas/Haut = sous-filtre
+                if ((code == RE::BSKeyboardDevice::Keys::kDown || code == RE::BSKeyboardDevice::Keys::kUp) &&
+                    (GetAsyncKeyState(VK_HOME) & 0x8000) != 0) {
+                    MapCycleSubFilter();
                     continue;
                 }
                 if (code == RE::BSKeyboardDevice::Keys::kEnter) {
@@ -1136,6 +1541,27 @@ namespace MCMNative {
         LOG("MCM: teleport range = {:.0f}", range);
     }
 
+    void SetAutoAimEnabled(RE::StaticFunctionTag*, bool enabled) {
+        g_mcmAutoAimEnabled.store(enabled);
+        LOG("MCM: auto aim = {}", enabled);
+        // Si on désactive la visée auto en cours d'utilisation, arrêter le tracking
+        if (!enabled) {
+            StopAutoAim();
+        }
+    }
+
+    // Gamepad button configuration (valeur = index dans g_gamepadButtonCodes)
+    void SetGpScanNext(RE::StaticFunctionTag*, int idx)    { g_gpIdxScanNext.store(idx);    LOG("MCM gp: ScanNext={}", idx); }
+    void SetGpScanPrev(RE::StaticFunctionTag*, int idx)    { g_gpIdxScanPrev.store(idx);    LOG("MCM gp: ScanPrev={}", idx); }
+    void SetGpScanAnnounce(RE::StaticFunctionTag*, int idx){ g_gpIdxScanAnnounce.store(idx); LOG("MCM gp: ScanAnnounce={}", idx); g_gamepadNeedsRemap.store(true); }
+    void SetGpMapSetRef(RE::StaticFunctionTag*, int idx)   { g_gpIdxMapSetRef.store(idx);   LOG("MCM gp: MapSetRef={}", idx); }
+    void SetGpPrimary(RE::StaticFunctionTag*, int idx)     { g_gpIdxPrimary.store(idx);     LOG("MCM gp: Primary={}", idx); g_gamepadNeedsRemap.store(true); }
+    void SetGpTeleport(RE::StaticFunctionTag*, int idx)    { g_gpIdxTeleport.store(idx);    LOG("MCM gp: Teleport={}", idx); }
+    void SetGpVitals(RE::StaticFunctionTag*, int idx)      { g_gpIdxVitals.store(idx);      LOG("MCM gp: Vitals={}", idx); g_gamepadNeedsRemap.store(true); }
+    void SetGpSneak(RE::StaticFunctionTag*, int idx)       { g_gpIdxSneak.store(idx);       LOG("MCM gp: Sneak={}", idx); }
+    void SetGpPOV(RE::StaticFunctionTag*, int idx)         { g_gpIdxPOV.store(idx);         LOG("MCM gp: POV={}", idx); }
+    void SetGpLockEnemy(RE::StaticFunctionTag*, int idx)   { g_gpIdxLockEnemy.store(idx);   LOG("MCM gp: LockEnemy={}", idx); }
+
     bool BindPapyrusFunctions(RE::BSScript::IVirtualMachine* vm) {
         vm->RegisterFunction("SetStealthAnnounce",  SCRIPT_NAME, SetStealthAnnounce);
         vm->RegisterFunction("SetTeleportEnabled",   SCRIPT_NAME, SetTeleportEnabled);
@@ -1150,6 +1576,17 @@ namespace MCMNative {
         vm->RegisterFunction("SetKeyTeleport",       SCRIPT_NAME, SetKeyTeleport);
         vm->RegisterFunction("SetScanRange",         SCRIPT_NAME, SetScanRange);
         vm->RegisterFunction("SetTeleportRange",     SCRIPT_NAME, SetTeleportRange);
+        vm->RegisterFunction("SetAutoAimEnabled",    SCRIPT_NAME, SetAutoAimEnabled);
+        vm->RegisterFunction("SetGpScanNext",        SCRIPT_NAME, SetGpScanNext);
+        vm->RegisterFunction("SetGpScanPrev",        SCRIPT_NAME, SetGpScanPrev);
+        vm->RegisterFunction("SetGpScanAnnounce",    SCRIPT_NAME, SetGpScanAnnounce);
+        vm->RegisterFunction("SetGpMapSetRef",       SCRIPT_NAME, SetGpMapSetRef);
+        vm->RegisterFunction("SetGpPrimary",         SCRIPT_NAME, SetGpPrimary);
+        vm->RegisterFunction("SetGpTeleport",        SCRIPT_NAME, SetGpTeleport);
+        vm->RegisterFunction("SetGpVitals",          SCRIPT_NAME, SetGpVitals);
+        vm->RegisterFunction("SetGpSneak",           SCRIPT_NAME, SetGpSneak);
+        vm->RegisterFunction("SetGpPOV",             SCRIPT_NAME, SetGpPOV);
+        vm->RegisterFunction("SetGpLockEnemy",       SCRIPT_NAME, SetGpLockEnemy);
         LOG("MCM native functions registered on {}", SCRIPT_NAME);
         return true;
     }
@@ -1197,6 +1634,7 @@ SKSEPluginLoad(const SKSE::LoadInterface* skse) {
             InstallSleepWaitAdvanceMovieHook();
             InstallTrainingAdvanceMovieHook();
             StartBowAutoAimPolling();
+            RemapGamepadControls();
             Speak(L"Plugin loaded");
             LOG("kDataLoaded: listeners registered");
         }
@@ -1205,12 +1643,20 @@ SKSEPluginLoad(const SKSE::LoadInterface* skse) {
             RegisterInputListener();
         }
 
-        // Après chargement d'une sauvegarde : remettre SpeedMult à 100
+        // Après chargement d'une sauvegarde : remettre SpeedMult à 100 + re-remap sprint
         if (msg->type == SKSE::MessagingInterface::kPostLoadGame) {
             AutoWalkSafetyReset();
             // PathfindingSafetyReset();  // Désactivé temporairement
+            RemapGamepadControls();  // re-appliquer au cas où le jeu recharge les contrôles
+            // Restaurer les contrôles gamepad si bloqués
+            if (g_controlsDisabled) {
+                auto* cm = RE::ControlMap::GetSingleton();
+                if (cm) cm->enabledControls = static_cast<RE::UserEvents::USER_EVENT_FLAG>(g_savedControls);
+                g_controlsDisabled = false;
+            }
+            g_lbHeld.store(false);
             RegisterShoutListener();
-            LOG("kPostLoadGame: autowalk/pathfinding safety reset, shout listener registered");
+            LOG("kPostLoadGame: autowalk/pathfinding safety reset, sprint remap reapplied, shout listener registered");
         }
     });
 

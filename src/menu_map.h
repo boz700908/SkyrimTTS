@@ -810,6 +810,55 @@ static void MapCycleFilter() {
     Speak(msg);
 }
 
+// --- Cycler les filtres dans l'autre sens (pour la manette) ---
+static void MapCyclePrevFilter() {
+    if (!g_mapReady.load()) {
+        Speak(L"Loading markers");
+        return;
+    }
+
+    int count = static_cast<int>(MapFilter::COUNT);
+    int prev = (static_cast<int>(g_mapFilter) - 1 + count) % count;
+    g_mapFilter = static_cast<MapFilter>(prev);
+    g_mapSubFilter = MapSubFilter::AllTypes;  // reset sous-filtre
+
+    ApplyMapFilter();
+
+    std::wstring msg = g_mapFilterNames[static_cast<int>(g_mapFilter)];
+    msg += L", " + std::to_wstring(g_mapFiltered.size()) + L" markers";
+    if (!g_mapFiltered.empty()) {
+        int idx = g_mapFiltered[0];
+        if (idx >= 0 && idx < static_cast<int>(g_mapMarkers.size())) {
+            msg += L". " + FormatMapMarkerAnnounce(g_mapMarkers[idx]);
+        }
+    }
+    Speak(msg);
+}
+
+// --- Cycler les sous-filtres dans l'autre sens (pour la manette) ---
+static void MapCyclePrevSubFilter() {
+    if (!g_mapReady.load()) {
+        Speak(L"Loading markers");
+        return;
+    }
+
+    int count = static_cast<int>(MapSubFilter::COUNT);
+    int prev = (static_cast<int>(g_mapSubFilter) - 1 + count) % count;
+    g_mapSubFilter = static_cast<MapSubFilter>(prev);
+
+    ApplyMapFilter();
+
+    std::wstring msg = g_mapSubFilterNames[static_cast<int>(g_mapSubFilter)];
+    msg += L", " + std::to_wstring(g_mapFiltered.size()) + L" markers";
+    if (!g_mapFiltered.empty()) {
+        int idx = g_mapFiltered[0];
+        if (idx >= 0 && idx < static_cast<int>(g_mapMarkers.size())) {
+            msg += L". " + FormatMapMarkerAnnounce(g_mapMarkers[idx]);
+        }
+    }
+    Speak(msg);
+}
+
 // --- Voyage rapide via Papyrus (bypass GFx) ---
 // Premier Entrée = demande confirmation, deuxième Entrée = confirme
 static void MapFastTravel() {

@@ -79,6 +79,15 @@ static void HUDAdvanceMovie_Hook(RE::IMenu* a_this, float a_interval, std::uint3
     // Appeler l'original d'abord (mise à jour normale du HUD)
     if (g_origHUDAdvanceMovie) g_origHUDAdvanceMovie(a_this, a_interval, a_currentTime);
 
+    // Gamepad : flag pour demander un remap depuis le HUD hook
+    {
+        static int s_hudRemapChecks = 0;
+        if (s_hudRemapChecks < 60) {
+            s_hudRemapChecks++;
+            if (s_hudRemapChecks % 10 == 0) g_gamepadNeedsRemap.store(true);
+        }
+    }
+
     // Throttle : vérifier toutes les ~3 frames (~50ms à 60fps)
     static int s_frameSkip = 0;
     if (++s_frameSkip < 3) return;
