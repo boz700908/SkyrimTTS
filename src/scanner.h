@@ -728,7 +728,25 @@ static void DoScanInternal() {
             // Filtrer : ne garder que les quêtes actives (cochées dans le journal)
             if (!isActive) continue;
 
-            // Parcourir les cibles de l'objectif pour trouver la référence
+            // Parcourir les cibles de l'objectif pour trouver la référence.
+            // Système en 2 passes (inchangé pour le cas normal) :
+            //   PASS 0 : essayer les targets avec vérification CTDA (comportement historique)
+            //   PASS 1 : si AUCUN target n'a passé les CTDA, retenter sans CTDA
+            //            → filet de sécurité pour les quêtes dont tous les targets ont des
+            //              CTDA qui échouent (ex: Pierre de dragon à Bleak Falls Barrow,
+            //              où le target est une ref qui n'est pas encore spawn dans le monde)
+            //            → pas de régression : le flag questTargetResolved passe à true dès
+            //              qu'un target est pushé, ce qui empêche la boucle externe de
+            //              passer au PASS 1. La boucle interne des targets, elle, continue
+            //              jusqu'au bout comme avant (la déduplication par nom gère les
+            //              doublons éventuels entre targets du même objective).
+            bool questTargetResolved = false;
+            for (int pass = 0; pass < 2 && !questTargetResolved; pass++) {
+                const bool ignoreCTDA = (pass == 1);
+                if (ignoreCTDA) {
+                    LOG("Scanner: objective idx={} pass 0 failed for all targets, retry without CTDA", questObj->index);
+                }
+
             for (uint32_t t = 0; t < questObj->numTargets; t++) {
                 auto* target = questObj->targets[t];
                 if (!target) {
@@ -738,13 +756,14 @@ static void DoScanInternal() {
 
                 // Résoudre l'alias pour obtenir la référence
                 uint32_t aliasIdx = target->alias;
-                LOG("Scanner: target[{}] alias field={} (quest has {} aliases)", t, aliasIdx, quest->aliases.size());
-
-                // Lister tous les alias pour debug
-                for (uint32_t a = 0; a < quest->aliases.size(); a++) {
-                    auto* dbgAlias = quest->aliases[a];
-                    if (dbgAlias) {
-                        LOG("Scanner:   aliases[{}] name='{}' id={}", a, dbgAlias->aliasName.c_str(), dbgAlias->aliasID);
+                // Le log des aliases est verbeux — on ne le fait qu'au PASS 0 pour éviter les doublons
+                if (!ignoreCTDA) {
+                    LOG("Scanner: target[{}] alias field={} (quest has {} aliases)", t, aliasIdx, quest->aliases.size());
+                    for (uint32_t a = 0; a < quest->aliases.size(); a++) {
+                        auto* dbgAlias = quest->aliases[a];
+                        if (dbgAlias) {
+                            LOG("Scanner:   aliases[{}] name='{}' id={}", a, dbgAlias->aliasName.c_str(), dbgAlias->aliasID);
+                        }
                     }
                 }
 
@@ -754,25 +773,29 @@ static void DoScanInternal() {
                 quest->CreateRefHandleByAliasID(refHandle, aliasIdx);
 
                 if (!refHandle) {
-                    LOG("Scanner: alias {} - CreateRefHandleByAliasID returned empty handle", aliasIdx);
+                    if (!ignoreCTDA) LOG("Scanner: alias {} - CreateRefHandleByAliasID returned empty handle", aliasIdx);
                     continue;
                 }
 
                 auto refSmartPtr = refHandle.get();
                 if (!refSmartPtr) {
-                    LOG("Scanner: alias {} - handle.get() returned null", aliasIdx);
+                    if (!ignoreCTDA) LOG("Scanner: alias {} - handle.get() returned null", aliasIdx);
                     continue;
                 }
                 auto* targetRef = refSmartPtr.get();
 
-                // Vérifier les conditions CTDA du target (comme le fait la boussole)
-                // Seul le target dont les conditions sont remplies est affiché
-                // On passe la ref cible en second paramètre pour les conditions ref-based
-                if (target->conditions.head != nullptr) {
+                // PASS 0 : vérifier les CTDA (comportement historique).
+                // PASS 1 : on saute cette vérification pour accepter n'importe quel alias résolu.
+                if (!ignoreCTDA && target->conditions.head != nullptr) {
                     if (!target->conditions.IsTrue(player, targetRef)) {
                         LOG("Scanner: target[{}] conditions not met, skipping", t);
                         continue;
                     }
+                }
+                if (ignoreCTDA) {
+                    LOG("Scanner: target[{}] accepted via PASS 1 (CTDA ignored) ref='{}' FormID={:08X}",
+                        t, targetRef->GetDisplayFullName() ? targetRef->GetDisplayFullName() : "?",
+                        targetRef->GetFormID());
                 }
 
                 auto refPos = targetRef->GetPosition();
@@ -958,9 +981,11 @@ static void DoScanInternal() {
                 }
 
                 g_scannedAll.push_back(std::move(obj));
+                questTargetResolved = true;  // au moins un target a abouti → pas de PASS 1 nécessaire
                 LOG("Scanner: quest objective '{}' at distance {} (target FormID={:08X})",
                     objText, dist, targetRef->GetFormID());
             }
+            }  // fin de la boucle des 2 passes (CTDA puis fallback sans CTDA)
         }
     } catch (...) {
         LOG("Scanner: exception while scanning quest objectives");
@@ -1388,10 +1413,17 @@ static RE::NiPoint3 GetActorCenter(RE::Actor* actor);
 static void AimAtPosition(RE::PlayerCharacter* player, const RE::NiPoint3& targetPos, bool compensateGravity, const RE::NiPoint3* targetVelocity);
 
 // Rafraîchir le target de quête courant (conditions CTDA ont pu changer)
+// IMPORTANT : utilise la MÊME logique que le scanner principal pour les distances :
+//   - Cross-cell : résolution via worldLocMarker (l'entrée du lieu en extérieur)
+//   - Distance 2D (X/Y) au lieu de 3D, comme la carte
+// Sinon on mélange les coordonnées de cellules intérieures et extérieures (référentiels
+// différents) → distances absurdes (47000+ unités au lieu de 5700).
 static void RefreshQuestTarget(ScannedObject& obj) {
     auto* player = RE::PlayerCharacter::GetSingleton();
     if (!player) return;
     auto playerPos = player->GetPosition();
+    auto* playerCell = player->GetParentCell();
+    if (!playerCell) return;
 
     auto& objectives = REL::RelocateMemberIfNewer<RE::BSTArray<RE::BGSInstancedQuestObjective>>(
         SKSE::RUNTIME_SSE_1_6_629, player, 0x580, 0x588);
@@ -1411,6 +1443,12 @@ static void RefreshQuestTarget(ScannedObject& obj) {
         if (objNameW != obj.name) continue;
 
         // Trouvé l'objectif correspondant — chercher le bon target
+        // Système en 2 passes (identique au scanner principal) :
+        //   PASS 0 : target avec CTDA vérifiées (comportement historique)
+        //   PASS 1 : retenter sans CTDA si aucun target n'a passé (ex: Pierre de dragon)
+        bool refreshed = false;
+        for (int pass = 0; pass < 2 && !refreshed; pass++) {
+            const bool ignoreCTDA = (pass == 1);
         for (uint32_t t = 0; t < questObj->numTargets; t++) {
             auto* target = questObj->targets[t];
             if (!target) continue;
@@ -1423,22 +1461,63 @@ static void RefreshQuestTarget(ScannedObject& obj) {
             auto* targetRef = refPtr.get();
             if (!targetRef) continue;
 
-            // Vérifier les conditions CTDA
-            if (target->conditions.head != nullptr) {
+            // Vérifier les conditions CTDA (sauf en PASS 1 fallback)
+            if (!ignoreCTDA && target->conditions.head != nullptr) {
                 if (!target->conditions.IsTrue(player, targetRef)) continue;
             }
 
-            // Ce target est le bon — mettre à jour
+            // === Résolution de la position : même logique que le scanner principal ===
             auto refPos = targetRef->GetPosition();
+            auto* refCell = targetRef->GetParentCell();
+            RE::NiPoint3 actualPos = refPos;
+
+            // Si la cible est dans une cellule différente, résoudre via worldLocMarker
+            // (l'entrée du lieu dans Tamriel) — sinon les coordonnées sont dans des
+            // référentiels différents et la distance n'a aucun sens.
+            if (refCell && refCell != playerCell) {
+                bool isInterior = refCell->IsInteriorCell();
+                if (!isInterior) {
+                    // refCell est extérieure mais différente — utiliser sa position directe
+                } else {
+                    // refCell intérieure → remonter la hiérarchie des lieux pour
+                    // trouver le worldLocMarker en extérieur
+                    auto* targetLocation = refCell->GetLocation();
+                    bool resolved = false;
+                    for (auto* loc = targetLocation; loc && !resolved; loc = loc->parentLoc) {
+                        if (loc->worldLocMarker) {
+                            auto markerPtr = loc->worldLocMarker.get();
+                            if (markerPtr) {
+                                actualPos = markerPtr->GetPosition();
+                                resolved = true;
+                                LOG("Scanner: refresh resolved via worldLocMarker loc='{}' pos=({:.0f},{:.0f},{:.0f})",
+                                    loc->GetFullName() ? loc->GetFullName() : "?",
+                                    actualPos.x, actualPos.y, actualPos.z);
+                            }
+                        }
+                    }
+                    if (!resolved) {
+                        LOG("Scanner: refresh - no worldLocMarker for cross-cell target, distance may be wrong");
+                    }
+                }
+            }
+
+            // Distance 2D (X/Y), cohérent avec la carte et le scan principal
+            float dx = playerPos.x - actualPos.x;
+            float dy = playerPos.y - actualPos.y;
+            float dist2D = std::sqrt(dx * dx + dy * dy);
+
             obj.formID = targetRef->GetFormID();
-            obj.lastKnownPos = refPos;
-            auto diff = playerPos - refPos;
-            obj.distance = diff.Length();
-            obj.zDiff = refPos.z - playerPos.z;
-            LOG("Scanner: quest target refreshed to FormID={:08X} dist={:.0f}", obj.formID, obj.distance);
-            return;
+            obj.lastKnownPos = actualPos;
+            obj.distance = dist2D;
+            obj.zDiff = actualPos.z - playerPos.z;
+            LOG("Scanner: quest target refreshed to FormID={:08X} dist={:.0f} (2D, actualPos=({:.0f},{:.0f},{:.0f})){}",
+                obj.formID, dist2D, actualPos.x, actualPos.y, actualPos.z,
+                ignoreCTDA ? " [PASS 1 — CTDA ignored]" : "");
+            refreshed = true;
+            break;  // sort de la boucle des targets
         }
-        return;  // objectif trouvé mais pas de target valide
+        }  // fin de la boucle des 2 passes
+        return;  // objectif trouvé (avec ou sans target valide) → on arrête de chercher
     }
 }
 
@@ -2164,6 +2243,124 @@ static void StartAutoAimTracking() {
 
 // Chercher la cible de quête HUD la plus proche (même cellule, <2000 unités)
 // Retourne true si trouvée, remplit outPos, outName, outDist
+// Lit le heading de la boussole pour le marqueur de quête actif depuis le HUD.
+// Retourne true si trouvé, et écrit l'angle (en degrés, 0=nord, 90=est, etc.) dans outHeading.
+// C'est la direction authentique calculée par Skyrim, qui marche pour TOUTES les distances.
+static bool ReadQuestCompassHeading(float& outHeading) {
+    auto* ui = RE::UI::GetSingleton();
+    if (!ui) return false;
+    auto hudMenu = ui->GetMenu(RE::HUDMenu::MENU_NAME);
+    if (!hudMenu || !hudMenu->uiMovie) return false;
+
+    RE::GFxValue hudRoot;
+    if (!hudMenu->uiMovie->GetVariable(&hudRoot, "_root.HUDMovieBaseInstance")) return false;
+    if (!SafeIsObject(hudRoot)) return false;
+
+    RE::GFxValue dataArr;
+    if (!hudRoot.GetMember("CompassTargetDataA", &dataArr) || !SafeIsArray(dataArr)) return false;
+
+    RE::GFxValue qtVal, qdVal;
+    float qt = -1.0f, qd = -1.0f;
+    if (hudRoot.GetMember("CompassMarkerQuest", &qtVal) && SafeIsNumber(qtVal))
+        qt = static_cast<float>(SafeGetNumber(qtVal));
+    if (hudRoot.GetMember("CompassMarkerQuestDoor", &qdVal) && SafeIsNumber(qdVal))
+        qd = static_cast<float>(SafeGetNumber(qdVal));
+
+    uint32_t arrSize = SafeGetArraySize(dataArr);
+    for (uint32_t ci = 0; ci + 3 < arrSize; ci += 4) {
+        RE::GFxValue hVal, tVal;
+        dataArr.GetElement(ci, &hVal);
+        dataArr.GetElement(ci + 2, &tVal);
+        if (!SafeIsNumber(tVal)) continue;
+        float tp = static_cast<float>(SafeGetNumber(tVal));
+        if ((tp == qt || tp == qd) && SafeIsNumber(hVal)) {
+            outHeading = static_cast<float>(SafeGetNumber(hVal));
+            return true;
+        }
+    }
+    return false;
+}
+
+// Cherche la position de la première cible de quête active affichée à la boussole.
+// Contrairement à FindNearestQuestTarget, cette fonction :
+//   - N'a PAS de limite de distance
+//   - Gère les cibles cross-cell via worldLocMarker (comme le scanner Quests)
+//   - Retourne la position 2D de la "porte d'entrée" si la cible est dans une autre cellule
+// Utilisée pour la navigation audio (quest_nav.h).
+static bool GetActiveQuestNavTarget(RE::PlayerCharacter* player, RE::NiPoint3& outPos, std::wstring& outName) {
+    if (!player) return false;
+    auto* playerCell = player->GetParentCell();
+    if (!playerCell) return false;
+
+    auto& objectives = REL::RelocateMemberIfNewer<RE::BSTArray<RE::BGSInstancedQuestObjective>>(
+        SKSE::RUNTIME_SSE_1_6_629, player, 0x580, 0x588);
+
+    for (auto& instObj : objectives) {
+        if (!instObj.Objective) continue;
+        if (instObj.InstanceState != RE::QUEST_OBJECTIVE_STATE::kDisplayed) continue;
+
+        auto* questObj = instObj.Objective;
+        auto* quest = questObj->ownerQuest;
+        if (!quest || !quest->IsActive()) continue;
+
+        // Seulement les quêtes affichées au HUD (suivies par le joueur)
+        auto rawFlags = quest->data.flags.underlying();
+        bool displayedInHUD = (rawFlags & 0x20) != 0;
+        if (!displayedInHUD) continue;
+
+        for (uint32_t t = 0; t < questObj->numTargets; t++) {
+            auto* target = questObj->targets[t];
+            if (!target) continue;
+
+            RE::ObjectRefHandle refHandle;
+            quest->CreateRefHandleByAliasID(refHandle, target->alias);
+            if (!refHandle) continue;
+            auto refSmartPtr = refHandle.get();
+            if (!refSmartPtr) continue;
+            auto* targetRef = refSmartPtr.get();
+
+            // Vérifier les conditions CTDA (boussole utilise la même logique)
+            if (target->conditions.head != nullptr) {
+                if (!target->conditions.IsTrue(player, targetRef)) continue;
+            }
+
+            auto refPos = targetRef->GetPosition();
+            auto* refCell = targetRef->GetParentCell();
+            RE::NiPoint3 actualPos = refPos;
+
+            // Si cellule différente : essayer worldLocMarker (entrée du lieu)
+            if (refCell && refCell != playerCell) {
+                bool isInterior = refCell->IsInteriorCell();
+                if (!isInterior) {
+                    auto* targetLocation = refCell->GetLocation();
+                    bool resolved = false;
+                    for (auto* loc = targetLocation; loc && !resolved; loc = loc->parentLoc) {
+                        if (loc->worldLocMarker) {
+                            auto markerPtr = loc->worldLocMarker.get();
+                            if (markerPtr) {
+                                actualPos = markerPtr->GetPosition();
+                                resolved = true;
+                            }
+                        }
+                    }
+                }
+            }
+
+            outPos = actualPos;
+            // Nom : objectif si disponible, sinon nom de la quête
+            if (questObj->displayText.size() > 0) {
+                outName = Utf8ToWString(ResolveQuestAliases(questObj->displayText.c_str(), quest).c_str());
+            } else if (quest->GetFullName()) {
+                outName = Utf8ToWString(quest->GetFullName());
+            } else {
+                outName = L"Quest target";
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
 static bool FindNearestQuestTarget(RE::PlayerCharacter* player, RE::NiPoint3& outPos, std::wstring& outName, float& outDist) {
     auto playerPos = player->GetPosition();
     auto* playerCell = player->GetParentCell();
@@ -2445,6 +2642,12 @@ static void StartBowAutoAimPolling() {
     g_bowAimThread = std::jthread([](std::stop_token st) {
         while (!st.stop_requested()) {
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+            // Désactivé via MCM → ne rien faire
+            if (!g_mcmAutoAimEnabled.load()) {
+                g_wasBowDrawn = false;
+                continue;
+            }
 
             bool bowDrawn = IsBowDrawn();
 
