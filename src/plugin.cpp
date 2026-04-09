@@ -1,6 +1,7 @@
 #include "common.h"
 #include "menu_inventory.h"
 #include "menu_container.h"
+#include "menu_quickloot.h"
 #include "menu_dialogue.h"
 #include "menu_mcm.h"
 #include "menu_journal.h"
@@ -36,6 +37,13 @@ static std::atomic_bool g_gamepadDetected{false};       // true dès qu'on reço
 static std::atomic_int  g_gamepadRemapCount{0};         // combien de fois on a appliqué le remap
 static std::uint32_t g_savedControls = 0;               // état des contrôles sauvegardé avant LB
 static bool g_controlsDisabled = false;                  // true si on a désactivé les contrôles
+
+// Sauvegarde dynamique du mapping YButton vanilla dans kItemMenu quand LB est
+// maintenu dans un menu item (inventaire/conteneur/marchand/gift). On désactive
+// temporairement YButton pour que notre combo LB+Y déclenche nos stats sans que
+// le moteur Skyrim mette aussi l'item en favori. Restauré au relâchement de LB.
+static std::uint16_t g_savedItemMenuYButtonKey = 0xFFFF;  // 0xFFFF = pas sauvegardé
+static bool          g_itemMenuYButtonDisabled = false;
 
 // ---------------- Menu open/close listener ----------------
 
@@ -132,6 +140,27 @@ public:
             } else {
                 g_containerOpen.store(false);
                 StopContainerPolling();
+            }
+        }
+
+        // QuickLoot IE — menu custom (nom probable "LootMenu", à confirmer via logs)
+        if (e->menuName == RE::BSFixedString(QUICKLOOT_MENU_NAME)) {
+            LOG("QuickLoot: MenuOpenCloseEvent match, opening={}", e->opening);
+            if (e->opening) {
+                g_quickLootOpen.store(true);
+                g_lastQuickLootItemAnnounce.clear();
+                g_lastQuickLootItemName.clear();
+                g_lastQuickLootItemCount = 0;
+                g_lastQuickLootSelectedIndex = -1;
+                // Pas de "Loot menu open" parlé car le menu apparaît dès que
+                // le crosshair survole un conteneur, ce serait très verbeux.
+                // On lit directement le premier item à la place.
+                DiagnoseQuickLootNow();
+                QueueQuickLootRead();
+                StartQuickLootPolling();
+            } else {
+                g_quickLootOpen.store(false);
+                StopQuickLootPolling();
             }
         }
 
@@ -493,6 +522,24 @@ static bool RemapGamepadControls() {
                 mapping.inputKey = 0xFFFF;
                 changed = true;
             }
+            // Dans les contextes d'inventaire / item menus : désactiver LB vanilla
+            // pour éviter les conflits avec notre modificateur. LB est utilisé par
+            // Skyrim vanilla pour changer de catégorie/page dans ces menus, ce qui
+            // entre en conflit avec notre combo LB+X. On bloque juste LB, RB reste
+            // actif pour la navigation vanilla si besoin.
+            if (ctxIdx == static_cast<size_t>(RE::UserEvents::INPUT_CONTEXT_ID::kInventory) ||
+                ctxIdx == static_cast<size_t>(RE::UserEvents::INPUT_CONTEXT_ID::kItemMenu) ||
+                ctxIdx == static_cast<size_t>(RE::UserEvents::INPUT_CONTEXT_ID::kFavorites)) {
+                constexpr auto kLBCode = static_cast<std::uint16_t>(
+                    RE::BSWin32GamepadDevice::Key::kLeftShoulder);
+                if (mapping.inputKey == kLBCode) {
+                    LOG("GAMEPAD ITEM: Disabling LB event '{}' in ctx={}",
+                        mapping.eventID.c_str(), ctxIdx);
+                    mapping.inputKey = 0xFFFF;
+                    changed = true;
+                }
+            }
+
             // Dans le contexte CARTE uniquement : désactiver les boutons utilisés par nos combos
             if (ctxIdx == kMapCtxId) {
                 for (std::uint16_t blockedKey : mapBlockedKeys) {
@@ -503,6 +550,42 @@ static bool RemapGamepadControls() {
                         changed = true;
                         break;
                     }
+                }
+
+                // Désactiver la rotation/inclinaison de la caméra de carte via le
+                // joystick droit. Par défaut, le RStick fait bouger la caméra sur
+                // la carte, ce qui change le marqueur survolé et provoque des
+                // lectures NVDA parasites des villes/POI que l'utilisateur veut
+                // ignorer (il utilise notre scanner pour naviguer dans les
+                // marqueurs). Nos propres combos RStick (cycle des filtres) sont
+                // gérées en amont dans notre handler d'input, elles ne passent
+                // pas par le ControlMap et restent donc fonctionnelles.
+                if (mapping.eventID == RE::BSFixedString("MapLookMode") &&
+                    mapping.inputKey != 0xFFFF) {
+                    LOG("GAMEPAD MAP: Disabling MapLookMode (was 0x{:04X})", mapping.inputKey);
+                    mapping.inputKey = 0xFFFF;
+                    changed = true;
+                }
+                if (mapping.eventID == RE::BSFixedString("Rotate") &&
+                    mapping.inputKey != 0xFFFF) {
+                    LOG("GAMEPAD MAP: Disabling Rotate (was 0x{:04X})", mapping.inputKey);
+                    mapping.inputKey = 0xFFFF;
+                    changed = true;
+                }
+            }
+        }
+
+        // Dans le contexte CARTE uniquement : désactiver la touche clavier P vanilla
+        // (PlacePlayerMarker) pour qu'elle ne rentre pas en conflit avec notre
+        // MapPlaceCustomMarker. Le jeu n'essaiera plus de poser son propre marqueur
+        // à la position du curseur — seul notre système répond à P.
+        if (ctxIdx == kMapCtxId) {
+            for (auto& mapping : ctx->deviceMappings[RE::INPUT_DEVICE::kKeyboard]) {
+                if (mapping.eventID == RE::BSFixedString("PlacePlayerMarker") &&
+                    mapping.inputKey != 0xFFFF) {
+                    LOG("KEYBOARD MAP: Disabling PlacePlayerMarker (was 0x{:04X})", mapping.inputKey);
+                    mapping.inputKey = 0xFFFF;
+                    changed = true;
                 }
             }
         }
@@ -648,33 +731,107 @@ public:
 
                 // Tracker l'état de LB
                 if (gpCode == RE::BSWin32GamepadDevice::Key::kLeftShoulder) {
-                    if (btn->IsDown()) {
+                    // Sauvegarder les états AVANT la neutralisation car on va
+                    // potentiellement modifier l'event ci-dessous.
+                    const bool lbDown = btn->IsDown();
+                    const bool lbUp   = btn->IsUp();
+
+                    // Dans un menu item : "manger" l'event LB en mettant sa value
+                    // et heldDownSecs à 0. Le moteur Scaleform voit alors un event
+                    // neutre et ne déclenche pas son action vanilla (saut dans la
+                    // liste, changement de page, etc.). Notre propre tracking de
+                    // LB reste basé sur lbDown/lbUp sauvegardés juste au-dessus.
+                    // Le const sur a_event est un artefact de l'API SKSE — les
+                    // plugins peuvent modifier l'event en place pour "absorber"
+                    // un input.
+                    const bool inItemMenu =
+                        g_invOpen.load(std::memory_order_relaxed) ||
+                        g_containerOpen.load(std::memory_order_relaxed) ||
+                        g_barterOpen.load(std::memory_order_relaxed) ||
+                        g_favOpen.load(std::memory_order_relaxed) ||
+                        g_giftOpen.load(std::memory_order_relaxed) ||
+                        g_craftingOpen.load(std::memory_order_relaxed) ||
+                        g_magicOpen.load(std::memory_order_relaxed);
+                    if (inItemMenu) {
+                        auto* mutableBtn = const_cast<RE::ButtonEvent*>(btn);
+                        mutableBtn->value = 0.0f;
+                        mutableBtn->heldDownSecs = 0.0f;
+                    }
+
+                    if (lbDown) {
                         g_lbHeld.store(true);
                         g_lbWasModifier.store(false);
-                        // Désactiver les contrôles gameplay SEULEMENT hors menus
-                        // (Sur la carte, A et D-pad Left sont déjà remap via ControlMap)
-                        if (!IsAnyMenuOpen()) {
+                        // Désactiver les contrôles pendant LB pour que les boutons
+                        // de combo (A/B/X/Y/etc) ne déclenchent pas leur action
+                        // vanilla en parallèle de notre combo :
+                        // - Hors menus : masque gameplay (movement/fighting/...)
+                        // - Dans un menu item (inventaire/conteneur/marchand/favoris) :
+                        //   masque kMenu pour bloquer l'équipement, les favoris, etc.
+                        // - Sur la carte : on ne touche à rien (la carte a son propre
+                        //   remap ControlMap via RemapGamepadControls)
+                        {
                             auto* cm = RE::ControlMap::GetSingleton();
                             if (cm && !g_controlsDisabled) {
                                 g_savedControls = cm->enabledControls.underlying();
-                                constexpr auto mask = static_cast<std::uint32_t>(RE::UserEvents::USER_EVENT_FLAG::kMovement) |
-                                                      static_cast<std::uint32_t>(RE::UserEvents::USER_EVENT_FLAG::kActivate) |
-                                                      static_cast<std::uint32_t>(RE::UserEvents::USER_EVENT_FLAG::kFighting) |
-                                                      static_cast<std::uint32_t>(RE::UserEvents::USER_EVENT_FLAG::kSneaking) |
-                                                      static_cast<std::uint32_t>(RE::UserEvents::USER_EVENT_FLAG::kJumping) |
-                                                      static_cast<std::uint32_t>(RE::UserEvents::USER_EVENT_FLAG::kMainFour) |
-                                                      static_cast<std::uint32_t>(RE::UserEvents::USER_EVENT_FLAG::kPOVSwitch);
-                                cm->enabledControls = static_cast<RE::UserEvents::USER_EVENT_FLAG>(cm->enabledControls.underlying() & ~mask);
-                                g_controlsDisabled = true;
-                                LOG("GAMEPAD: LB pressed — controls disabled (saved=0x{:08X})", g_savedControls);
+                                std::uint32_t mask = 0;
+                                if (!IsAnyMenuOpen()) {
+                                    mask = static_cast<std::uint32_t>(RE::UserEvents::USER_EVENT_FLAG::kMovement) |
+                                           static_cast<std::uint32_t>(RE::UserEvents::USER_EVENT_FLAG::kActivate) |
+                                           static_cast<std::uint32_t>(RE::UserEvents::USER_EVENT_FLAG::kFighting) |
+                                           static_cast<std::uint32_t>(RE::UserEvents::USER_EVENT_FLAG::kSneaking) |
+                                           static_cast<std::uint32_t>(RE::UserEvents::USER_EVENT_FLAG::kJumping) |
+                                           static_cast<std::uint32_t>(RE::UserEvents::USER_EVENT_FLAG::kMainFour) |
+                                           static_cast<std::uint32_t>(RE::UserEvents::USER_EVENT_FLAG::kPOVSwitch);
+                                }
+                                if (mask != 0) {
+                                    cm->enabledControls = static_cast<RE::UserEvents::USER_EVENT_FLAG>(cm->enabledControls.underlying() & ~mask);
+                                    g_controlsDisabled = true;
+                                    LOG("GAMEPAD: LB pressed — controls masked (saved=0x{:08X}, mask=0x{:08X})", g_savedControls, mask);
+                                } else {
+                                    LOG("GAMEPAD: LB pressed (no mask applied)");
+                                }
                             }
-                        } else {
-                            LOG("GAMEPAD: LB pressed (in menu, no control mask)");
+
+                            // Dans un menu item (inventaire/conteneur/marchand/gift/
+                            // favoris/crafting/magie) : désactiver dynamiquement
+                            // l'event YButton dans le ControlMap du contexte kItemMenu
+                            // pour que la combo LB+Y n'active pas le favori vanilla
+                            // en parallèle de nos stats. Sauvegardé ici, restauré
+                            // au relâchement de LB.
+                            // Note : le flag kMenu du enabledControls ne suffit PAS
+                            // à bloquer YButton dans les menus — le moteur traite
+                            // YButton via le ControlMap directement (SkyUI le déclare
+                            // dans CONTEXT_ITEMMENU). Seule la désactivation du
+                            // mapping lui-même marche.
+                            if (cm && !g_itemMenuYButtonDisabled &&
+                                (g_invOpen.load(std::memory_order_relaxed) ||
+                                 g_containerOpen.load(std::memory_order_relaxed) ||
+                                 g_barterOpen.load(std::memory_order_relaxed) ||
+                                 g_favOpen.load(std::memory_order_relaxed) ||
+                                 g_giftOpen.load(std::memory_order_relaxed) ||
+                                 g_craftingOpen.load(std::memory_order_relaxed) ||
+                                 g_magicOpen.load(std::memory_order_relaxed))) {
+                                constexpr auto kItemMenuCtxId = static_cast<size_t>(
+                                    RE::UserEvents::INPUT_CONTEXT_ID::kItemMenu);
+                                auto* itemCtx = cm->controlMap[kItemMenuCtxId];
+                                if (itemCtx) {
+                                    for (auto& mapping : itemCtx->deviceMappings[RE::INPUT_DEVICE::kGamepad]) {
+                                        if (mapping.eventID == RE::BSFixedString("YButton")) {
+                                            g_savedItemMenuYButtonKey = mapping.inputKey;
+                                            mapping.inputKey = 0xFFFF;
+                                            g_itemMenuYButtonDisabled = true;
+                                            LOG("GAMEPAD: LB pressed — YButton disabled in kItemMenu (saved=0x{:04X})",
+                                                g_savedItemMenuYButtonKey);
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
                         }
-                    } else if (btn->IsUp()) {
+                    } else if (lbUp) {
                         g_lbHeld.store(false);
+                        auto* cm = RE::ControlMap::GetSingleton();
                         if (g_controlsDisabled) {
-                            auto* cm = RE::ControlMap::GetSingleton();
                             if (cm) {
                                 cm->enabledControls = static_cast<RE::UserEvents::USER_EVENT_FLAG>(g_savedControls);
                             }
@@ -682,6 +839,33 @@ public:
                             LOG("GAMEPAD: LB released — controls restored (0x{:08X})", g_savedControls);
                         } else {
                             LOG("GAMEPAD: LB released");
+                        }
+
+                        // Restaurer le mapping YButton si on l'avait désactivé.
+                        // On ne reset les variables QUE si la restauration a
+                        // effectivement pu avoir lieu (cm + contexte + mapping
+                        // trouvés). Sinon on garde l'état pour retenter au
+                        // prochain relâchement de LB.
+                        if (cm && g_itemMenuYButtonDisabled) {
+                            constexpr auto kItemMenuCtxId = static_cast<size_t>(
+                                RE::UserEvents::INPUT_CONTEXT_ID::kItemMenu);
+                            auto* itemCtx = cm->controlMap[kItemMenuCtxId];
+                            if (itemCtx) {
+                                bool restored = false;
+                                for (auto& mapping : itemCtx->deviceMappings[RE::INPUT_DEVICE::kGamepad]) {
+                                    if (mapping.eventID == RE::BSFixedString("YButton")) {
+                                        mapping.inputKey = g_savedItemMenuYButtonKey;
+                                        LOG("GAMEPAD: LB released — YButton restored to 0x{:04X}",
+                                            g_savedItemMenuYButtonKey);
+                                        restored = true;
+                                        break;
+                                    }
+                                }
+                                if (restored) {
+                                    g_itemMenuYButtonDisabled = false;
+                                    g_savedItemMenuYButtonKey = 0xFFFF;
+                                }
+                            }
                         }
                     }
                     continue;
@@ -700,6 +884,70 @@ public:
                             LOG("GAMEPAD: D-pad tween direction frame={}", targetFrame);
                             AnnounceTweenNavKey(targetFrame);
                         }
+                    }
+                }
+
+                // Level Up Menu ouvert : D-pad navigue entre Santé/Magicka/Vigueur
+                // Comme on maintient notre propre sélection (g_levelUpSelection),
+                // on traite le D-pad nous-mêmes et on vocalise à chaque changement.
+                // A button = confirmer le choix actuel.
+                if (g_levelUpOpen.load(std::memory_order_relaxed) && btn->IsDown() && !g_lbHeld.load()) {
+                    const bool prev = (gpCode == RE::BSWin32GamepadDevice::Key::kLeft) ||
+                                      (gpCode == RE::BSWin32GamepadDevice::Key::kUp);
+                    const bool next = (gpCode == RE::BSWin32GamepadDevice::Key::kRight) ||
+                                      (gpCode == RE::BSWin32GamepadDevice::Key::kDown);
+                    if (prev) {
+                        g_levelUpSelection.store((g_levelUpSelection.load() + 2) % 3);
+                        LOG("GAMEPAD: LevelUp prev → selection={}", g_levelUpSelection.load());
+                        AnnounceLevelUpSelection();
+                        continue;
+                    }
+                    if (next) {
+                        g_levelUpSelection.store((g_levelUpSelection.load() + 1) % 3);
+                        LOG("GAMEPAD: LevelUp next → selection={}", g_levelUpSelection.load());
+                        AnnounceLevelUpSelection();
+                        continue;
+                    }
+                    if (gpCode == RE::BSWin32GamepadDevice::Key::kA) {
+                        LOG("GAMEPAD: LevelUp A → confirm selection={}", g_levelUpSelection.load());
+                        QueueConfirmLevelUp();
+                        continue;
+                    }
+                }
+
+                // MessageBox ouvert : D-pad navigue entre les choix (oui/non, etc.)
+                // Comme on maintient notre propre sélection (g_msgBoxSelectedBtn),
+                // on traite le D-pad nous-mêmes et on vocalise à chaque changement.
+                // A = confirmer, B = annuler (équivalents Enter/Escape au clavier).
+                if (g_msgBoxOpen.load(std::memory_order_relaxed) && btn->IsDown() && !g_lbHeld.load()) {
+                    const bool mbUp   = (gpCode == RE::BSWin32GamepadDevice::Key::kUp) ||
+                                        (gpCode == RE::BSWin32GamepadDevice::Key::kLeft);
+                    const bool mbDown = (gpCode == RE::BSWin32GamepadDevice::Key::kDown) ||
+                                        (gpCode == RE::BSWin32GamepadDevice::Key::kRight);
+                    if (mbUp) {
+                        int sel = g_msgBoxSelectedBtn.load();
+                        if (sel > 0) g_msgBoxSelectedBtn.store(sel - 1);
+                        LOG("GAMEPAD: MsgBox prev → selection={}", g_msgBoxSelectedBtn.load());
+                        QueueAnnounceMsgBoxBtn();
+                        continue;
+                    }
+                    if (mbDown) {
+                        int sel   = g_msgBoxSelectedBtn.load();
+                        int count = g_msgBoxBtnCount.load();
+                        if (sel < count - 1) g_msgBoxSelectedBtn.store(sel + 1);
+                        LOG("GAMEPAD: MsgBox next → selection={}", g_msgBoxSelectedBtn.load());
+                        QueueAnnounceMsgBoxBtn();
+                        continue;
+                    }
+                    if (gpCode == RE::BSWin32GamepadDevice::Key::kA) {
+                        LOG("GAMEPAD: MsgBox A → confirm selection={}", g_msgBoxSelectedBtn.load());
+                        QueueMsgBoxPress();
+                        continue;
+                    }
+                    if (gpCode == RE::BSWin32GamepadDevice::Key::kB) {
+                        LOG("GAMEPAD: MsgBox B → cancel");
+                        QueueMsgBoxCancel();
+                        continue;
                     }
                 }
 
@@ -746,12 +994,37 @@ public:
                             MapFastTravel();
                             continue;
                         }
+                        if (gpCode == keyVitals) {
+                            LOG("GAMEPAD MAP: LB+Vitals → MapPlaceCustomMarker");
+                            MapPlaceCustomMarker();
+                            continue;
+                        }
                         // Les autres boutons ne sont pas interceptés sur la carte
                         continue;
                     }
 
-                    // --- Autres menus ouverts : ignorer les combos scanner ---
+                    // --- Autres menus ouverts : whitelist LB+Y pour les stats contextuelles ---
+                    // Dans les menus d'inventaire/conteneur/marchand, on autorise
+                    // LB+Y (Vitals) pour lire or/poids (même comportement que la
+                    // touche H clavier). Les autres combos sont ignorées.
                     if (IsAnyMenuOpen()) {
+                        const bool inItemMenu = g_invOpen.load(std::memory_order_relaxed) ||
+                                                g_containerOpen.load(std::memory_order_relaxed) ||
+                                                g_barterOpen.load(std::memory_order_relaxed) ||
+                                                g_giftOpen.load(std::memory_order_relaxed);
+                        if (inItemMenu && gpCode == keyVitals) {
+                            if (g_invOpen.load(std::memory_order_relaxed)) {
+                                LOG("GAMEPAD: LB+Vitals (menu) → AnnounceInventoryStats");
+                                AnnounceInventoryStats();
+                            } else if (g_containerOpen.load(std::memory_order_relaxed)) {
+                                LOG("GAMEPAD: LB+Vitals (menu) → AnnounceContainerStats");
+                                AnnounceContainerStats();
+                            } else if (g_barterOpen.load(std::memory_order_relaxed)) {
+                                LOG("GAMEPAD: LB+Vitals (menu) → AnnounceBarterStats");
+                                AnnounceBarterStats();
+                            }
+                            continue;
+                        }
                         LOG("GAMEPAD: LB+0x{:04X} ignored (menu open)", gpCode);
                         continue;
                     }
@@ -778,8 +1051,22 @@ public:
                         continue;
                     }
                     if (gpCode == keyVitals) {
-                        LOG("GAMEPAD: LB+Vitals → AnnouncePlayerVitals");
-                        AnnouncePlayerVitals();
+                        // Contextuel comme la touche H au clavier :
+                        // - en inventaire/conteneur/marchand → or + poids
+                        // - en jeu → vitals (HP/magicka/stamina)
+                        if (g_invOpen.load(std::memory_order_relaxed)) {
+                            LOG("GAMEPAD: LB+Vitals → AnnounceInventoryStats");
+                            AnnounceInventoryStats();
+                        } else if (g_containerOpen.load(std::memory_order_relaxed)) {
+                            LOG("GAMEPAD: LB+Vitals → AnnounceContainerStats");
+                            AnnounceContainerStats();
+                        } else if (g_barterOpen.load(std::memory_order_relaxed)) {
+                            LOG("GAMEPAD: LB+Vitals → AnnounceBarterStats");
+                            AnnounceBarterStats();
+                        } else {
+                            LOG("GAMEPAD: LB+Vitals → AnnouncePlayerVitals");
+                            AnnouncePlayerVitals();
+                        }
                         continue;
                     }
                     if (gpCode == keyTeleport) {
@@ -982,6 +1269,15 @@ public:
                                     (code == RE::BSKeyboardDevice::Keys::kW)      ||
                                     (code == RE::BSKeyboardDevice::Keys::kS);
                 if (navKey) QueueDialogueRead();
+            }
+
+            // QuickLoot IE : haut/bas changent l'item dans la liste de loot
+            if (g_quickLootOpen.load(std::memory_order_relaxed)) {
+                const bool navKey = (code == RE::BSKeyboardDevice::Keys::kUp)    ||
+                                    (code == RE::BSKeyboardDevice::Keys::kDown)   ||
+                                    (code == RE::BSKeyboardDevice::Keys::kW)      ||
+                                    (code == RE::BSKeyboardDevice::Keys::kS);
+                if (navKey) QueueQuickLootRead();
             }
 
             // Container : haut/bas changent l'item, gauche/droite changent de côté
