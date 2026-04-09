@@ -10,6 +10,7 @@ Assurez-vous d'avoir :
 - NVDA lance avant de demarrer le jeu
 - Le jeu lance via `skse64_loader.exe` (pas le lanceur normal de Skyrim)
 - Le plugin SkyrimNVDA et le mod d'accessibilite de Dio installes
+- **SkyUI fortement recommande** — SkyrimNVDA a ete concu et teste en priorite avec la disposition d'inventaire / conteneur / marchand de SkyUI. Le plugin fonctionne aussi sans SkyUI mais certaines lectures de menus peuvent etre moins precises ou manquer des details. Installez SkyUI pour une meilleure experience d'accessibilite.
 
 Quand le jeu demarre, NVDA commence automatiquement a lire les menus et les elements du HUD.
 

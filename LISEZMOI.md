@@ -4,11 +4,20 @@ Plugin d'accessibilite pour Skyrim Special/Anniversary Edition. Vocalise automat
 
 ---
 
+Soutenir le projet
+
+Si vous souhaitez me soutenir et m'encourager dans mon travail d'accessibilite sur ce mod et les futurs que je ferai, vous pouvez retrouver ma page de dons ici et m'offrir un cafe ! Un grand merci !
+
+https://buymeacoffee.com/pyrhame?l=en
+
+---
+
 Configuration requise
 
 - Skyrim Special Edition ou Anniversary Edition
 - SKSE64 (Skyrim Script Extender)
 - Lecteur d'ecran NVDA (doit etre lance avant le jeu)
+- **SkyUI fortement recommande** — SkyrimNVDA a ete concu et teste en priorite avec la disposition d'inventaire/conteneur/marchand de SkyUI. Sans SkyUI le plugin fonctionne quand meme mais certaines lectures de menus peuvent etre moins precises ou manquer des details.
 
 ---
 
@@ -423,6 +432,56 @@ Creation de personnage
 - Haut / Bas : naviguer dans les options
 - Gauche / Droite : ajuster le curseur / changer le sexe
 - R : confirmer
+
+---
+
+Support manette / Xbox / PlayStation
+
+Support complet des manettes Xbox et PlayStation. LB est la touche modificateur pour toutes les combinaisons d'accessibilite. Vous pouvez reconfigurer quel bouton fait quoi dans la page MCM "Gamepad" si vous voulez changer les mappings par defaut.
+
+Remappages automatiques faits par le plugin :
+
+- Sprint : remappe de LB vers Stick gauche cliquable (aucune configuration manuelle necessaire)
+- Furtivite : remappe de Stick gauche cliquable vers LB + Stick gauche cliquable
+- Actions vanilla de LB dans les menus inventaire / conteneur / marchand : desactivees pour eviter les conflits avec nos combinaisons
+- L'action vanilla du bouton Y (Favori) est temporairement desactivee pendant que LB est maintenu dans un menu d'objets, donc LB + Y ne declenche pas un favori par accident. Y tout seul continue de fonctionner normalement pour marquer les favoris.
+- Sur la carte : l'inclinaison de camera via le joystick droit est desactivee (elle provoquait des lectures NVDA parasites des marqueurs survoles). Nos propres combinaisons sur le stick droit restent actives.
+- La touche P (Place Player Marker) est desactivee sur la carte au clavier pour eviter le conflit avec notre propre systeme de marqueur personnalise.
+
+Scanner (en jeu, LB comme modificateur) :
+
+- LB + D-pad Bas : objet suivant (plus loin)
+- LB + D-pad Haut : objet precedent (plus proche)
+- LB + D-pad Gauche : annoncer la cible actuelle
+- LB + Stick droit Gauche / Droite : changer de categorie (Tous, PNJ, Portes, etc.)
+- LB + Stick droit Haut / Bas : changer de sous-filtre
+- LB + A : demarrer / arreter la marche auto (detecte si vous etes a cheval et utilise automatiquement le mode monte)
+- LB + B : teleporter vers la cible scannee
+- LB + Y : stats contextuelles — en jeu annonce sante / magicka / vigueur ; dans un inventaire, conteneur ou marchand annonce l'or et le poids porte
+- LB + Stick gauche cliquable : basculer la furtivite (accroupi / debout)
+- LB + Stick droit cliquable : basculer la camera premiere / troisieme personne
+- Stick droit cliquable seul : verrouiller l'ennemi le plus proche
+
+Menu carte (manette) :
+
+- LB + D-pad Bas / Haut : marqueur suivant / precedent dans le filtre actuel (trie par distance)
+- LB + D-pad Gauche : annoncer les details du marqueur
+- LB + D-pad Droite : definir le point de reference pour le calcul des distances
+- LB + A : voyage rapide vers le marqueur selectionne (systeme custom, plus fiable que le vanilla)
+- LB + Y : poser ou retirer un marqueur personnalise sur le marqueur actuellement selectionne — le marqueur devient une cible navigable dans le scanner en jeu
+- LB + Stick droit Gauche / Droite : cycler le sous-filtre de lieux (Tous types, Villes, Bourgs, Donjons, Forts, Camps)
+- LB + Stick droit Haut / Bas : cycler le filtre principal (Tous, Decouverts, Non decouverts, Cibles de quete)
+
+Menus (message box, level up, etc.) a la manette :
+
+- D-pad Gauche / Droite / Haut / Bas : naviguer dans les choix (oui/non pour les message boxes, sante/magicka/vigueur pour le level up)
+- Bouton A : confirmer le choix selectionne
+- Bouton B : annuler la message box
+- Chaque changement de selection est vocalise automatiquement
+
+Demarrer la marche auto a cheval : montez manuellement sur votre cheval d'abord, puis declenchez la marche auto (LB + A a la manette). Le plugin detecte que vous etes a cheval et c'est le cheval lui-meme qui marche vers la destination au lieu de vous forcer a descendre. Apres l'arret, il est possible que vous deviez descendre et remonter manuellement (E deux fois) pour recuperer le controle clavier / stick du cheval — c'est une particularite du moteur Skyrim qui affecte tous les mods utilisant ce systeme.
+
+Le mouvement avec le stick gauche annule la marche auto — comme WASD au clavier.
 
 ---
 

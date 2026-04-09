@@ -13,7 +13,7 @@
     - LB + Right stick Up/Down: change sub-filter
     - LB + A: start/stop autowalk
     - LB + B: teleport to scanned target
-    - LB + Y: announce health, magicka, stamina
+    - LB + Y: contextual stats — in game announces health, magicka, stamina; in inventory, container or barter menu announces gold and carry weight (same behavior as H key on keyboard)
     - LB + LS click: toggle sneak (crouch/stand)
     - LB + RS click: toggle first/third person camera
     - RS click alone: lock nearest enemy
@@ -22,6 +22,7 @@
     - LB + D-pad Left: announce marker details
     - LB + D-pad Right: set reference point for distance calculation
     - LB + A: fast travel to selected marker (custom system, more reliable than vanilla)
+    - LB + Y: place or remove a custom marker on the currently selected map marker (same as P key on keyboard) — the marker becomes a navigable target in the in-game scanner
     - LB + Right stick Left/Right: cycle location sub-filter (All types → Cities → Towns → Dungeons → Forts → Camps)
     - LB + Right stick Up/Down: cycle main filter (All → Discovered → Undiscovered → Quest Targets)
   - **Automatic remapping**

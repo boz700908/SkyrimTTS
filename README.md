@@ -4,12 +4,21 @@ Accessibility plugin for Skyrim Special/Anniversary Edition. Automatically vocal
 
 ---
 
+## Support the Project
+
+If you want to support and encourage my accessibility work on this mod and the future ones I will be making, you can find my donation page here and buy me a coffee! A huge thank you!
+
+https://buymeacoffee.com/pyrhame?l=en
+
+---
+
 ## Requirements
 
 - Skyrim Special Edition or Anniversary Edition
 - SKSE64 (Skyrim Script Extender)
 - NVDA screen reader (must be running before launching the game)
 - Skyrim Accessibility mod by Dio Kyrie — download the latest release at https://github.com/DioKyrie-Git/SkyrimAccessibility/releases
+- **SkyUI is strongly recommended** — SkyrimNVDA has been designed and tested primarily with SkyUI's inventory/container/barter layout. Without SkyUI the plugin still works but some menu readings may be less accurate or miss details.
 
 ---
 
@@ -453,6 +462,56 @@ Word Walls (where you learn dragon shouts) appear in the Activators category of 
 - Up / Down: navigate options
 - Left / Right: adjust slider / change sex
 - R: confirm
+
+---
+
+## Gamepad / Controller Support
+
+Full Xbox / PlayStation controller support. LB is the modifier key for all accessibility combos. Configure which button does what in the MCM "Gamepad" page if you want to change the default mappings.
+
+**Automatic remappings done by the plugin:**
+
+- Sprint: remapped from LB to Left Stick click (no manual config needed)
+- Sneak: remapped from Left Stick click to LB + Left Stick click
+- LB vanilla actions in the inventory / container / barter menus: disabled to prevent conflicts with our combos
+- Y button vanilla action (Favorite) is temporarily disabled while LB is held in item menus, so LB + Y does not toggle a favorite accidentally. Y alone still works normally to mark favorites.
+- On the map: the right joystick camera tilt is disabled (it was causing NVDA to read nearby markers randomly). Our own combos on the right stick remain active.
+- P key (Place Player Marker) is disabled on the map keyboard to prevent conflict with our own custom marker system.
+
+**Scanner (in game, LB as modifier):**
+
+- LB + D-pad Down: next scanned object (farther)
+- LB + D-pad Up: previous scanned object (closer)
+- LB + D-pad Left: announce current target
+- LB + Right stick Left / Right: change category (All, NPCs, Doors, etc.)
+- LB + Right stick Up / Down: change sub-filter
+- LB + A: start / stop autowalk (detects if you are on a horse and uses mounted mode automatically)
+- LB + B: teleport to scanned target
+- LB + Y: contextual stats — in game announces health / magicka / stamina; in inventory, container or barter menu announces gold and carry weight
+- LB + Left Stick click: toggle sneak (crouch / stand)
+- LB + Right Stick click: toggle first / third person camera
+- Right Stick click alone: lock nearest enemy
+
+**Map menu (gamepad):**
+
+- LB + D-pad Down / Up: next / previous marker in current filter (sorted by distance)
+- LB + D-pad Left: announce marker details
+- LB + D-pad Right: set reference point for distance calculation
+- LB + A: fast travel to selected marker (custom system, more reliable than vanilla)
+- LB + Y: place or remove a custom marker on the currently selected map marker — the marker becomes a navigable target in the in-game scanner
+- LB + Right stick Left / Right: cycle location sub-filter (All types, Cities, Towns, Dungeons, Forts, Camps)
+- LB + Right stick Up / Down: cycle main filter (All, Discovered, Undiscovered, Quest Targets)
+
+**Menus (message box, level up, etc.) with gamepad:**
+
+- D-pad Left / Right / Up / Down: navigate choices (yes/no for message boxes, health/magicka/stamina for level up)
+- A button: confirm the selected choice
+- B button: cancel the message box
+- Each navigation change is vocalized automatically
+
+**Starting autowalk while mounted:** mount your horse manually first, then trigger autowalk (LB + A on gamepad). The plugin detects you are riding and the horse itself walks to the destination instead of forcing you to dismount. After stopping, you may need to dismount and remount manually (E twice) to regain keyboard / stick control of the horse — this is a Skyrim engine quirk that affects every mod using the mounted travel pattern.
+
+**Left stick movement cancels autowalk** — same as WASD on keyboard.
 
 ---
 

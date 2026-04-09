@@ -11,6 +11,7 @@ Make sure you have:
 - The game launched through `skse64_loader.exe` (not the normal Skyrim launcher)
 - The SkyrimNVDA plugin installed
 - Skyrim Accessibility mod by Dio Kyrie installed — download the latest release at https://github.com/DioKyrie-Git/SkyrimAccessibility/releases
+- **SkyUI strongly recommended** — SkyrimNVDA was primarily designed and tested with SkyUI's inventory / container / barter layout. The plugin still works without SkyUI but some menu readings may be less accurate or miss details. Install SkyUI if you want the best accessibility experience.
 
 When the game starts, NVDA will automatically begin reading menus and HUD elements.
 
