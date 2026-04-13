@@ -1433,13 +1433,9 @@ public:
                     continue;
                 }
                 if (code == RE::BSKeyboardDevice::Keys::kEnd) {
-                    MapCycleFilter();
-                    continue;
-                }
-                // Home + Flèche Bas/Haut = sous-filtre
-                if ((code == RE::BSKeyboardDevice::Keys::kDown || code == RE::BSKeyboardDevice::Keys::kUp) &&
-                    (GetAsyncKeyState(VK_HOME) & 0x8000) != 0) {
-                    MapCycleSubFilter();
+                    bool alt = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
+                    if (alt) MapCycleSubFilter();
+                    else MapCycleFilter();
                     continue;
                 }
                 if (code == RE::BSKeyboardDevice::Keys::kEnter) {

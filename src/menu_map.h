@@ -158,24 +158,43 @@ static void AddQuestTargetsToMap(RE::PlayerCharacter* player, const RE::NiPoint3
 
     std::set<std::string> seenObjectives;  // éviter les doublons par texte d'objectif
 
+    LOG("MapMenu: quest scan - {} objectives in array", objectives.size());
     for (uint32_t i = 0; i < objectives.size(); i++) {
         auto& inst = objectives[i];
         if (!inst.Objective) continue;
         if (!inst.Objective->ownerQuest) continue;
 
-        // Seulement les objectifs actuellement affichés (pas complétés/échoués)
-        if (inst.InstanceState != RE::QUEST_OBJECTIVE_STATE::kDisplayed) continue;
-
         auto* quest = inst.Objective->ownerQuest;
-        if (!quest->IsActive()) continue;
+        const char* qname = quest->GetFullName();
+        const char* objText = inst.Objective->displayText.c_str();
+
+        // Seulement les objectifs actuellement affichés (pas complétés/échoués)
+        if (inst.InstanceState != RE::QUEST_OBJECTIVE_STATE::kDisplayed) {
+            LOG("MapMenu: quest '{}' obj='{}' SKIPPED state={}", qname ? qname : "?", objText ? objText : "?", static_cast<int>(inst.InstanceState));
+            continue;
+        }
+
+        if (!quest->IsActive()) {
+            LOG("MapMenu: quest '{}' obj='{}' SKIPPED not active", qname ? qname : "?", objText ? objText : "?");
+            continue;
+        }
+
+        LOG("MapMenu: quest '{}' obj='{}' PASSED filters", qname ? qname : "?", objText ? objText : "?");
 
         const char* objTextRaw = inst.Objective->displayText.c_str();
-        std::string objText = objTextRaw ? objTextRaw : "";
+        std::string objTextStr = objTextRaw ? objTextRaw : "";
 
         // Éviter les doublons par texte d'objectif
-        if (seenObjectives.count(objText)) continue;
-        seenObjectives.insert(objText);
+        if (seenObjectives.count(objTextStr)) continue;
+        seenObjectives.insert(objTextStr);
 
+        LOG("MapMenu: quest '{}' has {} targets", qname ? qname : "?", inst.Objective->numTargets);
+
+        // Double passage : d'abord avec CTDA, puis sans si rien ne passe
+        // (même logique que le scanner — certaines quêtes ont des CTDA qui échouent
+        //  alors que la quête est bien active et affichée sur la boussole)
+        for (int pass = 0; pass < 2; pass++) {
+        bool foundAnyTarget = false;
         for (uint32_t t = 0; t < inst.Objective->numTargets; t++) {
             auto* tgt = inst.Objective->targets[t];
             if (!tgt) continue;
@@ -188,8 +207,8 @@ static void AddQuestTargetsToMap(RE::PlayerCharacter* player, const RE::NiPoint3
             auto* ref = sp.get();
             if (!ref) continue;
 
-            // Vérifier les conditions CTDA du target (comme la boussole)
-            if (tgt->conditions.head != nullptr) {
+            // Pass 0 : vérifier les conditions CTDA. Pass 1 : ignorer les CTDA.
+            if (pass == 0 && tgt->conditions.head != nullptr) {
                 if (!tgt->conditions.IsTrue(player, ref)) continue;
             }
 
@@ -278,11 +297,18 @@ static void AddQuestTargetsToMap(RE::PlayerCharacter* player, const RE::NiPoint3
             m.isQuestTarget = true;
             m.worldPos = rp;
 
-            LOG("MapMenu: quest '{}' ref={:08X} pos=({:.0f},{:.0f},{:.0f}) dist={:.0f} state={}",
-                objText, fid, rp.x, rp.y, rp.z, m.distance, static_cast<int>(inst.InstanceState));
+            LOG("MapMenu: quest '{}' ref={:08X} pos=({:.0f},{:.0f},{:.0f}) dist={:.0f} pass={}",
+                objText, fid, rp.x, rp.y, rp.z, m.distance, pass);
             g_mapMarkers.push_back(std::move(m));
             questCount++;
+            foundAnyTarget = true;
+            break;  // un seul marqueur par objectif (le premier valide)
         }
+        if (foundAnyTarget) break;  // pass 0 a trouvé un target, pas besoin du pass 1
+        if (pass == 0) {
+            LOG("MapMenu: quest '{}' pass 0 failed for all targets, retrying without CTDA", qname ? qname : "?");
+        }
+        }  // fin boucle pass
     }
 }
 

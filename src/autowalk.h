@@ -130,13 +130,19 @@ static void StartAutoWalkMonitor() {
     g_autoWalkStuckTimer = 0.0f;
     g_autoWalkHasRepathed = false;
 
-    g_autoWalkMonitor = std::jthread([](std::stop_token stoken) {
-        int recoveryAttempt = 0;  // 0=aucun, 1=saut tenté, 2=repath tenté
-        bool diagLogged = false;  // diagnostic de blocage loggé une seule fois par incident
-        float lastDistMounted = -1.0f;  // mode cheval : tracking de la progression vers la cible
-                                         // (un cheval bouge en saccades sur le navmesh, un seuil
-                                         //  de mouvement basé sur la position est trop strict)
+    // État du monitoring (statics pour persister entre les ticks AddTask)
+    static int s_recoveryAttempt = 0;
+    static bool s_diagLogged = false;
+    static float s_lastDistMounted = -1.0f;
+    s_recoveryAttempt = 0;
+    s_diagLogged = false;
+    s_lastDistMounted = -1.0f;
 
+    // Le jthread ne fait que le timing + input check.
+    // TOUTES les lectures de données du jeu (position, refs, cellules) sont
+    // faites sur le thread principal via AddTask pour éviter les race conditions
+    // qui causaient des crashes (null pointer sur refs déchargées).
+    g_autoWalkMonitor = std::jthread([](std::stop_token stoken) {
         while (!stoken.stop_requested()) {
             std::this_thread::sleep_for(std::chrono::milliseconds(250));
             if (!g_autoWalking.load()) break;
@@ -163,289 +169,209 @@ static void StartAutoWalkMonitor() {
                 break;
             }
 
-            auto* player = RE::PlayerCharacter::GetSingleton();
-            if (!player) continue;
+            // Dispatcher le tick de monitoring sur le thread principal du jeu
+            auto* taskIf = SKSE::GetTaskInterface();
+            if (!taskIf) continue;
+            taskIf->AddTask([]() {
+                if (!g_autoWalking.load()) return;
 
-            const bool isMounted = player->IsOnMount();
-            auto playerPos = player->GetPosition();
-            float dist = 0.0f;
+                auto* player = RE::PlayerCharacter::GetSingleton();
+                if (!player) return;
 
-            // Mode coordonnées (marqueur personnalisé, objets dynamiques)
-            if (g_autoWalkTargetPos.x != 0 || g_autoWalkTargetPos.y != 0) {
-                float dx = playerPos.x - g_autoWalkTargetPos.x;
-                float dy = playerPos.y - g_autoWalkTargetPos.y;
-                dist = std::sqrt(dx * dx + dy * dy);
-            } else {
-                // Mode FormID classique
-                auto* targetForm = RE::TESForm::LookupByID(g_autoWalkTargetID);
-                if (!targetForm) {
-                    Speak(L"Target lost");
-                    g_autoWalking.store(false);
-                    auto* taskIf = SKSE::GetTaskInterface();
-                    if (taskIf) {
-                        taskIf->AddTask([]() {
-                            auto* p = RE::PlayerCharacter::GetSingleton();
-                            if (!p) return;
-                            p->SetAIDriven(false);
-                            p->EvaluatePackage();
-                        });
-                    }
-                    break;
-                }
-                auto* targetRef = targetForm->AsReference();
-                if (!targetRef) continue;
-                auto diff = playerPos - targetRef->GetPosition();
-                dist = diff.Length();
-            }
+                const bool isMounted = player->IsOnMount();
+                auto playerPos = player->GetPosition();
+                float dist = 0.0f;
 
-            // Arrivée
-            if (dist <= g_autoWalkStopDist + 50.0f) {
-                Speak(L"Arrived at " + g_autoWalkTarget);
-                g_autoWalking.store(false);
-                LOG("AutoWalk: arrived, distance {}", dist);
-                RE::FormID targetID = g_autoWalkTargetID;
-                auto* taskIf = SKSE::GetTaskInterface();
-                if (taskIf) {
-                    taskIf->AddTask([targetID]() {
+                // Mode coordonnées (marqueur personnalisé, objets dynamiques)
+                if (g_autoWalkTargetPos.x != 0 || g_autoWalkTargetPos.y != 0) {
+                    float dx = playerPos.x - g_autoWalkTargetPos.x;
+                    float dy = playerPos.y - g_autoWalkTargetPos.y;
+                    dist = std::sqrt(dx * dx + dy * dy);
+                } else {
+                    // Mode FormID classique
+                    auto* targetForm = RE::TESForm::LookupByID(g_autoWalkTargetID);
+                    if (!targetForm) {
+                        Speak(L"Target lost");
+                        g_autoWalking.store(false);
                         auto* p = RE::PlayerCharacter::GetSingleton();
-                        if (!p) return;
+                        if (p) { p->SetAIDriven(false); p->EvaluatePackage(); }
+                        return;
+                    }
+                    auto* targetRef = targetForm->AsReference();
+                    if (!targetRef) return;
+                    auto diff = playerPos - targetRef->GetPosition();
+                    dist = diff.Length();
+                }
 
-                        p->SetAIDriven(false);
-                        auto* avo = p->AsActorValueOwner();
+                // Arrivée
+                if (dist <= g_autoWalkStopDist + 50.0f) {
+                    Speak(L"Arrived at " + g_autoWalkTarget);
+                    g_autoWalking.store(false);
+                    LOG("AutoWalk: arrived, distance {}", dist);
+
+                    player->SetAIDriven(false);
+                    auto* avo = player->AsActorValueOwner();
+                    if (avo) {
+                        float base = avo->GetBaseActorValue(RE::ActorValue::kSpeedMult);
+                        avo->SetActorValue(RE::ActorValue::kSpeedMult, base);
+                    }
+                    player->EvaluatePackage();
+
+                    RE::FormID targetID = g_autoWalkTargetID;
+                    if (targetID != 0) {
+                        auto* targetForm = RE::TESForm::LookupByID(targetID);
+                        if (targetForm) {
+                            auto* targetRef = targetForm->AsReference();
+                            if (targetRef) {
+                                auto targetPos = targetRef->GetPosition();
+                                float dx = targetPos.x - playerPos.x;
+                                float dy = targetPos.y - playerPos.y;
+                                float dz = targetPos.z - playerPos.z;
+                                float yaw = std::atan2(dx, dy);
+                                if (yaw < 0) yaw += 2.0f * 3.14159265f;
+                                player->data.angle.z = yaw;
+                                float hDist = std::sqrt(dx * dx + dy * dy);
+                                if (hDist > 1.0f) {
+                                    float pitch = -std::atan2(dz, hDist);
+                                    player->data.angle.x = pitch;
+                                }
+                                LOG("AutoWalk: oriented toward target yaw={:.2f} pitch={:.2f}", yaw, player->data.angle.x);
+                            }
+                        }
+                    }
+                    return;
+                }
+
+                // Détection de blocage — deux stratégies selon le mode
+                if (isMounted) {
+                    if (s_lastDistMounted < 0.0f) {
+                        s_lastDistMounted = dist;
+                    } else if (dist < s_lastDistMounted - 5.0f) {
+                        g_autoWalkStuckTimer = 0.0f;
+                        s_lastDistMounted = dist;
+                        s_diagLogged = false;
+                    } else {
+                        g_autoWalkStuckTimer += 0.25f;
+                    }
+                } else {
+                    auto movedDiff = playerPos - g_autoWalkLastPos;
+                    float movedDist = movedDiff.Length();
+                    if (movedDist < 5.0f) {
+                        g_autoWalkStuckTimer += 0.25f;
+                    } else {
+                        g_autoWalkStuckTimer = 0.0f;
+                        g_autoWalkLastPos = playerPos;
+                        s_recoveryAttempt = 0;
+                        s_diagLogged = false;
+                    }
+                }
+
+                // Diagnostic de blocage (se déclenche une seule fois à 4s)
+                if (g_autoWalkStuckTimer > 4.0f && !s_diagLogged) {
+                    s_diagLogged = true;
+                    LOG("=== AutoWalk STUCK DIAGNOSTIC ===");
+                    LOG("  Player pos: ({:.0f}, {:.0f}, {:.0f})", playerPos.x, playerPos.y, playerPos.z);
+
+                    if (g_autoWalkTargetPos.x != 0 || g_autoWalkTargetPos.y != 0) {
+                        LOG("  Target (coords): ({:.0f}, {:.0f}, {:.0f}) dist={:.0f}",
+                            g_autoWalkTargetPos.x, g_autoWalkTargetPos.y, g_autoWalkTargetPos.z, dist);
+                    } else {
+                        auto* tf = RE::TESForm::LookupByID(g_autoWalkTargetID);
+                        if (tf) {
+                            auto* tr = tf->AsReference();
+                            if (tr) {
+                                auto tp = tr->GetPosition();
+                                auto* tc = tr->GetParentCell();
+                                LOG("  Target (formID=0x{:08X}): ({:.0f}, {:.0f}, {:.0f}) cell='{}' dist={:.0f}",
+                                    g_autoWalkTargetID, tp.x, tp.y, tp.z,
+                                    tc && tc->GetName() ? tc->GetName() : "?", dist);
+                            }
+                        }
+                    }
+
+                    // Diagnostic IA/physique (déjà sur le thread principal)
+                    auto* process = player->GetActorRuntimeData().currentProcess;
+                    if (process) {
+                        auto* pkg = process->GetRunningPackage();
+                        if (pkg) {
+                            LOG("  Running package: formID=0x{:08X} type={}",
+                                pkg->GetFormID(),
+                                static_cast<int>(pkg->packData.packType.underlying()));
+                        } else {
+                            LOG("  Running package: NONE (IA may have abandoned)");
+                        }
+                        auto* hpd = process->high;
+                        if (hpd) {
+                            auto& desiredSpeed = hpd->pathingDesiredMovementSpeed;
+                            auto& currentSpeed = hpd->pathingCurrentMovementSpeed;
+                            float dMag = std::sqrt(desiredSpeed.x * desiredSpeed.x +
+                                                   desiredSpeed.y * desiredSpeed.y +
+                                                   desiredSpeed.z * desiredSpeed.z);
+                            float cMag = std::sqrt(currentSpeed.x * currentSpeed.x +
+                                                   currentSpeed.y * currentSpeed.y +
+                                                   currentSpeed.z * currentSpeed.z);
+                            LOG("  Path speed: desired={:.1f} current={:.1f}", dMag, cMag);
+                        }
+                    }
+                    auto ctrlPtr = player->GetCharController();
+                    if (ctrlPtr) {
+                        const char* stateStr = "?";
+                        switch (ctrlPtr->context.currentState) {
+                            case RE::hkpCharacterStateType::kOnGround: stateStr = "OnGround"; break;
+                            case RE::hkpCharacterStateType::kJumping:  stateStr = "Jumping"; break;
+                            case RE::hkpCharacterStateType::kInAir:    stateStr = "InAir"; break;
+                            case RE::hkpCharacterStateType::kClimbing: stateStr = "Climbing"; break;
+                            case RE::hkpCharacterStateType::kSwimming: stateStr = "Swimming"; break;
+                            default: break;
+                        }
+                        LOG("  Character state: {}", stateStr);
+                    }
+                    auto* cell = player->GetParentCell();
+                    if (cell) {
+                        LOG("  Player cell: '{}' (interior={})",
+                            cell->GetName() ? cell->GetName() : "?", cell->IsInteriorCell());
+                    }
+                    LOG("=== END STUCK DIAGNOSTIC ===");
+                }
+
+                // Récupération progressive de blocage
+                if (isMounted) {
+                    if (g_autoWalkStuckTimer > 30.0f) {
+                        Speak(L"Horse stuck");
+                        g_autoWalking.store(false);
+                        LOG("AutoWalk: horse stuck for 30s, giving up");
+                        StopAutoWalk();
+                    }
+                } else {
+                    if (g_autoWalkStuckTimer > 3.0f && s_recoveryAttempt == 0) {
+                        LOG("AutoWalk: stuck for 3s, simulating Space press for directional jump");
+                        keybd_event(VK_SPACE, 0, 0, 0);
+                        std::thread([]() {
+                            std::this_thread::sleep_for(std::chrono::milliseconds(150));
+                            keybd_event(VK_SPACE, 0, KEYEVENTF_KEYUP, 0);
+                        }).detach();
+                        s_recoveryAttempt = 1;
+                    } else if (g_autoWalkStuckTimer > 6.0f && s_recoveryAttempt < 2) {
+                        LOG("AutoWalk: stuck for 6s, re-evaluating package");
+                        player->SetAIDriven(false);
+                        player->EvaluatePackage();
+                        player->SetAIDriven(true);
+                        player->EvaluatePackage();
+                        s_recoveryAttempt = 2;
+                    } else if (g_autoWalkStuckTimer > 10.0f) {
+                        Speak(L"Can't reach target");
+                        g_autoWalking.store(false);
+                        LOG("AutoWalk: stuck for 10s, giving up");
+                        player->SetAIDriven(false);
+                        auto* avo = player->AsActorValueOwner();
                         if (avo) {
                             float base = avo->GetBaseActorValue(RE::ActorValue::kSpeedMult);
                             avo->SetActorValue(RE::ActorValue::kSpeedMult, base);
                         }
-                        p->EvaluatePackage();
-
-                        if (targetID != 0) {
-                            // Orienter le joueur vers la cible (crosshair dessus)
-                            auto* targetForm = RE::TESForm::LookupByID(targetID);
-                            if (targetForm) {
-                                auto* targetRef = targetForm->AsReference();
-                                if (targetRef) {
-                                    auto targetPos = targetRef->GetPosition();
-                                    auto playerPos = p->GetPosition();
-                                    float dx = targetPos.x - playerPos.x;
-                                    float dy = targetPos.y - playerPos.y;
-                                    float dz = targetPos.z - playerPos.z;
-                                    float yaw = std::atan2(dx, dy);
-                                    if (yaw < 0) yaw += 2.0f * 3.14159265f;
-                                    p->data.angle.z = yaw;
-                                    float hDist = std::sqrt(dx * dx + dy * dy);
-                                    if (hDist > 1.0f) {
-                                        float pitch = -std::atan2(dz, hDist);
-                                        p->data.angle.x = pitch;
-                                    }
-                                    LOG("AutoWalk: oriented toward target yaw={:.2f} pitch={:.2f}", yaw, p->data.angle.x);
-                                }
-                            }
-                        }
-                    });
-                }
-                break;
-            }
-
-            // Détection de blocage — deux stratégies selon le mode
-            if (isMounted) {
-                // Mode cheval : un cheval bouge en saccades sur le navmesh
-                // (il s'arrête à chaque waypoint pour recalculer). Un seuil de
-                // mouvement basé sur la position est trop strict. À la place,
-                // on vérifie simplement que la distance à la cible diminue.
-                if (lastDistMounted < 0.0f) {
-                    lastDistMounted = dist;  // init au premier tick
-                } else if (dist < lastDistMounted - 5.0f) {
-                    // Progression nette détectée → reset du timer
-                    g_autoWalkStuckTimer = 0.0f;
-                    lastDistMounted = dist;
-                    diagLogged = false;
-                } else {
-                    g_autoWalkStuckTimer += 0.25f;
-                }
-            } else {
-                // Mode pied : détection classique basée sur le delta de position
-                auto movedDiff = playerPos - g_autoWalkLastPos;
-                float movedDist = movedDiff.Length();
-                if (movedDist < 5.0f) {
-                    g_autoWalkStuckTimer += 0.25f;
-                } else {
-                    g_autoWalkStuckTimer = 0.0f;
-                    g_autoWalkLastPos = playerPos;
-                    recoveryAttempt = 0;  // reset des tentatives de récupération
-                    diagLogged = false;   // prêt à logger le prochain blocage
-                }
-            }
-
-            // Diagnostic de blocage (se déclenche une seule fois à 4s)
-            if (g_autoWalkStuckTimer > 4.0f && !diagLogged) {
-                diagLogged = true;
-                LOG("=== AutoWalk STUCK DIAGNOSTIC ===");
-                LOG("  Player pos: ({:.0f}, {:.0f}, {:.0f})", playerPos.x, playerPos.y, playerPos.z);
-
-                // Cible
-                if (g_autoWalkTargetPos.x != 0 || g_autoWalkTargetPos.y != 0) {
-                    LOG("  Target (coords): ({:.0f}, {:.0f}, {:.0f}) dist={:.0f}",
-                        g_autoWalkTargetPos.x, g_autoWalkTargetPos.y, g_autoWalkTargetPos.z, dist);
-                } else {
-                    auto* tf = RE::TESForm::LookupByID(g_autoWalkTargetID);
-                    if (tf) {
-                        auto* tr = tf->AsReference();
-                        if (tr) {
-                            auto tp = tr->GetPosition();
-                            auto* tc = tr->GetParentCell();
-                            LOG("  Target (formID=0x{:08X}): ({:.0f}, {:.0f}, {:.0f}) cell='{}' dist={:.0f}",
-                                g_autoWalkTargetID, tp.x, tp.y, tp.z,
-                                tc && tc->GetName() ? tc->GetName() : "?", dist);
-                        }
+                        player->EvaluatePackage();
                     }
                 }
-
-                // Exécuter le reste du diagnostic sur le thread UI
-                auto* taskIf = SKSE::GetTaskInterface();
-                if (taskIf) {
-                    taskIf->AddTask([]() {
-                        auto* p = RE::PlayerCharacter::GetSingleton();
-                        if (!p) return;
-
-                        // 1. Package IA en cours
-                        auto* process = p->GetActorRuntimeData().currentProcess;
-                        if (process) {
-                            auto* pkg = process->GetRunningPackage();
-                            if (pkg) {
-                                LOG("  Running package: formID=0x{:08X} type={}",
-                                    pkg->GetFormID(),
-                                    static_cast<int>(pkg->packData.packType.underlying()));
-                            } else {
-                                LOG("  Running package: NONE (IA may have abandoned)");
-                            }
-
-                            // 2. Vitesses de pathing (dans high process data)
-                            auto* hpd = process->high;
-                            if (hpd) {
-                                auto& desiredSpeed = hpd->pathingDesiredMovementSpeed;
-                                auto& currentSpeed = hpd->pathingCurrentMovementSpeed;
-                                float dMag = std::sqrt(desiredSpeed.x * desiredSpeed.x +
-                                                       desiredSpeed.y * desiredSpeed.y +
-                                                       desiredSpeed.z * desiredSpeed.z);
-                                float cMag = std::sqrt(currentSpeed.x * currentSpeed.x +
-                                                       currentSpeed.y * currentSpeed.y +
-                                                       currentSpeed.z * currentSpeed.z);
-                                LOG("  Path speed: desired={:.1f} current={:.1f} (ratio={:.0f}%)",
-                                    dMag, cMag, dMag > 0.1f ? (cMag / dMag * 100.0f) : 0.0f);
-                                if (dMag > 0.5f && cMag < 0.5f) {
-                                    LOG("  -> IA is trying to move but BLOCKED by physics");
-                                } else if (dMag < 0.5f) {
-                                    LOG("  -> IA has NO movement intent (path broken or no navmesh)");
-                                }
-                            }
-                        }
-
-                        // 3. Character controller state
-                        auto ctrlPtr = p->GetCharController();
-                        if (ctrlPtr) {
-                            auto state = ctrlPtr->context.currentState;
-                            auto want = ctrlPtr->wantState;
-                            const char* stateStr = "?";
-                            switch (state) {
-                                case RE::hkpCharacterStateType::kOnGround: stateStr = "OnGround"; break;
-                                case RE::hkpCharacterStateType::kJumping:  stateStr = "Jumping"; break;
-                                case RE::hkpCharacterStateType::kInAir:    stateStr = "InAir"; break;
-                                case RE::hkpCharacterStateType::kClimbing: stateStr = "Climbing"; break;
-                                case RE::hkpCharacterStateType::kSwimming: stateStr = "Swimming"; break;
-                                default: break;
-                            }
-                            LOG("  Character state: {} (want={})", stateStr, static_cast<int>(want));
-                        }
-
-                        // 4. SpeedMult actuel
-                        auto* avo = p->AsActorValueOwner();
-                        if (avo) {
-                            float sm = avo->GetActorValue(RE::ActorValue::kSpeedMult);
-                            float base = avo->GetBaseActorValue(RE::ActorValue::kSpeedMult);
-                            LOG("  SpeedMult: current={:.0f} base={:.0f}", sm, base);
-                        }
-
-                        // 5. Cellule courante
-                        auto* cell = p->GetParentCell();
-                        if (cell) {
-                            LOG("  Player cell: '{}' (interior={})",
-                                cell->GetName() ? cell->GetName() : "?", cell->IsInteriorCell());
-                        }
-
-                    });
-                }
-                LOG("=== END STUCK DIAGNOSTIC ===");
-            }
-
-            // Récupération progressive de blocage — deux stratégies selon le mode
-            if (isMounted) {
-                // Mode cheval : pas de récupération agressive (saut/toggle AIDriven
-                // casseraient le Travel package). Le cheval pathfind tout seul, on
-                // lui laisse jusqu'à 30 secondes pour débloquer une situation avant
-                // d'abandonner.
-                if (g_autoWalkStuckTimer > 30.0f) {
-                    Speak(L"Horse stuck");
-                    g_autoWalking.store(false);
-                    LOG("AutoWalk: horse stuck for 30s, giving up");
-                    // On ne touche pas directement au joueur ici — StopAutoWalk
-                    // fera le cleanup via OnStopWalking côté Papyrus (qui restaure
-                    // HorseRef/Traveler proprement).
-                    auto* taskIf = SKSE::GetTaskInterface();
-                    if (taskIf) {
-                        taskIf->AddTask([]() {
-                            StopAutoWalk();
-                        });
-                    }
-                    break;
-                }
-            } else {
-                // Mode pied : récupération progressive 3s / 6s / 10s
-                if (g_autoWalkStuckTimer > 3.0f && recoveryAttempt == 0) {
-                    // Étape 1 : simuler un appui sur Espace pour déclencher un saut directionnel
-                    LOG("AutoWalk: stuck for 3s, simulating Space press for directional jump");
-                    keybd_event(VK_SPACE, 0, 0, 0);
-                    std::thread([]() {
-                        std::this_thread::sleep_for(std::chrono::milliseconds(150));
-                        keybd_event(VK_SPACE, 0, KEYEVENTF_KEYUP, 0);
-                    }).detach();
-                    recoveryAttempt = 1;
-                } else if (g_autoWalkStuckTimer > 6.0f && recoveryAttempt < 2) {
-                    // Étape 2 : recalculer le chemin (réévaluer le package)
-                    LOG("AutoWalk: stuck for 6s, re-evaluating package");
-                    auto* taskIf = SKSE::GetTaskInterface();
-                    if (taskIf) {
-                        taskIf->AddTask([]() {
-                            auto* p = RE::PlayerCharacter::GetSingleton();
-                            if (!p) return;
-                            p->SetAIDriven(false);
-                            p->EvaluatePackage();
-                            p->SetAIDriven(true);
-                            p->EvaluatePackage();
-                        });
-                    }
-                    recoveryAttempt = 2;
-                } else if (g_autoWalkStuckTimer > 10.0f) {
-                    // Étape 3 : abandonner
-                    Speak(L"Can't reach target");
-                    g_autoWalking.store(false);
-                    LOG("AutoWalk: stuck for 10s, giving up");
-                    auto* taskIf = SKSE::GetTaskInterface();
-                    if (taskIf) {
-                        taskIf->AddTask([]() {
-                            auto* p = RE::PlayerCharacter::GetSingleton();
-                            if (!p) return;
-                            p->SetAIDriven(false);
-                            auto* avo = p->AsActorValueOwner();
-                            if (avo) {
-                                float base = avo->GetBaseActorValue(RE::ActorValue::kSpeedMult);
-                                avo->SetActorValue(RE::ActorValue::kSpeedMult, base);
-                            }
-                            p->EvaluatePackage();
-                        });
-                    }
-                    break;
-                }
-            }
+            });  // fin AddTask
         }
     });
 }
