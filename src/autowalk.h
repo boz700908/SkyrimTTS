@@ -2,6 +2,69 @@
 
 // AUTOWALK — Pont C++ vers Papyrus pour la marche automatique
 
+// Helper pour trouver la quête AutoWalk — cherche par EditorID d'abord (AE natif + po3_Tweaks),
+// puis fallback par plugin name + local FormID (compatible SE 1.5.97 sans po3_Tweaks).
+static RE::TESQuest* FindAutoWalkQuest() {
+    // Tentative 1 : EditorID (fonctionne sur AE natif ou SE avec po3_Tweaks Load EditorIDs)
+    auto* quest = RE::TESForm::LookupByEditorID<RE::TESQuest>("SkyrimTTS_AutoWalkQuest");
+    if (quest) {
+        LOG("AutoWalk: quest found via EditorID");
+        return quest;
+    }
+    LOG("AutoWalk: EditorID lookup failed, trying LookupForm fallback");
+
+    // Tentative 2 : lookup par plugin + local FormID (0x800 dans SkyrimTTS_AutoWalk.esp)
+    auto* dataHandler = RE::TESDataHandler::GetSingleton();
+    if (!dataHandler) {
+        LOG("AutoWalk: TESDataHandler is null!");
+        return nullptr;
+    }
+
+    // Tentative 2 : lookup par plugin name
+    const char* espName = "SkyrimTTS_AutoWalk.esp";
+    quest = dataHandler->LookupForm<RE::TESQuest>(0x800, espName);
+    if (quest) {
+        LOG("AutoWalk: quest found via LookupForm (FormID 0x800)");
+        return quest;
+    }
+
+    // Tentative 3 : chercher le plugin et construire le FormID résolu manuellement
+    auto* modFile = dataHandler->LookupModByName(espName);
+    if (modFile) {
+        LOG("AutoWalk: plugin found, compileIndex={}, smallFileCompileIndex={}",
+            modFile->compileIndex, modFile->smallFileCompileIndex);
+        RE::FormID resolvedID = (static_cast<RE::FormID>(modFile->compileIndex) << 24) | 0x800;
+        LOG("AutoWalk: trying resolved FormID 0x{:08X}", resolvedID);
+        auto* form = RE::TESForm::LookupByID(resolvedID);
+        if (form) {
+            quest = form->As<RE::TESQuest>();
+            if (quest) {
+                LOG("AutoWalk: quest found via resolved FormID!");
+                return quest;
+            }
+        }
+        // Tentative 4 : si c'est un light plugin (FE slot), essayer avec smallFileCompileIndex
+        if (modFile->compileIndex == 0xFE || modFile->compileIndex == 0xFF) {
+            resolvedID = 0xFE000000 | (static_cast<RE::FormID>(modFile->smallFileCompileIndex) << 12) | 0x800;
+            LOG("AutoWalk: trying light FormID 0x{:08X}", resolvedID);
+            form = RE::TESForm::LookupByID(resolvedID);
+            if (form) {
+                quest = form->As<RE::TESQuest>();
+                if (quest) {
+                    LOG("AutoWalk: quest found via light FormID!");
+                    return quest;
+                }
+            }
+        }
+    } else {
+        LOG("AutoWalk: plugin '{}' NOT found by LookupModByName", espName);
+    }
+
+    LOG("AutoWalk: all lookup methods failed");
+
+    return nullptr;
+}
+
 static std::atomic_bool g_autoWalking{false};
 static std::wstring     g_autoWalkTarget;
 static RE::FormID       g_autoWalkTargetID{0};
@@ -429,7 +492,7 @@ static void StartAutoWalk(RE::FormID targetFormID, float stopDistance = 100.0f,
             }
         }
 
-        auto* quest = RE::TESForm::LookupByEditorID<RE::TESQuest>("SkyrimTTS_AutoWalkQuest");
+        auto* quest = FindAutoWalkQuest();
         if (!quest) {
             LOG("AutoWalk: quest SkyrimTTS_AutoWalkQuest not found");
             Speak(L"AutoWalk quest not found");
@@ -523,7 +586,7 @@ static void StopAutoWalk() {
             player->EvaluatePackage();
         }
 
-        auto* quest = RE::TESForm::LookupByEditorID<RE::TESQuest>("SkyrimTTS_AutoWalkQuest");
+        auto* quest = FindAutoWalkQuest();
         if (!quest) return;
 
         auto* vm = RE::BSScript::Internal::VirtualMachine::GetSingleton();
@@ -597,6 +660,7 @@ static RE::FormID CreateTempMarkerAt(const RE::NiPoint3& pos) {
 }
 
 static void ToggleAutoWalk() {
+    LOG("InputDiag: ToggleAutoWalk ENTRY, g_autoWalking={}", g_autoWalking.load());
     if (g_autoWalking.load()) {
         Speak(L"Stopping");
         StopAutoWalk();

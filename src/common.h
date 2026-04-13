@@ -6,9 +6,12 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <mutex>
+#include <queue>
 #include <sstream>
 #include <stop_token>
 #include <string>
@@ -60,29 +63,103 @@ static std::string WToNarrow(const std::wstring& w) {
     return s;
 }
 
-// Interrompt la synthèse en cours puis lit le texte
+// --- Async speech worker ---
+// Speak() is called from the InputListener thread which MUST NOT block.
+// nvdaController_* functions use SendMessage to the NVDA process which
+// can block if NVDA is busy. We use a dedicated worker thread to absorb
+// the blocking while keeping Speak() instant.
+struct SpeechQueueState {
+    std::mutex mutex;
+    std::condition_variable cv;
+    std::wstring latest;           // replaced on each Speak() — natural debounce
+    bool hasLatest = false;
+    std::queue<std::wstring> queued;  // appended by SpeakQueue() — preserved
+    bool stop = false;
+    std::thread worker;
+};
+
+// Pointer to the unique SpeechQueueState instance, set once on first access.
+// Using a pointer (not a reference) so the thread lambda can safely copy it
+// without capturing function-local variables that would go out of scope.
+inline SpeechQueueState* g_speechQueuePtr = nullptr;
+
+inline SpeechQueueState& GetSpeechQueue() {
+    static SpeechQueueState s;
+    static std::once_flag once;
+    std::call_once(once, []() {
+        g_speechQueuePtr = &s;
+        std::thread worker([]() {
+            SpeechQueueState* q = g_speechQueuePtr;
+            while (true) {
+                std::unique_lock<std::mutex> lock(q->mutex);
+                q->cv.wait(lock, [q]() { return q->hasLatest || !q->queued.empty() || q->stop; });
+                if (q->stop) return;
+
+                // Priority: process latest Speak() first (cancel + speak)
+                if (q->hasLatest) {
+                    std::wstring text = std::move(q->latest);
+                    q->hasLatest = false;
+                    lock.unlock();
+                    nvdaController_cancelSpeech();
+                    nvdaController_speakText(text.c_str());
+                    lock.lock();
+                }
+
+                // Then drain queued texts (without cancel, append to speech)
+                while (!q->queued.empty() && !q->hasLatest) {
+                    std::wstring text = std::move(q->queued.front());
+                    q->queued.pop();
+                    lock.unlock();
+                    nvdaController_speakText(text.c_str());
+                    lock.lock();
+                }
+            }
+        });
+        worker.detach();
+    });
+    return s;
+}
+
+// Interrompt la synthèse en cours puis lit le texte.
+// Non-bloquant : pousse dans la queue worker et retourne immédiatement.
+// Si plusieurs Speak() sont appelés en rafale, seul le dernier texte est
+// prononcé (les intermédiaires sont remplacés) — debounce naturel pour la
+// navigation rapide.
 static void Speak(const wchar_t* w) {
-    if (w && *w) {
-        std::wstring norm = NormalizeForSpeech(w);
-        nvdaController_cancelSpeech();
-        nvdaController_speakText(norm.c_str());
+    if (!w || !*w) return;
+    auto& q = GetSpeechQueue();
+    std::wstring norm = NormalizeForSpeech(w);
+    {
+        std::lock_guard<std::mutex> lock(q.mutex);
+        q.latest = std::move(norm);
+        q.hasLatest = true;
     }
+    q.cv.notify_one();
 }
 
 static void Speak(const std::wstring& w) {
-    if (!w.empty()) {
-        std::wstring norm = NormalizeForSpeech(w);
-        nvdaController_cancelSpeech();
-        nvdaController_speakText(norm.c_str());
+    if (w.empty()) return;
+    auto& q = GetSpeechQueue();
+    std::wstring norm = NormalizeForSpeech(w);
+    {
+        std::lock_guard<std::mutex> lock(q.mutex);
+        q.latest = std::move(norm);
+        q.hasLatest = true;
     }
+    q.cv.notify_one();
 }
 
 // Ajoute à la file sans interrompre le speech en cours (pour les infos secondaires)
+// Non-bloquant : pousse dans la queue worker et retourne immédiatement.
 static void SpeakQueue(const std::wstring& w) {
-    if (!w.empty()) {
-        std::wstring norm = NormalizeForSpeech(w);
-        nvdaController_speakText(norm.c_str());
+    if (w.empty()) return;
+    auto& q = GetSpeechQueue();
+    std::wstring norm = NormalizeForSpeech(w);
+    {
+        std::lock_guard<std::mutex> lock(q.mutex);
+        q.queued.push(std::move(norm));
     }
+    q.cv.notify_one();
 }
 
 static std::wstring Utf8ToWString(const std::string& s) {

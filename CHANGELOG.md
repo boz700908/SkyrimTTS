@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.4.1 (2026-04-12)
+
+### New features
+- Favorites menu: Extended Hotkey System (EHS) support — when EHS is installed, hotkey assignments via number keys 1-8 and Ctrl+F1-F12 are now announced. EHS replaces the favorites SWF and stores assignments in its own co-save invisible to GFx, so the plugin maintains its own internal mapping to track and announce shortcuts
+- Container menu: follower carry weight — when trading with a follower (companion), the H key now also announces the follower's current carry weight and capacity (e.g. "Lydia: 150 of 300")
+- RaceMenu mod detection — the character creation menu now automatically detects whether the RaceMenu mod is installed and switches between RaceMenu-specific GFx paths and vanilla paths. Falls back to vanilla gracefully if RaceMenu is not present
+
+### Bug fixes
+- Autowalk: fixed "quest not found" on SE 1.5.97 — the quest lookup now uses a multi-fallback strategy (EditorID, LookupForm, resolved FormID, light plugin FormID) instead of relying solely on EditorID which only works on AE or with po3_Tweaks
+- Speech: Speak() and SpeakQueue() no longer block the input listener thread — moved nvdaController calls to a dedicated async worker thread to prevent input lag when NVDA is busy
+
 ## v1.4 (2026-04-07)
 
 ### New features

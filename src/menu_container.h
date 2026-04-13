@@ -274,6 +274,24 @@ static void AnnounceContainerStats() {
             else              msg  = L"weight: ";
             msg += FormatCarryWeight(Utf8ToWString(carry));
         }
+
+        // Si le conteneur cible est un compagnon (PlayerTeammate), on lit
+        // aussi son poids porte / capacite. Pour un coffre ou un cadavre, on
+        // ne dit rien de plus (GetTargetRefHandle retournera un ref non-actor
+        // ou un actor non-teammate).
+        RE::RefHandle targetHandle = RE::ContainerMenu::GetTargetRefHandle();
+        RE::NiPointer<RE::Actor> targetActor;
+        if (RE::LookupReferenceByHandle(targetHandle, targetActor) && targetActor &&
+            targetActor->IsPlayerTeammate()) {
+            float maxCarry = targetActor->AsActorValueOwner()->GetActorValue(RE::ActorValue::kCarryWeight);
+            float currentWeight = targetActor->GetWeightInContainer();
+            const char* rawName = targetActor->GetDisplayFullName();
+            std::wstring followerName = (rawName && rawName[0]) ? Utf8ToWString(rawName) : L"Follower";
+            if (!msg.empty()) msg += L", ";
+            msg += followerName + L": " + std::to_wstring(static_cast<int>(currentWeight))
+                 + L" of " + std::to_wstring(static_cast<int>(maxCarry));
+        }
+
         if (!msg.empty()) Speak(msg);
     });
 }

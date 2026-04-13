@@ -64,6 +64,20 @@ static std::wstring     g_lastRaceSexRaceDesc;
 static int              g_lastRaceSexSex{-1};
 static bool             g_lastRaceSexNameEntryActive{false};
 
+// Detection RaceMenu vs vanilla : on tente les chemins RaceMenu en premier.
+// Si le mod RaceMenu est installe, la structure GFx est completement differente :
+//   RaceMenu: _root.RaceSexMenuBaseInstance.RaceSexPanelsInstance est un MovieClip "RaceMenu"
+//     .racePanel.slidingCategoryList.categoryList.selectedEntry.text  (categorie)
+//     .racePanel.itemList.selectedEntry.text                          (item/slider label)
+//     .racePanel.itemList.selectedEntry.position                      (valeur du slider)
+//     .raceDescription.textField.text                                 (description race)
+//     .bottomBar.playerInfo.PlayerName.text                           (nom du joueur)
+//   Vanilla: chemins avec CagetoryLockBaseInstance, PanelTwoNarrowInstance, etc.
+static std::atomic_bool g_raceSexIsRaceMenu{false};
+
+// Prefixe commun pour eviter la repetition
+static constexpr const char* RM_BASE = "_root.RaceSexMenuBaseInstance.RaceSexPanelsInstance";
+
 static void AnnounceRaceSexChangeImpl() {
     if (!g_raceSexOpen.load()) return;
 
@@ -80,106 +94,160 @@ static void AnnounceRaceSexChangeImpl() {
     const bool firstRead = g_lastRaceSexSex < 0;
     g_raceSexTickCount++;
 
-    // 1. Sexe depuis les données C++ (source fiable, pas le slider GFx)
+    // Detection auto RaceMenu vs vanilla (une seule fois)
+    // RaceMenu expose .racePanel.itemList, vanilla expose .PanelTwoWideInstance
+    if (firstRead) {
+        RE::GFxValue testVal;
+        std::string rmTestPath = std::string(RM_BASE) + ".racePanel.itemList";
+        if (movie->GetVariable(&testVal, rmTestPath.c_str()) && testVal.IsObject()) {
+            g_raceSexIsRaceMenu.store(true);
+            LOG("RaceSex: RaceMenu mod detected (racePanel.itemList found)");
+        } else {
+            g_raceSexIsRaceMenu.store(false);
+            LOG("RaceSex: vanilla mode (racePanel.itemList not found)");
+        }
+    }
+
+    const bool isRM = g_raceSexIsRaceMenu.load(std::memory_order_relaxed);
+
+    // 1. Sexe depuis les donnees C++ (source fiable, pas le slider GFx)
     const int sex = (menu->GetRuntimeData().sex == RE::SEX::kFemale) ? 1 : 0;
     if (sex != g_lastRaceSexSex) {
         LOG("RaceSex: sex={} firstRead={}", sex == 1 ? "Female" : "Male", firstRead);
         g_lastRaceSexSex = sex;
-        // Ne pas lire le sexe ici — il sera lu via le slider "Sexe" ou à l'ouverture
     }
 
-    // 2. Catégorie active (Ethnie / Corps / Tête / sous-catégories Sourcils, Yeux, etc.)
+    // 2. Categorie active
     bool catChanged = false;
-    if (GetGFxString(movie, "_root.RaceSexMenuBaseInstance.CagetoryLockBaseInstance.CategoryInstance.List_mc.SelectedEntry.textField.text", tmp) && !tmp.empty()) {
-        const std::wstring cat = ResolveUIString(movie, tmp);
-        if (!cat.empty() && cat != g_lastRaceSexCat) {
-            LOG("RaceSex: cat='{}' firstRead={}", WStringToUtf8(cat), firstRead);
-            g_lastRaceSexCat = cat;
-            catChanged = true;
-            // Reset slider pour lire le premier slider du nouvel onglet
-            g_lastRaceSexSliderLabel.clear();
-            g_lastRaceSexSliderValue = -1.0;
-            // Lire la catégorie + hints
-            if (firstRead) SpeakQueue(cat + hints); else Speak(cat + hints);
+    {
+        // RaceMenu: racePanel.slidingCategoryList.categoryList.selectedEntry.text
+        // Vanilla: CagetoryLockBaseInstance.CategoryInstance.List_mc.SelectedEntry.textField.text
+        const char* catPaths[] = {
+            isRM ? "_root.RaceSexMenuBaseInstance.RaceSexPanelsInstance.racePanel.slidingCategoryList.categoryList.selectedEntry.text"
+                 : "_root.RaceSexMenuBaseInstance.CagetoryLockBaseInstance.CategoryInstance.List_mc.SelectedEntry.textField.text",
+            nullptr
+        };
+        for (auto p = catPaths; *p; ++p) {
+            if (GetGFxString(movie, *p, tmp) && !tmp.empty()) break;
         }
-    }
-
-    // 3. Race sélectionnée (panel étroit, onglet Ethnie uniquement)
-    // Ignorer les valeurs numériques (retournées dans les onglets Corps/Tête)
-    // Ne PAS reset la race au changement de catégorie — elle ne change pas
-    if (GetGFxString(movie, "_root.RaceSexMenuBaseInstance.RaceSexPanelsInstance.PanelTwoNarrowInstance.List_mc.SelectedEntry.textField.text", tmp) && !tmp.empty()) {
-        bool isNumeric = true;
-        for (auto c : tmp) { if (c < '0' || c > '9') { isNumeric = false; break; } }
-        if (!isNumeric) {
-            const std::wstring race = ResolveUIString(movie, tmp);
-            if (!race.empty() && race != g_lastRaceSexRace) {
-                LOG("RaceSex: race='{}' catChanged={}", WStringToUtf8(race), catChanged);
-                if (firstRead || catChanged) SpeakQueue(race); else Speak(race);
-                g_lastRaceSexRace = race;
-                g_lastRaceSexRaceDesc.clear();
+        if (!tmp.empty()) {
+            const std::wstring cat = ResolveUIString(movie, tmp);
+            if (!cat.empty() && cat != g_lastRaceSexCat) {
+                LOG("RaceSex: cat='{}' firstRead={} rm={}", WStringToUtf8(cat), firstRead, isRM);
+                g_lastRaceSexCat = cat;
+                catChanged = true;
+                g_lastRaceSexSliderLabel.clear();
+                g_lastRaceSexSliderValue = -1.0;
+                if (firstRead) SpeakQueue(cat + hints); else Speak(cat + hints);
             }
         }
     }
 
-    // 4. Description de la race — s'enchaîne après le nom
-    if (GetGFxString(movie, "_root.RaceSexMenuBaseInstance.RaceSexPanelsInstance.RaceDescriptionInstance.RaceTextInstance.text", tmp) && !tmp.empty()) {
-        const std::wstring desc = StripMarkupForSpeech(Utf8ToWString(tmp));
-        if (!desc.empty() && desc != g_lastRaceSexRaceDesc) {
-            SpeakQueue(desc);
-            g_lastRaceSexRaceDesc = desc;
-        }
-    }
-
-    // 5. Slider actif (panel large)
-    std::wstring sliderLabel;
-    if (GetGFxString(movie, "_root.RaceSexMenuBaseInstance.RaceSexPanelsInstance.PanelTwoWideInstance.List_mc.SelectedEntry.textField.text", tmp) && !tmp.empty())
-        sliderLabel = ResolveUIString(movie, tmp);
-    double sliderVal = -1.0;
-    GetGFxNumber(movie, "_root.RaceSexMenuBaseInstance.RaceSexPanelsInstance.PanelTwoWideInstance.List_mc.SelectedEntry.SliderInstance.position", sliderVal);
-
-    // Ignorer les sliders parasites ("Selected Text" apparaît à l'init)
-    if (!sliderLabel.empty() && WStringToUtf8(sliderLabel) == "Selected Text") {
-        sliderLabel.clear();
-    }
-
-    // Slider "Sexe"/"Sex" : lire Male/Female au lieu de 0/1
-    bool isSexSlider = false;
-    if (!sliderLabel.empty()) {
-        std::string lbl = WStringToUtf8(sliderLabel);
-        if (lbl == "Sexe" || lbl == "Sex") isSexSlider = true;
-    }
-
-    if (!sliderLabel.empty() && (sliderLabel != g_lastRaceSexSliderLabel || sliderVal != g_lastRaceSexSliderValue)) {
-        std::wstring msg;
-        if (isSexSlider) {
-            msg = (sex == 1) ? L"Female" : L"Male";
+    // 3. Race selectionnee / item selectionne
+    {
+        // RaceMenu: racePanel.itemList.selectedEntry.text (contient race OU slider label)
+        // Vanilla: PanelTwoNarrowInstance.List_mc.SelectedEntry.textField.text
+        tmp.clear();
+        if (isRM) {
+            GetGFxString(movie, "_root.RaceSexMenuBaseInstance.RaceSexPanelsInstance.racePanel.itemList.selectedEntry.text", tmp);
         } else {
-            msg = sliderLabel;
-            if (sliderVal >= 0.0)
-                msg += L", " + std::to_wstring(static_cast<int>(std::round(sliderVal)));
+            GetGFxString(movie, "_root.RaceSexMenuBaseInstance.RaceSexPanelsInstance.PanelTwoNarrowInstance.List_mc.SelectedEntry.textField.text", tmp);
         }
-        LOG("RaceSex: slider='{}' val={:.1f} -> '{}'", WStringToUtf8(sliderLabel), sliderVal, WStringToUtf8(msg));
-        if (firstRead || catChanged) SpeakQueue(msg); else Speak(msg);
-        g_lastRaceSexSliderLabel = sliderLabel;
-        g_lastRaceSexSliderValue = sliderVal;
+        if (!tmp.empty()) {
+            bool isNumeric = true;
+            for (auto c : tmp) { if (c < '0' || c > '9') { isNumeric = false; break; } }
+            if (!isNumeric) {
+                const std::wstring race = ResolveUIString(movie, tmp);
+                if (!race.empty() && race != g_lastRaceSexRace) {
+                    LOG("RaceSex: race/item='{}' catChanged={}", WStringToUtf8(race), catChanged);
+                    if (firstRead || catChanged) SpeakQueue(race); else Speak(race);
+                    g_lastRaceSexRace = race;
+                    g_lastRaceSexRaceDesc.clear();
+                }
+            }
+        }
     }
 
-    // Nom en cours de saisie — détection via _visible (le champ peut être vide au début)
-    std::string nameTmp;
-    RE::GFxValue nameVisVal;
-    const bool nameFieldVisible =
-        SafeGetVariable(movie, nameVisVal, "_root.RaceSexMenuBaseInstance.RaceSexPanelsInstance.NameEntryInstance._visible") &&
-        ((SafeIsBool(nameVisVal) && SafeGetBool(nameVisVal)) || (SafeIsNumber(nameVisVal) && SafeGetNumber(nameVisVal) > 0.5));
-    GetGFxString(movie, "_root.RaceSexMenuBaseInstance.RaceSexPanelsInstance.NameEntryInstance.TextInputInstance.text", nameTmp);
-    // Le champ de nom est toujours "visible" en GFx. On ne peut pas détecter
-    // quand le joueur entre en mode saisie de nom. On lit simplement les
-    // caractères tapés quand le texte change, sans annonce "Enter your name".
-    if (!nameTmp.empty()) {
-        const std::wstring name = Utf8ToWString(nameTmp);
-        if (name != g_lastRaceSexName) {
-            LOG("RaceSex: name='{}'", nameTmp);
-            Speak(name);
-            g_lastRaceSexName = name;
+    // 4. Description de la race
+    {
+        tmp.clear();
+        // RaceMenu: raceDescription.textField.text
+        // Vanilla: RaceDescriptionInstance.RaceTextInstance.text
+        if (isRM)
+            GetGFxString(movie, "_root.RaceSexMenuBaseInstance.RaceSexPanelsInstance.raceDescription.textField.text", tmp);
+        else
+            GetGFxString(movie, "_root.RaceSexMenuBaseInstance.RaceSexPanelsInstance.RaceDescriptionInstance.RaceTextInstance.text", tmp);
+
+        if (!tmp.empty()) {
+            const std::wstring desc = StripMarkupForSpeech(Utf8ToWString(tmp));
+            if (!desc.empty() && desc != g_lastRaceSexRaceDesc) {
+                SpeakQueue(desc);
+                g_lastRaceSexRaceDesc = desc;
+            }
+        }
+    }
+
+    // 5. Slider actif
+    {
+        std::wstring sliderLabel;
+        double sliderVal = -1.0;
+
+        if (isRM) {
+            // RaceMenu: le slider label et la position sont dans itemList.selectedEntry
+            tmp.clear();
+            if (GetGFxString(movie, "_root.RaceSexMenuBaseInstance.RaceSexPanelsInstance.racePanel.itemList.selectedEntry.text", tmp) && !tmp.empty())
+                sliderLabel = ResolveUIString(movie, tmp);
+            GetGFxNumber(movie, "_root.RaceSexMenuBaseInstance.RaceSexPanelsInstance.racePanel.itemList.selectedEntry.position", sliderVal);
+        } else {
+            // Vanilla: PanelTwoWideInstance
+            tmp.clear();
+            if (GetGFxString(movie, "_root.RaceSexMenuBaseInstance.RaceSexPanelsInstance.PanelTwoWideInstance.List_mc.SelectedEntry.textField.text", tmp) && !tmp.empty())
+                sliderLabel = ResolveUIString(movie, tmp);
+            GetGFxNumber(movie, "_root.RaceSexMenuBaseInstance.RaceSexPanelsInstance.PanelTwoWideInstance.List_mc.SelectedEntry.SliderInstance.position", sliderVal);
+        }
+
+        // Ignorer les sliders parasites
+        if (!sliderLabel.empty() && WStringToUtf8(sliderLabel) == "Selected Text")
+            sliderLabel.clear();
+
+        // Slider "Sexe"/"Sex" : lire Male/Female au lieu de 0/1
+        bool isSexSlider = false;
+        if (!sliderLabel.empty()) {
+            std::string lbl = WStringToUtf8(sliderLabel);
+            if (lbl == "Sexe" || lbl == "Sex") isSexSlider = true;
+        }
+
+        if (!sliderLabel.empty() && (sliderLabel != g_lastRaceSexSliderLabel || sliderVal != g_lastRaceSexSliderValue)) {
+            std::wstring msg;
+            if (isSexSlider) {
+                msg = (sex == 1) ? L"Female" : L"Male";
+            } else {
+                msg = sliderLabel;
+                if (sliderVal >= 0.0)
+                    msg += L", " + std::to_wstring(static_cast<int>(std::round(sliderVal)));
+            }
+            LOG("RaceSex: slider='{}' val={:.1f} -> '{}'", WStringToUtf8(sliderLabel), sliderVal, WStringToUtf8(msg));
+            if (firstRead || catChanged) SpeakQueue(msg); else Speak(msg);
+            g_lastRaceSexSliderLabel = sliderLabel;
+            g_lastRaceSexSliderValue = sliderVal;
+        }
+    }
+
+    // 6. Nom du joueur
+    {
+        std::string nameTmp;
+        if (isRM)
+            GetGFxString(movie, "_root.RaceSexMenuBaseInstance.RaceSexPanelsInstance.bottomBar.playerInfo.PlayerName.text", nameTmp);
+        else
+            GetGFxString(movie, "_root.RaceSexMenuBaseInstance.RaceSexPanelsInstance.NameEntryInstance.TextInputInstance.text", nameTmp);
+
+        if (!nameTmp.empty()) {
+            const std::wstring name = Utf8ToWString(nameTmp);
+            if (name != g_lastRaceSexName) {
+                LOG("RaceSex: name='{}'", nameTmp);
+                Speak(name);
+                g_lastRaceSexName = name;
+            }
         }
     }
 }

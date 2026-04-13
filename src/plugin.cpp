@@ -713,6 +713,20 @@ public:
             auto* btn = e->AsButtonEvent();
             if (!btn) continue;
 
+            // === DIAGNOSTIC SHIFT FREEZE ===
+            // Loggue les inputs clavier qui nous interessent (Home, PageUp/Dn, X)
+            // pour voir si Shift+key arrive bien dans le listener
+            if (btn->GetDevice() == RE::INPUT_DEVICE::kKeyboard) {
+                const uint32_t diagCode = btn->GetIDCode();
+                if (diagCode == 199 || diagCode == 201 || diagCode == 207 ||
+                    diagCode == 209 || diagCode == 45) {
+                    const bool diagShift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+                    const bool diagAlt   = (GetAsyncKeyState(VK_MENU)  & 0x8000) != 0;
+                    LOG("InputDiag: kb dxCode={} isDown={} isUp={} shift={} alt={}",
+                        diagCode, btn->IsDown(), btn->IsUp(), diagShift, diagAlt);
+                }
+            }
+
             // --- Gamepad : gestion LB comme modificateur ---
             if (btn->GetDevice() == RE::INPUT_DEVICE::kGamepad) {
                 auto gpCode = btn->GetIDCode();
@@ -1151,46 +1165,48 @@ public:
             //     continue;
             // }
 
-            // F6 = racesex diagnostic
-            if (code == RE::BSKeyboardDevice::Keys::kF6) {
-                DiagnoseRaceSexNow();
-                continue;
-            }
-
-            // F7 = container diagnostic
-            if (code == RE::BSKeyboardDevice::Keys::kF7) {
-                DiagnoseContainerNow();
-                continue;
-            }
-
-            // F8 = main menu diagnostic
-            if (code == RE::BSKeyboardDevice::Keys::kF8) {
-                DiagnoseMainMenuNow();
-                continue;
-            }
-
-            // F9 = inventory diagnostic
-            if (code == RE::BSKeyboardDevice::Keys::kF9) {
-                DiagnoseInventoryNow();
-                continue;
-            }
-
-            // F10 = journal diagnostic
-            if (code == RE::BSKeyboardDevice::Keys::kF10) {
-                DiagnoseJournalNow();
-                continue;
-            }
-
-            // F11 = magic diagnostic
-            if (code == RE::BSKeyboardDevice::Keys::kF11) {
-                DiagnoseMagicNow();
-                continue;
-            }
-
-            // F12 = levelup diagnostic
-            if (code == RE::BSKeyboardDevice::Keys::kF12) {
-                QueueDiagnoseLevelUp();
-                continue;
+            // Extended Hotkey System (EHS) : gestion des raccourcis dans le menu favoris.
+            // EHS remplace favoritesmenu.swf et prend le controle de TOUTES les
+            // assignations (numeros 1-8 ET Ctrl+F1-F12). Comme il stocke tout dans
+            // son propre co-save invisible depuis GFx, on maintient notre propre
+            // mapping pour pouvoir annoncer les raccourcis.
+            //
+            // DOIT etre traite AVANT le bloc g_favOpen plus bas (qui gere uniquement
+            // la navigation haut/bas) ET avant tout autre handler global, pour que
+            // nos annonces soient envoyees en priorite et que le flow favoritesmenu
+            // ne soit jamais interrompu.
+            //
+            // Ne s'active que si EHS est reellement charge dans le processus SKSE.
+            if (g_favOpen.load(std::memory_order_relaxed) &&
+                g_ehsInstalled.load(std::memory_order_relaxed)) {
+                // 1) Touches numeriques 1-8 (vanilla hotkeys interceptees par EHS)
+                if (code >= RE::BSKeyboardDevice::Keys::kNum1 &&
+                    code <= RE::BSKeyboardDevice::Keys::kNum8) {
+                    int num = static_cast<int>(code) - static_cast<int>(RE::BSKeyboardDevice::Keys::kNum1) + 1;
+                    QueueEHSHotkeyAnnounce(std::to_wstring(num));
+                    continue;
+                }
+                // 2) Ctrl+F1..F12 (raccourcis etendus EHS)
+                int fKey = 0;
+                switch (code) {
+                    case RE::BSKeyboardDevice::Keys::kF1:  fKey = 1;  break;
+                    case RE::BSKeyboardDevice::Keys::kF2:  fKey = 2;  break;
+                    case RE::BSKeyboardDevice::Keys::kF3:  fKey = 3;  break;
+                    case RE::BSKeyboardDevice::Keys::kF4:  fKey = 4;  break;
+                    case RE::BSKeyboardDevice::Keys::kF5:  fKey = 5;  break;
+                    case RE::BSKeyboardDevice::Keys::kF6:  fKey = 6;  break;
+                    case RE::BSKeyboardDevice::Keys::kF7:  fKey = 7;  break;
+                    case RE::BSKeyboardDevice::Keys::kF8:  fKey = 8;  break;
+                    case RE::BSKeyboardDevice::Keys::kF9:  fKey = 9;  break;
+                    case RE::BSKeyboardDevice::Keys::kF10: fKey = 10; break;
+                    case RE::BSKeyboardDevice::Keys::kF11: fKey = 11; break;
+                    case RE::BSKeyboardDevice::Keys::kF12: fKey = 12; break;
+                    default: break;
+                }
+                if (fKey > 0 && (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0) {
+                    QueueEHSHotkeyAnnounce(L"F" + std::to_wstring(fKey));
+                    continue;
+                }
             }
 
             // Main menu: any key press triggers a deferred read on the UI thread
@@ -1245,6 +1261,8 @@ public:
             }
 
             // Favoris : haut/bas naviguent dans la liste
+            // Note: les touches 1-8 sont gerees nativement par le polling (80ms)
+            // qui detecte le changement du champ .hotkey dans le dataProvider SkyUI.
             if (g_favOpen.load(std::memory_order_relaxed)) {
                 const bool navKey = (code == RE::BSKeyboardDevice::Keys::kUp)    ||
                                     (code == RE::BSKeyboardDevice::Keys::kDown)   ||
@@ -1497,18 +1515,25 @@ public:
                 }
             }
 
-            // F = toggle caméra première/troisième personne
+            // F = toggle caméra première/troisième personne (uniquement en jeu).
+            // Dans l'inventaire/conteneur/marchand/magie/favoris, F a une autre
+            // signification (toggle favorite SkyUI, etc.) et ne change pas la camera,
+            // donc on ne doit pas annoncer "First/Third person" dans ces contextes.
             if (code == RE::BSKeyboardDevice::Keys::kF) {
-                // Délai court pour laisser le jeu changer la caméra avant de lire
-                auto* task = SKSE::GetTaskInterface();
-                if (task) {
-                    task->AddTask([]() {
-                        auto* camera = RE::PlayerCamera::GetSingleton();
-                        if (camera) {
-                            bool fp = camera->IsInFirstPerson();
-                            Speak(fp ? L"First person" : L"Third person");
-                        }
-                    });
+                auto* ui = RE::UI::GetSingleton();
+                const bool inGame = ui && !ui->GameIsPaused();
+                if (inGame) {
+                    // Délai court pour laisser le jeu changer la caméra avant de lire
+                    auto* task = SKSE::GetTaskInterface();
+                    if (task) {
+                        task->AddTask([]() {
+                            auto* camera = RE::PlayerCamera::GetSingleton();
+                            if (camera) {
+                                bool fp = camera->IsInFirstPerson();
+                                Speak(fp ? L"First person" : L"Third person");
+                            }
+                        });
+                    }
                 }
                 // Ne pas 'continue' — laisser le jeu traiter F normalement
             }
@@ -1918,6 +1943,15 @@ SKSEPluginLoad(const SKSE::LoadInterface* skse) {
             }
             LoadTranslationFile(); // fallback pour les clés absentes du BSScaleformTranslator
             DetectSkyUIFromPlugin();
+
+            // Detection d'Extended Hotkey System (mod SKSE qui permet d'assigner
+            // Ctrl+F1-F12 comme raccourcis favoris). On verifie que la DLL est
+            // effectivement CHARGEE (pas juste presente sur disque) pour eviter
+            // les faux positifs sur les installations cassees ou les mauvaises
+            // versions (ex: v1.1 sur Skyrim AE 1.6.x). GetModuleHandleA retourne
+            // nullptr si la DLL n'est pas mappee dans le processus.
+            g_ehsInstalled.store(GetModuleHandleA("ExtendedHotkeySystem.dll") != nullptr);
+            LOG("EHS detection: {}", g_ehsInstalled.load() ? "loaded" : "not loaded");
             RegisterMenuListener();
             RegisterCrosshairListener();
             RegisterActivateListener();

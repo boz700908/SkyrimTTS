@@ -1292,6 +1292,7 @@ static void RefreshFilteredList() {
 
 // --- Naviguer : objet suivant/précédent ---
 static void ScannerNextObject() {
+    LOG("InputDiag: ScannerNextObject ENTRY");
     if (NeedsRescan()) {
         DoScan(kScanThenNextObj);
         return;
@@ -1325,6 +1326,7 @@ static void ScannerNextObject() {
 }
 
 static void ScannerPrevObject() {
+    LOG("InputDiag: ScannerPrevObject ENTRY");
     if (NeedsRescan()) {
         DoScan(kScanThenPrevObj);
         return;
@@ -1359,6 +1361,7 @@ static void ScannerPrevObject() {
 
 // --- Changer de catégorie (rescan + filtre, saute les catégories vides) ---
 static void ScannerNextCategory() {
+    LOG("InputDiag: ScannerNextCategory ENTRY");
     // Toujours rescanner au changement de catégorie (un PNJ peut être mort entre-temps)
     DoScan(kScanThenNextCat);
 }
@@ -1384,6 +1387,7 @@ static void ScannerNextCategoryImpl() {
 }
 
 static void ScannerPrevCategory() {
+    LOG("InputDiag: ScannerPrevCategory ENTRY");
     DoScan(kScanThenPrevCat);
 }
 
