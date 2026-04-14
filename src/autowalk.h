@@ -462,6 +462,134 @@ static void StartAutoWalk(RE::FormID targetFormID, float stopDistance = 100.0f,
         LOG("AutoWalk: quest running={}, formID={:08X}, handle={:X}",
             quest->IsRunning(), quest->GetFormID(), handle);
 
+        // === DIAGNOSTIC PRE-DISPATCH ===
+        // Pour detecter si le crash vient d'un etat instable du jeu au moment
+        // du dispatch. Si les joueurs crashent, on verra dans leurs logs quel
+        // champ etait null/invalide juste avant le crash.
+        {
+            auto* p = RE::PlayerCharacter::GetSingleton();
+            if (!p) {
+                LOG("AutoWalk PRE-DISPATCH DIAG: Player singleton is NULL !!!");
+            } else {
+                auto* body3D = p->Get3D();
+                auto* charCtrl = p->GetCharController();
+                auto* cell = p->GetParentCell();
+                auto pos = p->GetPosition();
+                bool posValid = !std::isnan(pos.x) && !std::isnan(pos.y) && !std::isnan(pos.z);
+                auto* process = p->GetActorRuntimeData().currentProcess;
+
+                auto* ui = RE::UI::GetSingleton();
+                bool loadingOpen = ui && ui->IsMenuOpen(RE::LoadingMenu::MENU_NAME);
+                bool faderOpen = ui && ui->IsMenuOpen("Fader Menu");
+                bool anyMenuOpen = ui && ui->GameIsPaused();
+
+                LOG("=== AutoWalk PRE-DISPATCH DIAG ===");
+                LOG("  [Player core]");
+                LOG("    Singleton:          OK");
+                LOG("    3D model:           {}", body3D ? "OK" : "NULL !!!");
+                LOG("    Char controller:    {}", charCtrl ? "OK" : "NULL !!!");
+                LOG("    Position:           ({:.1f},{:.1f},{:.1f}) valid={}",
+                    pos.x, pos.y, pos.z, posValid);
+                LOG("    currentProcess:     {}", process ? "OK" : "NULL !!!");
+                LOG("    Race:               {}",
+                    p->GetRace() && p->GetRace()->GetName() ? p->GetRace()->GetName() : "?");
+
+                LOG("  [Player state]");
+                LOG("    IsDead:             {}", p->IsDead());
+                LOG("    IsInCombat:         {}", p->IsInCombat());
+                LOG("    IsOnMount:          {}", p->IsOnMount());
+                LOG("    IsSneaking:         {}", p->IsSneaking());
+                LOG("    IsInKillMove:       {}", p->IsInKillMove());
+                LOG("    IsAIEnabled:        {}", p->IsAIEnabled());
+                if (auto* avo = p->AsActorValueOwner()) {
+                    LOG("    Health:             {:.0f}/{:.0f}",
+                        avo->GetActorValue(RE::ActorValue::kHealth),
+                        avo->GetPermanentActorValue(RE::ActorValue::kHealth));
+                    LOG("    SpeedMult:          current={:.0f} base={:.0f}",
+                        avo->GetActorValue(RE::ActorValue::kSpeedMult),
+                        avo->GetBaseActorValue(RE::ActorValue::kSpeedMult));
+                }
+
+                LOG("  [Cell / world]");
+                LOG("    Parent cell:        {} ({})",
+                    cell ? "OK" : "NULL !!!",
+                    cell && cell->GetName() ? cell->GetName() : "?");
+                LOG("    Cell attached:      {}",
+                    cell ? (cell->IsAttached() ? "yes" : "no (loading?)") : "N/A");
+                LOG("    Cell interior:      {}",
+                    cell ? (cell->IsInteriorCell() ? "yes" : "no (exterior)") : "N/A");
+                if (auto* worldspace = p->GetWorldspace()) {
+                    LOG("    Worldspace:         {}",
+                        worldspace->GetName() ? worldspace->GetName() : "?");
+                }
+
+                LOG("  [UI / context]");
+                LOG("    LoadingMenu open:   {}", loadingOpen);
+                LOG("    Fader Menu open:    {}", faderOpen);
+                LOG("    Game paused:        {}", anyMenuOpen);
+
+                LOG("  [Char controller state]");
+                if (charCtrl) {
+                    const char* stateStr = "?";
+                    switch (charCtrl->context.currentState) {
+                        case RE::hkpCharacterStateType::kOnGround: stateStr = "OnGround"; break;
+                        case RE::hkpCharacterStateType::kJumping:  stateStr = "Jumping"; break;
+                        case RE::hkpCharacterStateType::kInAir:    stateStr = "InAir"; break;
+                        case RE::hkpCharacterStateType::kClimbing: stateStr = "Climbing"; break;
+                        case RE::hkpCharacterStateType::kSwimming: stateStr = "Swimming"; break;
+                        default: break;
+                    }
+                    LOG("    State:              {} (raw={})",
+                        stateStr, static_cast<int>(charCtrl->context.currentState));
+                    LOG("    wantState:          {}", static_cast<int>(charCtrl->wantState));
+                }
+
+                LOG("  [AI / package]");
+                if (process) {
+                    if (auto* pkg = process->GetRunningPackage()) {
+                        LOG("    Running package:    formID=0x{:08X} type={}",
+                            pkg->GetFormID(),
+                            static_cast<int>(pkg->packData.packType.underlying()));
+                    } else {
+                        LOG("    Running package:    NONE");
+                    }
+                } else {
+                    LOG("    Running package:    N/A (no process)");
+                }
+
+                LOG("  [Target]");
+                if (targetFormID != 0) {
+                    auto* tform = RE::TESForm::LookupByID(targetFormID);
+                    if (!tform) {
+                        LOG("    FormID:             0x{:08X} (NOT FOUND !!!)", targetFormID);
+                    } else {
+                        auto* tref = tform->AsReference();
+                        LOG("    FormID:             0x{:08X} type={}",
+                            targetFormID, static_cast<int>(tform->GetFormType()));
+                        LOG("    IsReference:        {}", tref ? "yes" : "no");
+                        if (tref) {
+                            auto tp = tref->GetPosition();
+                            auto* tcell = tref->GetParentCell();
+                            LOG("    Target position:    ({:.1f},{:.1f},{:.1f})", tp.x, tp.y, tp.z);
+                            LOG("    Target cell:        {} ({})",
+                                tcell ? "OK" : "NULL",
+                                tcell && tcell->GetName() ? tcell->GetName() : "?");
+                            LOG("    Target 3D:          {}",
+                                tref->Get3D() ? "OK" : "NULL (not loaded)");
+                            auto diff = pos - tp;
+                            LOG("    Distance:           {:.1f}", diff.Length());
+                        }
+                    }
+                } else if (useCoords) {
+                    LOG("    Coords mode:        pos=({:.1f},{:.1f},{:.1f})", posX, posY, posZ);
+                } else {
+                    LOG("    No target specified");
+                }
+
+                LOG("=== END PRE-DISPATCH DIAG ===");
+            }
+        }
+
         RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback;
         bool ok = vm->DispatchMethodCall(
             handle,

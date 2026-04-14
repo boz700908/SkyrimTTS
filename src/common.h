@@ -532,6 +532,76 @@ static void LoadTranslationFile() {
     }
 }
 
+// Charge un fichier de traduction additionnel (mod-specific) depuis Interface\translations\.
+// Essaie d'abord <basename>_<LANG>.txt, fallback sur <basename>_english.txt si absent.
+// Les cles sont ajoutees a g_fileTranslations (ne remplace pas les cles existantes).
+// Usage : LoadExtraTranslationFile("ShowStats");
+static void LoadExtraTranslationFile(const std::string& basename) {
+    auto tryLoad = [](const std::string& path) -> int {
+        RE::BSResourceNiBinaryStream stream(path.c_str());
+        if (!stream.good()) return -1;
+
+        auto fileSize = static_cast<size_t>(stream.stream->totalSize);
+        if (fileSize == 0) return 0;
+        std::vector<char> buf(fileSize);
+        stream.read(buf.data(), static_cast<std::uint32_t>(fileSize));
+
+        std::wstring content;
+        if (fileSize >= 2 &&
+            static_cast<unsigned char>(buf[0]) == 0xFF &&
+            static_cast<unsigned char>(buf[1]) == 0xFE) {
+            const wchar_t* data = reinterpret_cast<const wchar_t*>(buf.data() + 2);
+            size_t wlen = (fileSize - 2) / sizeof(wchar_t);
+            content.assign(data, wlen);
+        } else {
+            content = Utf8ToWString(std::string(buf.begin(), buf.end()));
+        }
+
+        std::wstringstream ss(content);
+        std::wstring line;
+        int count = 0;
+        while (std::getline(ss, line)) {
+            if (!line.empty() && line.back() == L'\r') line.pop_back();
+            if (line.empty() || line[0] != L'$') continue;
+            size_t sep = line.find_first_of(L" \t");
+            if (sep == std::wstring::npos) continue;
+            std::wstring key = line.substr(0, sep);
+            size_t valStart = line.find_first_not_of(L" \t", sep);
+            if (valStart == std::wstring::npos) continue;
+            std::wstring value = line.substr(valStart);
+            while (!value.empty() && (value.back() == L' ' || value.back() == L'\t'))
+                value.pop_back();
+            if (value.empty()) continue;
+            std::string keyUtf8 = WStringToUtf8(key);
+            // Ne pas ecraser une traduction existante (main file ou builtin prioritaires)
+            if (g_fileTranslations.find(keyUtf8) == g_fileTranslations.end()) {
+                g_fileTranslations[keyUtf8] = value;
+                ++count;
+            }
+        }
+        return count;
+    };
+
+    // Essayer d'abord la langue courante
+    std::string langLower = g_currentLanguage;
+    for (char& c : langLower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    std::string pathLang = "Interface\\translations\\" + basename + "_" + langLower + ".txt";
+    int loaded = tryLoad(pathLang);
+    if (loaded >= 0) {
+        LOG("LoadExtraTranslationFile: '{}' -> {} entries from '{}'", basename, loaded, pathLang);
+        return;
+    }
+
+    // Fallback sur l'anglais
+    std::string pathEng = "Interface\\translations\\" + basename + "_english.txt";
+    loaded = tryLoad(pathEng);
+    if (loaded >= 0) {
+        LOG("LoadExtraTranslationFile: '{}' fallback english -> {} entries from '{}'", basename, loaded, pathEng);
+    } else {
+        LOG("LoadExtraTranslationFile: '{}' not found (lang='{}' or english)", basename, g_currentLanguage);
+    }
+}
+
 // Priorité : BSScaleformTranslator (inclut mods) → fichier Translate_*.txt → fallback nettoyé
 // Helper SEH pour accéder à translationMap.find() sans crash
 static bool TranslateKeyFromEngine(RE::BSScaleformTranslator* translator, const RE::BSFixedStringW& lookupKey, const wchar_t** outResult) {

@@ -25,6 +25,7 @@
 #include "menu_book.h"
 #include "menu_training.h"
 #include "menu_console.h"
+#include "menu_character_sheet.h"
 #include "scanner.h"
 #include "autowalk.h"
 #include "pathfinding.h"
@@ -74,6 +75,8 @@ public:
             e->menuName != RE::GiftMenu::MENU_NAME &&
             e->menuName != RE::BookMenu::MENU_NAME &&
             e->menuName != RE::TrainingMenu::MENU_NAME &&
+            e->menuName != CHARSHEET_MENU_SHOWSTATS &&
+            e->menuName != CHARSHEET_MENU_SHOWFACTIONS &&
             e->menuName != UILIST_MENU_NAME) {
             LOG("Menu {} : {}", e->opening ? "OPEN" : "CLOSE", e->menuName.c_str());
         }
@@ -422,6 +425,36 @@ public:
             } else {
                 g_uiListMenuOpen.store(false);
                 StopUIListPolling();
+            }
+        }
+
+        // Menu custom du mod "Skyrim Character Sheet" (ouverture via touche U).
+        // Affiche stats du joueur sur 6 onglets (Player/Attack/Defence/Magic/
+        // Warrior/Thief) cycles par touche N.
+        // Menus du mod "Skyrim Character Sheet" (ShowStats, ShowFactions).
+        // Le mod cycle entre les deux via la touche N (fermeture d'un menu,
+        // ouverture du suivant). On traite les deux avec le meme pipeline.
+        if (e->menuName == CHARSHEET_MENU_SHOWSTATS ||
+            e->menuName == CHARSHEET_MENU_SHOWFACTIONS) {
+            if (e->opening) {
+                bool wasOpen = g_charSheetOpen.load();
+                g_charSheetOpen.store(true);
+                ResetCharSheetState();
+                QueueCharSheetOpen();
+                if (!wasOpen) StartCharSheetPoll();  // un seul poll suffit entre ShowStats/ShowFactions
+            } else {
+                // Attendre un tick pour voir si un autre menu (ShowFactions
+                // ou ShowStats) s'ouvre dans la foulee. Si oui, on garde
+                // g_charSheetOpen=true. Sinon on ferme.
+                auto* task = SKSE::GetTaskInterface();
+                if (task) {
+                    task->AddUITask([]() {
+                        if (!GetActiveCharSheetDef()) {
+                            g_charSheetOpen.store(false);
+                            StopCharSheetPoll();
+                        }
+                    });
+                }
             }
         }
 
@@ -1271,6 +1304,47 @@ public:
                 if (navKey) QueueFavRead();
             }
 
+            // Character Sheet (mods ShowStats/ShowFactions) : navigation
+            // clavier custom. Le mod affiche toutes les colonnes simultanement
+            // et ne gere pas le clavier. On maintient notre propre index de
+            // stat (Haut/Bas) et de tab (Gauche/Droite).
+            // N et P restent geres par le mod lui-meme pour cycler entre
+            // ShowStats <-> ShowFactions.
+            if (g_charSheetOpen.load(std::memory_order_relaxed)) {
+                if (code == RE::BSKeyboardDevice::Keys::kDown ||
+                    code == RE::BSKeyboardDevice::Keys::kS) {
+                    int cur = g_charSheetOurIndex.load();
+                    g_charSheetOurIndex.store(cur + 1);
+                    QueueCharSheetRead();
+                } else if (code == RE::BSKeyboardDevice::Keys::kUp ||
+                           code == RE::BSKeyboardDevice::Keys::kW) {
+                    int cur = g_charSheetOurIndex.load();
+                    if (cur > 0) g_charSheetOurIndex.store(cur - 1);
+                    QueueCharSheetRead();
+                } else if (code == RE::BSKeyboardDevice::Keys::kRight ||
+                           code == RE::BSKeyboardDevice::Keys::kD) {
+                    // Onglet suivant (colonne de droite)
+                    int cur = g_charSheetOurTabIndex.load();
+                    g_charSheetOurTabIndex.store(cur + 1);  // clamp dans Read
+                    g_charSheetOurIndex.store(0);  // reset stat index sur le nouveau tab
+                    QueueCharSheetRead();
+                } else if (code == RE::BSKeyboardDevice::Keys::kLeft ||
+                           code == RE::BSKeyboardDevice::Keys::kA) {
+                    // Onglet precedent (colonne de gauche)
+                    int cur = g_charSheetOurTabIndex.load();
+                    if (cur > 0) g_charSheetOurTabIndex.store(cur - 1);
+                    g_charSheetOurIndex.store(0);
+                    QueueCharSheetRead();
+                } else if (code == RE::BSKeyboardDevice::Keys::kN ||
+                           code == RE::BSKeyboardDevice::Keys::kP) {
+                    // Le mod cycle entre ShowStats et ShowFactions. Reset nos
+                    // index ; le polling detectera le changement de menu.
+                    g_charSheetOurIndex.store(0);
+                    g_charSheetOurTabIndex.store(0);
+                    QueueCharSheetRead();
+                }
+            }
+
             // UIListMenu : haut/bas naviguent dans la liste
             if (g_uiListMenuOpen.load(std::memory_order_relaxed)) {
                 const bool navKey = (code == RE::BSKeyboardDevice::Keys::kUp)   ||
@@ -1938,6 +2012,12 @@ SKSEPluginLoad(const SKSE::LoadInterface* skse) {
                 LOG("nvdaController OK — NVDA is running");
             }
             LoadTranslationFile(); // fallback pour les clés absentes du BSScaleformTranslator
+
+            // Traductions des mods custom : charge Interface\translations\<mod>_<LANG>.txt
+            // (fallback sur english.txt si la langue n'est pas traduite)
+            LoadExtraTranslationFile("ShowStats");       // Skyrim Character Sheet stats
+            LoadExtraTranslationFile("ShowFactions");    // Skyrim Character Sheet factions
+
             DetectSkyUIFromPlugin();
 
             // Detection d'Extended Hotkey System (mod SKSE qui permet d'assigner

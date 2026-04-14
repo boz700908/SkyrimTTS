@@ -1,5 +1,22 @@
 # Changelog
 
+## v1.4.3 (2026-04-14)
+
+### New features
+- Skyrim Character Sheet mod support — vocalizes the custom stats menu added by the "Skyrim Character Sheet" mod (opened via U key). Covers both ShowStats (player stats across Player/Attack/Defence/Magic/Warrior/Thief columns) and ShowFactions (Faction/Thane/Champion columns). The mod doesn't wire keyboard navigation in its own lists, so the plugin maintains its own selection index and adds these shortcuts:
+  - Up/Down arrows: scroll stats within the current column
+  - Left/Right arrows: switch between columns (Player → Defence → Magic etc.)
+  - N/P: cycle between ShowStats and ShowFactions menus (mod-native behavior)
+  - Announces the new column name when switching, and "empty" if a column has no data
+- Translation loader: plugin can now load mod-specific translation files from `Interface\translations\<mod>_<LANG>.txt` (with fallback to `_english.txt` if the language isn't translated). Loaded at startup for Skyrim Character Sheet
+
+### Bug fixes
+- Journal menu + System tab detection — fixed false positive where the plugin would announce "Mod Configuration" and stop reading the Quests tab when mods like "Jaxonz MCM Kicker" or "Stay At The System Page" made the MCM container visible in the background. The detection now also requires the System tab to be active AND the internal MCM focus variable to exist, so the vanilla system page (Save/Load/Quit) and the Quests tab are read normally
+- Map sub-filter shortcut restored — location type sub-filter (All types → Cities → Towns → Dungeons → Forts → Camps) is now cycled with Alt+End again (was broken on laptops after a recent change that used Home+Arrow, which conflicts with Home being Fn+Arrow on laptop keyboards)
+
+### Diagnostics
+- Autowalk pre-dispatch state logging — the plugin now logs a comprehensive snapshot of the player and target state right before triggering the Papyrus autowalk call (3D model, character controller, parent cell, cell attached, position, running AI package, target FormID resolution, etc.). Helps diagnose the engine-level crash that some players hit when the game is in an unstable state. If you crash during autowalk, please send your `SkyrimNVDA.log` — the pre-dispatch diagnostic lines will show which field was null or missing
+
 ## v1.4.1 (2026-04-12)
 
 ### New features

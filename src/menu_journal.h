@@ -73,22 +73,34 @@ static bool ReadJournalSnapshot(JournalSnapshot& snap) {
     if (!movie) return false;
 
     double tab = 0.0;
-    if (GetGFxNumber(movie, JOURNAL_TAB_PATH, tab))
+    bool tabOk = GetGFxNumber(movie, JOURNAL_TAB_PATH, tab);
+    if (tabOk)
         snap.tab = static_cast<int>(tab);
+    else
+        LOG("JournalDiag: tab path FAILED ('{}')", JOURNAL_TAB_PATH);
 
     if (snap.tab == JOURNAL_TAB_QUESTS) {
         std::string tmp;
-        if (!GetGFxString(movie, JOURNAL_QUEST_TITLE_PATH, tmp) || tmp.empty())
-            GetGFxString(movie, JOURNAL_QUEST_LIST_PATH, tmp);
+        bool titleOk = GetGFxString(movie, JOURNAL_QUEST_TITLE_PATH, tmp);
+        LOG("JournalDiag: titlePath={} val='{}'", titleOk, tmp);
+        if (!titleOk || tmp.empty()) {
+            bool listOk = GetGFxString(movie, JOURNAL_QUEST_LIST_PATH, tmp);
+            LOG("JournalDiag: listPath={} val='{}'", listOk, tmp);
+        }
         if (!tmp.empty())
             snap.questTitle = ResolveUIString(movie, tmp);
 
-        if (GetGFxString(movie, JOURNAL_QUEST_DESC_PATH, tmp) && !tmp.empty())
-            snap.questDesc = StripMarkupForSpeech(ResolveUIString(movie, tmp));
+        std::string descTmp;
+        bool descOk = GetGFxString(movie, JOURNAL_QUEST_DESC_PATH, descTmp);
+        LOG("JournalDiag: descPath={} val='{}'", descOk, descTmp);
+        if (descOk && !descTmp.empty())
+            snap.questDesc = StripMarkupForSpeech(ResolveUIString(movie, descTmp));
 
         // active : booléen sur l'objet centeredEntry (QuestCenteredList.as)
         RE::GFxValue activeVal;
-        if (SafeGetVariable(movie, activeVal, "_root.QuestJournalFader.Menu_mc.QuestsFader.Page_mc.TitleList_mc.List_mc.centeredEntry.active"))
+        bool activeOk = SafeGetVariable(movie, activeVal, "_root.QuestJournalFader.Menu_mc.QuestsFader.Page_mc.TitleList_mc.List_mc.centeredEntry.active");
+        LOG("JournalDiag: activePath={} type={}", activeOk, activeOk ? static_cast<int>(activeVal.GetType()) : -1);
+        if (activeOk)
             snap.questActive = SafeIsBool(activeVal) ? SafeGetBool(activeVal) : (SafeIsNumber(activeVal) && SafeGetNumber(activeVal) != 0.0);
 
         // formID de l'entrée centrée (0 = Divers/Miscellaneous)
@@ -383,29 +395,52 @@ static const wchar_t* JournalTabName(int tab) {
 static void AnnounceJournalChangeImpl() {
     if (!g_journalOpen.load()) return;
 
-    // Si le MCM est ouvert (ConfigPanelFader visible), lire le MCM au lieu du journal
+    // Si le MCM est VRAIMENT ouvert (pas juste la page Système), lire le MCM.
+    //
+    // Détection robuste :
+    // 1. Onglet courant = System (2)
+    // 2. ConfigPanelFader._visible = true
+    // 3. _root.ConfigPanelFader.configPanel._focus existe (variable MCM interne)
+    //
+    // Les 2 premiers seuls ne suffisent pas : "Stay At The System Page" ouvre
+    // Échap sur l'onglet System avec ConfigPanelFader visible mais le joueur
+    // est sur le menu système vanilla (Save/Load/Quit/Mod Configuration), pas
+    // dans le MCM. Les variables internes du MCM (configPanel._focus) ne sont
+    // présentes que quand le joueur est vraiment rentré dans le MCM.
     {
         auto ui = RE::UI::GetSingleton();
         if (ui) {
             auto menu = ui->GetMenu(RE::JournalMenu::MENU_NAME);
             if (menu && menu->uiMovie) {
+                double currentTab = -1.0;
+                GetGFxNumber(menu->uiMovie.get(), JOURNAL_TAB_PATH, currentTab);
+
                 RE::GFxValue vis;
-                if (menu->uiMovie->GetVariable(&vis, "_root.ConfigPanelFader._visible") &&
-                    SafeIsBool(vis) && SafeGetBool(vis)) {
-                    // MCM est ouvert
+                bool configVisible = menu->uiMovie->GetVariable(&vis, "_root.ConfigPanelFader._visible") &&
+                    SafeIsBool(vis) && SafeGetBool(vis);
+
+                // Vérifier si on est vraiment dans le MCM (configPanel._focus existe)
+                double mcmFocus = -1.0;
+                bool mcmFocusExists = GetGFxNumber(menu->uiMovie.get(),
+                    "_root.ConfigPanelFader.configPanel._focus", mcmFocus);
+
+                bool inMcm = configVisible &&
+                    static_cast<int>(currentTab) == JOURNAL_TAB_SYSTEM &&
+                    mcmFocusExists;
+
+                if (inMcm) {
                     if (!g_mcmOpen.load(std::memory_order_relaxed)) {
                         g_mcmOpen.store(true);
                         ResetMcmState();
                         Speak(L"Mod Configuration");
-                        LOG("MCM: opened");
+                        LOG("MCM: opened (tab={}, focus={})", static_cast<int>(currentTab), static_cast<int>(mcmFocus));
                     }
                     AnnounceMcmChangeImpl();
                     return;
                 } else if (g_mcmOpen.load(std::memory_order_relaxed)) {
-                    // MCM vient de se fermer, retour au journal
+                    // MCM vient de se fermer (retour au menu système ou changement d'onglet)
                     g_mcmOpen.store(false);
                     LOG("MCM: closed, back to journal");
-                    // Reset journal state pour relire l'onglet courant
                     g_lastJournalTab = -1;
                     g_lastSystemItem.clear();
                     g_lastSystemState = -1;
