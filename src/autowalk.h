@@ -132,20 +132,23 @@ static RE::FormID g_autoWalkTempMarker{0};
 // AIDriven=true, DstMarker set, IsWalking=true, Travel package actif → si on toggle
 // un nouvel autowalk, on superpose sur cet état bancal → crash immédiat).
 //
-// Étapes :
-//   1. SetAIDriven(false) + SpeedMult reset côté C++
-//   2. Dispatch OnStopWalking côté Papyrus pour que le script :
-//      - Clear DstMarker (alias)
-//      - Set IsWalking = false
-//      - Delete temp XMarker si présent
-//      - EvaluatePackage()
-// Cette double étape assure un état 100% propre au reload, peu importe ce qui
-// était en cours au moment du crash.
+// Stratégie en deux temps :
+//   1. IMMÉDIAT (safe, pas d'engine-side AI) : reset C++ rapide (SetAIDriven false,
+//      SpeedMult reset). Ces appels ne touchent pas au pathfinding ni au Travel
+//      package, donc safe même pendant la fenêtre fragile post-load.
+//   2. DIFFÉRÉ DE 3 SECONDES : dispatch OnLoadGameReset côté Papyrus. Le dispatch
+//      appelle EvaluatePackage qui, lui, fait tourner le pathfinding interne. Si
+//      on le fait à kPostLoadGame (T=0s), le skeleton/shader du joueur est encore
+//      en reconstruction et EvaluatePackage peut crasher (BSShaderAccumulator).
+//      En attendant 3s, on laisse la fenêtre fragile se refermer avant de toucher
+//      à l'AI. Le cooldown de 10s armé à kPostLoadGame bloque de toute façon tout
+//      nouvel autowalk pendant cette attente.
 static void AutoWalkSafetyReset() {
     auto* task = SKSE::GetTaskInterface();
     if (!task) return;
+
+    // Étape 1 : reset C++ immédiat (safe — ne touche pas à l'AI/pathfinding)
     task->AddTask([]() {
-        // Étape 1 : reset C++ (AIDriven + SpeedMult)
         auto* player = RE::PlayerCharacter::GetSingleton();
         if (player && !g_autoWalking.load()) {
             player->SetAIDriven(false);
@@ -158,35 +161,41 @@ static void AutoWalkSafetyReset() {
                     LOG("AutoWalk: safety reset SpeedMult {} -> {}", current, base);
                 }
             }
-            player->EvaluatePackage();
-            LOG("AutoWalk: safety reset on load — AIDriven=false");
+            LOG("AutoWalk: safety reset on load — AIDriven=false (Papyrus cleanup delayed 3s)");
         }
-
-        // Étape 2 : dispatch OnStopWalking via Papyrus pour cleanup complet
-        // (DstMarker, IsWalking, temp XMarker). Indispensable pour nettoyer un
-        // autowalk gravé dans la save (crash pendant walk).
-        auto* quest = FindAutoWalkQuest();
-        if (!quest) {
-            LOG("AutoWalk: safety reset — quest not found, skipping Papyrus cleanup");
-            return;
-        }
-        auto* vm = RE::BSScript::Internal::VirtualMachine::GetSingleton();
-        if (!vm) return;
-        auto* policy = vm->GetObjectHandlePolicy();
-        if (!policy) return;
-        auto handle = policy->GetHandleForObject(RE::FormType::Quest, quest);
-        if (handle == policy->EmptyHandle()) return;
-        auto* args = RE::MakeFunctionArguments();
-        RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback;
-        vm->DispatchMethodCall(
-            handle,
-            RE::BSFixedString("SkyrimTTS_AutoWalk"),
-            RE::BSFixedString("OnStopWalking"),
-            args,
-            callback
-        );
-        LOG("AutoWalk: safety reset — OnStopWalking dispatched to Papyrus for full cleanup");
     });
+
+    // Étape 2 : dispatch OnLoadGameReset après 3 secondes, le temps que le
+    // skeleton/shader du joueur finisse sa reconstruction. On utilise un
+    // std::thread détaché qui sleep puis poste la dispatch sur le thread principal.
+    std::thread([]() {
+        std::this_thread::sleep_for(std::chrono::seconds(3));
+        auto* task2 = SKSE::GetTaskInterface();
+        if (!task2) return;
+        task2->AddTask([]() {
+            auto* quest = FindAutoWalkQuest();
+            if (!quest) {
+                LOG("AutoWalk: delayed safety reset — quest not found, skipping Papyrus cleanup");
+                return;
+            }
+            auto* vm = RE::BSScript::Internal::VirtualMachine::GetSingleton();
+            if (!vm) return;
+            auto* policy = vm->GetObjectHandlePolicy();
+            if (!policy) return;
+            auto handle = policy->GetHandleForObject(RE::FormType::Quest, quest);
+            if (handle == policy->EmptyHandle()) return;
+            auto* args = RE::MakeFunctionArguments();
+            RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback;
+            vm->DispatchMethodCall(
+                handle,
+                RE::BSFixedString("SkyrimTTS_AutoWalk"),
+                RE::BSFixedString("OnLoadGameReset"),
+                args,
+                callback
+            );
+            LOG("AutoWalk: delayed (3s) safety reset — OnLoadGameReset dispatched to Papyrus");
+        });
+    }).detach();
 }
 
 // Polling C++ : vérifie la distance et annonce l'arrivée
