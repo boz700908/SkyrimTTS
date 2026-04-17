@@ -30,11 +30,25 @@ static const wchar_t* g_categoryNames[] = {
     L"Locations"
 };
 
-// --- Sous-catégories (comme FO4 Access) ---
+// --- Sous-catégories ---
+// Les valeurs TypeA/TypeB sont utilisées pour les catégories génériques
+// (containers, doors, corpses, activators). Les valeurs plus spécifiques
+// sont pour la catégorie Items (weapons, armor, etc.).
 enum class ScanSubcategory : int {
-    All = 0,   // Pas de filtre
-    TypeA,     // Dépend de la catégorie (voir GetSubcategoryName)
+    All = 0,
+    // Génériques (dépendent de la catégorie)
+    TypeA,
     TypeB,
+    // Items — sous-types
+    ItemWeapons,
+    ItemArmor,
+    ItemPotions,
+    ItemFood,
+    ItemIngredients,
+    ItemScrolls,
+    ItemBooks,
+    ItemSoulGems,
+    ItemMisc,
     COUNT
 };
 
@@ -51,6 +65,7 @@ struct ScannedObject {
     bool        dead{false};
     bool        isCellDoor{false};     // porte avec chargement de cellule
     bool        isFurniture{false};    // meuble (chaise, lit, etc.)
+    RE::FormType formType{RE::FormType::None};  // type Bethesda du base form (Weapon, Armor, AlchemyItem, etc.)
     std::wstring doorDestination;   // destination d'une porte (nom de la cellule)
 };
 
@@ -232,7 +247,32 @@ static ScanCategory CategorizeRef(RE::TESObjectREFR& ref) {
 // --- Sous-catégories : quelles catégories en ont ---
 static bool HasSubcategories(ScanCategory cat) {
     return cat == kCatActivators || cat == kCatContainers ||
-           cat == kCatDoors || cat == kCatCorpses;
+           cat == kCatDoors || cat == kCatCorpses || cat == kCatItems;
+}
+
+// --- Liste ordonnée des sous-catégories applicables à une catégorie ---
+// Le cycle (touche +/- pour avancer dans les sous-cats) utilise cette liste.
+static const std::vector<ScanSubcategory>& GetSubcategoriesFor(ScanCategory cat) {
+    static const std::vector<ScanSubcategory> empty = {ScanSubcategory::All};
+    static const std::vector<ScanSubcategory> twoTypes = {
+        ScanSubcategory::All, ScanSubcategory::TypeA, ScanSubcategory::TypeB
+    };
+    static const std::vector<ScanSubcategory> items = {
+        ScanSubcategory::All,
+        ScanSubcategory::ItemWeapons,
+        ScanSubcategory::ItemArmor,
+        ScanSubcategory::ItemPotions,
+        ScanSubcategory::ItemFood,
+        ScanSubcategory::ItemIngredients,
+        ScanSubcategory::ItemScrolls,
+        ScanSubcategory::ItemBooks,
+        ScanSubcategory::ItemSoulGems,
+        ScanSubcategory::ItemMisc
+    };
+    if (cat == kCatItems) return items;
+    if (cat == kCatContainers || cat == kCatDoors || cat == kCatCorpses || cat == kCatActivators)
+        return twoTypes;
+    return empty;
 }
 
 // --- Nom de la sous-catégorie (dépend de la catégorie courante) ---
@@ -265,6 +305,20 @@ static const wchar_t* GetSubcategoryName(ScanSubcategory sub) {
             case ScanSubcategory::TypeB: return L"Other";
             default: return L"?";
         }
+    } else if (g_scanCategory == kCatItems) {
+        switch (sub) {
+            case ScanSubcategory::All:             return L"All";
+            case ScanSubcategory::ItemWeapons:     return L"Weapons";
+            case ScanSubcategory::ItemArmor:       return L"Armor";
+            case ScanSubcategory::ItemPotions:     return L"Potions";
+            case ScanSubcategory::ItemFood:        return L"Food";
+            case ScanSubcategory::ItemIngredients: return L"Ingredients";
+            case ScanSubcategory::ItemScrolls:     return L"Scrolls";
+            case ScanSubcategory::ItemBooks:       return L"Books";
+            case ScanSubcategory::ItemSoulGems:    return L"Soul Gems";
+            case ScanSubcategory::ItemMisc:        return L"Miscellaneous";
+            default: return L"?";
+        }
     }
     return L"All";
 }
@@ -285,16 +339,53 @@ static bool MatchesSubcategory(const ScannedObject& obj) {
     } else if (g_scanCategory == kCatActivators) {
         if (g_scanSubcategory == ScanSubcategory::TypeA) return obj.isFurniture;
         if (g_scanSubcategory == ScanSubcategory::TypeB) return !obj.isFurniture;
+    } else if (g_scanCategory == kCatItems) {
+        // AlchemyItem couvre potions ET nourriture — on distingue via la structure interne :
+        // on traite tout AlchemyItem comme Potions par défaut, sauf si c'est explicitement Food.
+        // Pour simplicité : Potions = AlchemyItem hors food, Food = test isFood plus bas.
+        switch (g_scanSubcategory) {
+            case ScanSubcategory::ItemWeapons:     return obj.formType == RE::FormType::Weapon || obj.formType == RE::FormType::Ammo;
+            case ScanSubcategory::ItemArmor:       return obj.formType == RE::FormType::Armor;
+            case ScanSubcategory::ItemPotions: {
+                if (obj.formType != RE::FormType::AlchemyItem) return false;
+                auto* form = RE::TESForm::LookupByID(obj.formID);
+                auto* ref = form ? form->AsReference() : nullptr;
+                auto* base = ref ? ref->GetBaseObject() : nullptr;
+                auto* alch = base ? base->As<RE::AlchemyItem>() : nullptr;
+                return alch && !alch->IsFood();
+            }
+            case ScanSubcategory::ItemFood: {
+                if (obj.formType != RE::FormType::AlchemyItem) return false;
+                auto* form = RE::TESForm::LookupByID(obj.formID);
+                auto* ref = form ? form->AsReference() : nullptr;
+                auto* base = ref ? ref->GetBaseObject() : nullptr;
+                auto* alch = base ? base->As<RE::AlchemyItem>() : nullptr;
+                return alch && alch->IsFood();
+            }
+            case ScanSubcategory::ItemIngredients: return obj.formType == RE::FormType::Ingredient;
+            case ScanSubcategory::ItemScrolls:     return obj.formType == RE::FormType::Scroll;
+            case ScanSubcategory::ItemBooks:       return obj.formType == RE::FormType::Book;
+            case ScanSubcategory::ItemSoulGems:    return obj.formType == RE::FormType::SoulGem;
+            case ScanSubcategory::ItemMisc:        return obj.formType == RE::FormType::Misc ||
+                                                          obj.formType == RE::FormType::KeyMaster ||
+                                                          obj.formType == RE::FormType::Light ||
+                                                          obj.formType == RE::FormType::Flora;
+            default: break;
+        }
     }
     return true;
 }
 
 // --- Filtrer les résultats par catégorie ---
 static void ApplyCategoryFilter() {
-    // Retenir l'objet courant pour le retrouver après filtrage
+    // Retenir l'objet courant (formID + catégorie) pour le retrouver après filtrage.
+    // On sauvegarde la catégorie aussi car un même formID peut apparaître deux fois
+    // en mode "All" (ex: un cadavre est à la fois cible de quête ET conteneur).
     RE::FormID currentFormID = 0;
+    ScanCategory currentCategory = kCatAll;
     if (g_scanIndex >= 0 && g_scanIndex < static_cast<int>(g_scannedFiltered.size())) {
         currentFormID = g_scannedFiltered[g_scanIndex]->formID;
+        currentCategory = g_scannedFiltered[g_scanIndex]->category;
     }
 
     g_scannedFiltered.clear();
@@ -310,12 +401,27 @@ static void ApplyCategoryFilter() {
     // Essayer de retrouver l'objet courant
     g_scanIndex = g_scannedFiltered.empty() ? -1 : 0;
     if (currentFormID != 0) {
+        // Passe 1 : match strict (formID + catégorie) — évite de rester bloqué sur
+        // la première copie quand un même formID a deux entrées dans la liste
+        int foundIdx = -1;
         for (int i = 0; i < static_cast<int>(g_scannedFiltered.size()); i++) {
-            if (g_scannedFiltered[i]->formID == currentFormID) {
-                g_scanIndex = i;
+            if (g_scannedFiltered[i]->formID == currentFormID &&
+                g_scannedFiltered[i]->category == currentCategory) {
+                foundIdx = i;
                 break;
             }
         }
+        // Passe 2 (fallback) : match par formID seul, au cas où l'objet aurait
+        // été recatégorisé entre-temps (PNJ mort, etc.)
+        if (foundIdx < 0) {
+            for (int i = 0; i < static_cast<int>(g_scannedFiltered.size()); i++) {
+                if (g_scannedFiltered[i]->formID == currentFormID) {
+                    foundIdx = i;
+                    break;
+                }
+            }
+        }
+        if (foundIdx >= 0) g_scanIndex = foundIdx;
     }
 }
 
@@ -645,6 +751,7 @@ static void ScanCell(RE::TESObjectCELL* cell, RE::PlayerCharacter* player, const
             obj.dead = (cat == kCatCorpses);
             obj.isCellDoor = isCellDoor;
             obj.isFurniture = isFurniture;
+            obj.formType = base->GetFormType();
             obj.doorDestination = std::move(doorDest);
 
             g_scannedAll.push_back(std::move(obj));
@@ -819,28 +926,13 @@ static void DoScanInternal() {
 
                     bool resolvedPos = false;
 
-                    // === 1. worldLocMarker : position exacte de l'entrée du lieu ===
-                    // Le moteur utilise ce marqueur pour afficher les quêtes sur la carte.
-                    // Remonte la hiérarchie des lieux (sous-donjon → donjon → zone).
-                    if (!isInterior) {
-                        auto* targetLocation = refCell->GetLocation();
-                        for (auto* loc = targetLocation; loc && !resolvedPos; loc = loc->parentLoc) {
-                            if (loc->worldLocMarker) {
-                                auto markerPtr = loc->worldLocMarker.get();
-                                if (markerPtr) {
-                                    actualPos = markerPtr->GetPosition();
-                                    resolvedPos = true;
-                                    LOG("Scanner: quest resolved via worldLocMarker loc='{}' FormID={:08X} pos=({:.0f},{:.0f},{:.0f})",
-                                        loc->GetFullName() ? loc->GetFullName() : "?",
-                                        markerPtr->GetFormID(),
-                                        actualPos.x, actualPos.y, actualPos.z);
-                                }
-                            }
-                        }
-                    }
-
-                    // === 2. Recherche de porte directe dans les cellules chargées ===
-                    if (!resolvedPos) {
+                    // === 1. Recherche de porte directe dans les cellules chargées ===
+                    // Priorité au door search : si on trouve une porte qui mène DIRECTEMENT
+                    // à la cellule cible dans les cellules actuellement attachées, c'est la
+                    // destination la plus précise. Ex: joueur dans Whiterun, cible Jarl à
+                    // Fort-Dragon → la porte de Fort-Dragon est dans une cellule attachée de
+                    // Whiterun, on la trouve et on y va directement.
+                    {
                         RE::TESObjectREFR* bestDoor = nullptr;
                         float bestDoorDist = 999999.0f;
 
@@ -892,6 +984,37 @@ static void DoScanInternal() {
                             LOG("Scanner: quest redirected to door '{}' FormID={:08X} dist={:.0f}",
                                 bestDoor->GetDisplayFullName() ? bestDoor->GetDisplayFullName() : "?",
                                 bestDoor->GetFormID(), bestDoorDist);
+                        }
+                    }
+
+                    // === 2. worldLocMarker : fallback quand la porte cible n'est pas chargée ===
+                    // Utilisé quand le joueur est loin (ex: hors Whiterun, cible Jarl). Remonte
+                    // la hiérarchie parentLoc jusqu'à un marker extérieur (ex: porte de Whiterun).
+                    // On skip les markers interior (ex: marker de Fort-Dragon interne) qui ne
+                    // servent à rien pour naviguer depuis l'extérieur.
+                    if (!resolvedPos && !isInterior) {
+                        auto* targetLocation = refCell->GetLocation();
+                        for (auto* loc = targetLocation; loc && !resolvedPos; loc = loc->parentLoc) {
+                            if (loc->worldLocMarker) {
+                                auto markerPtr = loc->worldLocMarker.get();
+                                if (markerPtr) {
+                                    auto* markerCell = markerPtr->GetParentCell();
+                                    bool markerInterior = markerCell && markerCell->IsInteriorCell();
+                                    if (markerInterior) {
+                                        LOG("Scanner: skip interior worldLocMarker loc='{}' FormID={:08X} (markerCell='{}')",
+                                            loc->GetFullName() ? loc->GetFullName() : "?",
+                                            markerPtr->GetFormID(),
+                                            markerCell->GetName() ? markerCell->GetName() : "?");
+                                        continue;
+                                    }
+                                    actualPos = markerPtr->GetPosition();
+                                    resolvedPos = true;
+                                    LOG("Scanner: quest resolved via worldLocMarker loc='{}' FormID={:08X} pos=({:.0f},{:.0f},{:.0f})",
+                                        loc->GetFullName() ? loc->GetFullName() : "?",
+                                        markerPtr->GetFormID(),
+                                        actualPos.x, actualPos.y, actualPos.z);
+                                }
+                            }
                         }
                     }
 
@@ -1027,8 +1150,10 @@ static void DoScanInternal() {
                         if (!extraMarker || !extraMarker->mapData) continue;
 
                         auto* mapData = extraMarker->mapData;
+                        // On affiche les lieux même non découverts pour l'accessibilité :
+                        // les joueurs aveugles ne peuvent pas explorer visuellement, donc le
+                        // scanner doit leur révéler ce qu'il y a autour.
                         bool visible = mapData->flags.any(RE::MapMarkerData::Flag::kVisible);
-                        if (!visible) continue;  // seulement les lieux visibles sur la carte
 
                         const char* rawName = mapData->locationName.GetFullName();
                         if (!rawName || !*rawName) continue;
@@ -1061,6 +1186,9 @@ static void DoScanInternal() {
                             obj.name += L" (";
                             obj.name += typeName;
                             obj.name += L")";
+                        }
+                        if (!visible) {
+                            obj.name += L" (undiscovered)";
                         }
                         obj.distance = dist;
                         obj.zDiff = refPos.z - playerPos.z;
@@ -1322,6 +1450,10 @@ static void ScannerNextObject() {
         }
     }
     std::wstring pos = L". " + std::to_wstring(g_scanIndex + 1) + L" of " + std::to_wstring(g_scannedFiltered.size());
+    LOG("Scanner NEXT: idx={}/{} cat={} name='{}' formID={:08X} dist={:.0f}",
+        g_scanIndex + 1, g_scannedFiltered.size(),
+        WStringToUtf8(g_categoryNames[g_scanCategory]),
+        WStringToUtf8(nextObj.name), nextObj.formID, nextObj.distance);
     Speak(FormatObjectAnnounce(nextObj) + pos);
 }
 
@@ -1356,6 +1488,10 @@ static void ScannerPrevObject() {
         }
     }
     std::wstring pos = L". " + std::to_wstring(g_scanIndex + 1) + L" of " + std::to_wstring(g_scannedFiltered.size());
+    LOG("Scanner PREV: idx={}/{} cat={} name='{}' formID={:08X} dist={:.0f}",
+        g_scanIndex + 1, g_scannedFiltered.size(),
+        WStringToUtf8(g_categoryNames[g_scanCategory]),
+        WStringToUtf8(prevObj.name), prevObj.formID, prevObj.distance);
     Speak(FormatObjectAnnounce(prevObj) + pos);
 }
 
@@ -1475,34 +1611,94 @@ static void RefreshQuestTarget(ScannedObject& obj) {
             auto* refCell = targetRef->GetParentCell();
             RE::NiPoint3 actualPos = refPos;
 
-            // Si la cible est dans une cellule différente, résoudre via worldLocMarker
-            // (l'entrée du lieu dans Tamriel) — sinon les coordonnées sont dans des
-            // référentiels différents et la distance n'a aucun sens.
+            // Si la cible est dans une cellule différente, résoudre via la même logique
+            // que le scan principal : PASS 1 door search → PASS 2 worldLocMarker.
+            // On ne fait pas le compass fallback ici (seulement dans le scan principal).
             if (refCell && refCell != playerCell) {
                 bool isInterior = refCell->IsInteriorCell();
-                if (!isInterior) {
-                    // refCell est extérieure mais différente — utiliser sa position directe
-                } else {
-                    // refCell intérieure → remonter la hiérarchie des lieux pour
-                    // trouver le worldLocMarker en extérieur
-                    auto* targetLocation = refCell->GetLocation();
-                    bool resolved = false;
-                    for (auto* loc = targetLocation; loc && !resolved; loc = loc->parentLoc) {
-                        if (loc->worldLocMarker) {
-                            auto markerPtr = loc->worldLocMarker.get();
-                            if (markerPtr) {
-                                actualPos = markerPtr->GetPosition();
-                                resolved = true;
-                                LOG("Scanner: refresh resolved via worldLocMarker loc='{}' pos=({:.0f},{:.0f},{:.0f})",
-                                    loc->GetFullName() ? loc->GetFullName() : "?",
-                                    actualPos.x, actualPos.y, actualPos.z);
+                bool resolved = false;
+
+                if (isInterior) {
+                    // === PASS 1 : recherche de porte directe dans les cellules chargées ===
+                    // Si le joueur est dans Whiterun et la cible dans Fort-Dragon, on trouve
+                    // la porte de Fort-Dragon dans les cellules attachées → destination précise.
+                    RE::TESObjectREFR* bestDoor = nullptr;
+                    float bestDoorDist = 999999.0f;
+                    auto searchDoorsForCell = [&](RE::TESObjectCELL* searchCell) {
+                        if (!searchCell) return;
+                        for (auto& doorHandle : searchCell->GetRuntimeData().references) {
+                            auto doorPtr = doorHandle.get();
+                            if (!doorPtr) continue;
+                            auto* doorBase = doorPtr->GetBaseObject();
+                            if (!doorBase || doorBase->GetFormType() != RE::FormType::Door) continue;
+                            auto* extraTele = doorPtr->extraList.GetByType<RE::ExtraTeleport>();
+                            if (!extraTele || !extraTele->teleportData) continue;
+                            auto linkedDoor = extraTele->teleportData->linkedDoor.get();
+                            if (!linkedDoor) continue;
+                            auto* destCell = linkedDoor->GetParentCell();
+                            if (!destCell || destCell != refCell) continue;
+                            auto doorPos = doorPtr->GetPosition();
+                            float doorDist = (playerPos - doorPos).Length();
+                            if (doorDist < bestDoorDist) {
+                                bestDoorDist = doorDist;
+                                bestDoor = doorPtr;
+                            }
+                        }
+                    };
+                    searchDoorsForCell(playerCell);
+                    bool playerInInterior = playerCell && playerCell->IsInteriorCell();
+                    if (!bestDoor && !playerInInterior) {
+                        if (auto* tes = RE::TES::GetSingleton()) {
+                            if (auto* gridCells = tes->gridCells) {
+                                for (uint32_t gx = 0; gx < gridCells->length && !bestDoor; gx++) {
+                                    for (uint32_t gy = 0; gy < gridCells->length && !bestDoor; gy++) {
+                                        auto* gc = gridCells->GetCell(gx, gy);
+                                        if (gc && gc->IsAttached() && gc != playerCell) searchDoorsForCell(gc);
+                                    }
+                                }
+                            }
+                        }
+                        auto* ws = player->GetWorldspace();
+                        if (!bestDoor && ws && ws->persistentCell) {
+                            searchDoorsForCell(ws->persistentCell);
+                        }
+                    }
+                    if (bestDoor) {
+                        actualPos = bestDoor->GetPosition();
+                        resolved = true;
+                        LOG("Scanner: refresh redirected to door FormID={:08X} dist={:.0f}",
+                            bestDoor->GetFormID(), bestDoorDist);
+                    }
+
+                    // === PASS 2 : worldLocMarker (fallback quand porte pas chargée) ===
+                    if (!resolved) {
+                        auto* targetLocation = refCell->GetLocation();
+                        for (auto* loc = targetLocation; loc && !resolved; loc = loc->parentLoc) {
+                            if (loc->worldLocMarker) {
+                                auto markerPtr = loc->worldLocMarker.get();
+                                if (markerPtr) {
+                                    auto* markerCell = markerPtr->GetParentCell();
+                                    if (markerCell && markerCell->IsInteriorCell()) {
+                                        LOG("Scanner: refresh skip interior worldLocMarker loc='{}' (markerCell='{}')",
+                                            loc->GetFullName() ? loc->GetFullName() : "?",
+                                            markerCell->GetName() ? markerCell->GetName() : "?");
+                                        continue;
+                                    }
+                                    actualPos = markerPtr->GetPosition();
+                                    resolved = true;
+                                    LOG("Scanner: refresh resolved via worldLocMarker loc='{}' pos=({:.0f},{:.0f},{:.0f})",
+                                        loc->GetFullName() ? loc->GetFullName() : "?",
+                                        actualPos.x, actualPos.y, actualPos.z);
+                                }
                             }
                         }
                     }
+
                     if (!resolved) {
-                        LOG("Scanner: refresh - no worldLocMarker for cross-cell target, distance may be wrong");
+                        LOG("Scanner: refresh - no door or worldLocMarker for cross-cell target, distance may be wrong");
                     }
                 }
+                // Sinon (refCell extérieure différente du joueur) : actualPos = refPos direct (cas normal)
             }
 
             // Distance 2D (X/Y), cohérent avec la carte et le scan principal
@@ -1735,8 +1931,14 @@ static void ScannerCycleSubcategory() {
         return;
     }
 
-    int next = (static_cast<int>(g_scanSubcategory) + 1) % static_cast<int>(ScanSubcategory::COUNT);
-    g_scanSubcategory = static_cast<ScanSubcategory>(next);
+    // Cycle uniquement parmi les sous-catégories applicables à la catégorie courante
+    const auto& subs = GetSubcategoriesFor(g_scanCategory);
+    int curIdx = 0;
+    for (size_t i = 0; i < subs.size(); ++i) {
+        if (subs[i] == g_scanSubcategory) { curIdx = static_cast<int>(i); break; }
+    }
+    int nextIdx = (curIdx + 1) % static_cast<int>(subs.size());
+    g_scanSubcategory = subs[nextIdx];
 
     ApplyCategoryFilter();
     g_scanIndex = g_scannedFiltered.empty() ? -1 : 0;

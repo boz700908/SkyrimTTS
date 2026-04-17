@@ -72,6 +72,36 @@ static float            g_autoWalkStopDist{100.0f};
 static RE::NiPoint3     g_autoWalkTargetPos{0, 0, 0};  // pour le mode coordonnées
 static std::jthread     g_autoWalkMonitor;
 
+// Cooldown de sécurité : empêche de lancer l'autowalk pendant la fenêtre
+// fragile après un load ou un changement de cellule. Pendant cette fenêtre,
+// le skeleton/shader du joueur est en cours de reconstruction et un
+// SetAIDriven déclenche un null pointer dans le pipeline de rendu (crashs
+// observés : thread worker, instruction `and [rax+0xF4],...` avec rax=0,
+// stack = BSFadeNode "Skeleton.nif" + BSShaderAccumulator + NiCamera).
+// Stocke le timestamp (ms depuis epoch) jusqu'auquel l'autowalk est bloqué.
+static std::atomic<int64_t> g_autoWalkUnsafeUntilMs{0};
+
+static int64_t AutoWalkNowMs() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+// Arme le cooldown pour N millisecondes depuis maintenant. Appelée depuis
+// plugin.cpp sur kPostLoadGame (10s) et TESCellFullyLoadedEvent (5s).
+// IMPORTANT : on garde le MAX entre le cooldown existant et le nouveau. Sans ça,
+// si kPostLoadGame arme 10s puis LoadingMenu arme 5s (appelés à 1ms d'intervalle),
+// le 5s écrasait le 10s → cooldown effective trop courte → autowalk se lance
+// pendant que le skeleton n'est pas stable → crash BSShaderAccumulator.
+static void AutoWalkArmSafetyCooldown(int64_t durationMs, const char* reason) {
+    int64_t newUntil = AutoWalkNowMs() + durationMs;
+    int64_t currentUntil = g_autoWalkUnsafeUntilMs.load();
+    int64_t finalUntil = (newUntil > currentUntil) ? newUntil : currentUntil;
+    g_autoWalkUnsafeUntilMs.store(finalUntil);
+    int64_t effectiveMs = finalUntil - AutoWalkNowMs();
+    LOG("AutoWalk: safety cooldown armed for {}ms ({}), effective={}ms",
+        durationMs, reason, effectiveMs);
+}
+
 // Détection de blocage
 static RE::NiPoint3     g_autoWalkLastPos{0, 0, 0};
 static float            g_autoWalkStuckTimer{0.0f};
@@ -94,16 +124,31 @@ static bool IsMovementInputActive() {
 // Forward declaration
 static void StopAutoWalk();
 
-// Sécurité : remettre AIDriven à false et SpeedMult à sa base au chargement
-// (corrige le cas où le jeu a été quitté/sauvegardé pendant un autowalk)
+// Temp marker C++ (mode boussole/fallback) — déclaré ici pour que StopAutoWalk puisse le cleanup
+static RE::FormID g_autoWalkTempMarker{0};
+
+// Sécurité : nettoyage COMPLET d'un autowalk potentiellement gravé dans la save
+// (cas où le jeu a crashé pendant un autowalk → au reload la save contient
+// AIDriven=true, DstMarker set, IsWalking=true, Travel package actif → si on toggle
+// un nouvel autowalk, on superpose sur cet état bancal → crash immédiat).
+//
+// Étapes :
+//   1. SetAIDriven(false) + SpeedMult reset côté C++
+//   2. Dispatch OnStopWalking côté Papyrus pour que le script :
+//      - Clear DstMarker (alias)
+//      - Set IsWalking = false
+//      - Delete temp XMarker si présent
+//      - EvaluatePackage()
+// Cette double étape assure un état 100% propre au reload, peu importe ce qui
+// était en cours au moment du crash.
 static void AutoWalkSafetyReset() {
     auto* task = SKSE::GetTaskInterface();
     if (!task) return;
     task->AddTask([]() {
+        // Étape 1 : reset C++ (AIDriven + SpeedMult)
         auto* player = RE::PlayerCharacter::GetSingleton();
         if (player && !g_autoWalking.load()) {
             player->SetAIDriven(false);
-            // Restaurer SpeedMult à sa valeur de base (corrige les sauvegardes polluées)
             auto* avo = player->AsActorValueOwner();
             if (avo) {
                 float base = avo->GetBaseActorValue(RE::ActorValue::kSpeedMult);
@@ -116,6 +161,31 @@ static void AutoWalkSafetyReset() {
             player->EvaluatePackage();
             LOG("AutoWalk: safety reset on load — AIDriven=false");
         }
+
+        // Étape 2 : dispatch OnStopWalking via Papyrus pour cleanup complet
+        // (DstMarker, IsWalking, temp XMarker). Indispensable pour nettoyer un
+        // autowalk gravé dans la save (crash pendant walk).
+        auto* quest = FindAutoWalkQuest();
+        if (!quest) {
+            LOG("AutoWalk: safety reset — quest not found, skipping Papyrus cleanup");
+            return;
+        }
+        auto* vm = RE::BSScript::Internal::VirtualMachine::GetSingleton();
+        if (!vm) return;
+        auto* policy = vm->GetObjectHandlePolicy();
+        if (!policy) return;
+        auto handle = policy->GetHandleForObject(RE::FormType::Quest, quest);
+        if (handle == policy->EmptyHandle()) return;
+        auto* args = RE::MakeFunctionArguments();
+        RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback;
+        vm->DispatchMethodCall(
+            handle,
+            RE::BSFixedString("SkyrimTTS_AutoWalk"),
+            RE::BSFixedString("OnStopWalking"),
+            args,
+            callback
+        );
+        LOG("AutoWalk: safety reset — OnStopWalking dispatched to Papyrus for full cleanup");
     });
 }
 
@@ -177,6 +247,20 @@ static void StartAutoWalkMonitor() {
 
                 auto* player = RE::PlayerCharacter::GetSingleton();
                 if (!player) return;
+
+                // Pendant un écran de chargement (LoadingMenu) ou un fondu (Fader Menu),
+                // on met le moniteur en PAUSE TOTALE. Le skeleton/shader du joueur est
+                // en cours de reconstruction — toute intervention (stuck recovery,
+                // EvaluatePackage, SetAIDriven) peut déclencher le crash BSShaderAccumulator.
+                // On remet le stuck timer et la last pos à zéro pour ne pas déclencher
+                // la recovery juste après la fermeture du menu.
+                auto* ui = RE::UI::GetSingleton();
+                if (ui && (ui->IsMenuOpen(RE::LoadingMenu::MENU_NAME) ||
+                           ui->IsMenuOpen("Fader Menu"))) {
+                    g_autoWalkStuckTimer = 0.0f;
+                    g_autoWalkLastPos = player->GetPosition();
+                    return;
+                }
 
                 const bool isMounted = player->IsOnMount();
                 auto playerPos = player->GetPosition();
@@ -343,21 +427,22 @@ static void StartAutoWalkMonitor() {
                         StopAutoWalk();
                     }
                 } else {
-                    if (g_autoWalkStuckTimer > 3.0f && s_recoveryAttempt == 0) {
-                        LOG("AutoWalk: stuck for 3s, simulating Space press for directional jump");
-                        keybd_event(VK_SPACE, 0, 0, 0);
-                        std::thread([]() {
-                            std::this_thread::sleep_for(std::chrono::milliseconds(150));
-                            keybd_event(VK_SPACE, 0, KEYEVENTF_KEYUP, 0);
-                        }).detach();
-                        s_recoveryAttempt = 1;
-                    } else if (g_autoWalkStuckTimer > 6.0f && s_recoveryAttempt < 2) {
-                        LOG("AutoWalk: stuck for 6s, re-evaluating package");
+                    if (g_autoWalkStuckTimer > 4.0f && s_recoveryAttempt == 0) {
+                        LOG("AutoWalk: stuck for 4s, re-applying step flags and re-evaluating package");
+                        // Remettre les flags du char controller : au cas où ils auraient
+                        // été effacés par un ragdoll, une transition de cellule ou une
+                        // animation spéciale. Sans kTryStep, le joueur ne monte plus les
+                        // escaliers automatiquement → reste bloqué indéfiniment.
+                        auto* charCtrl = player->GetCharController();
+                        if (charCtrl) {
+                            charCtrl->flags.set(RE::CHARACTER_FLAGS::kTryStep);
+                            charCtrl->flags.set(RE::CHARACTER_FLAGS::kCanJump);
+                        }
                         player->SetAIDriven(false);
                         player->EvaluatePackage();
                         player->SetAIDriven(true);
                         player->EvaluatePackage();
-                        s_recoveryAttempt = 2;
+                        s_recoveryAttempt = 1;
                     } else if (g_autoWalkStuckTimer > 10.0f) {
                         Speak(L"Can't reach target");
                         g_autoWalking.store(false);
@@ -618,9 +703,10 @@ static void StartAutoWalk(RE::FormID targetFormID, float stopDistance = 100.0f,
 static void StopAutoWalk() {
     g_autoWalking.store(false);
 
-    // Arrêter le monitor
+    // Arrêter le monitor et attendre qu'il se termine
     if (g_autoWalkMonitor.joinable()) {
         g_autoWalkMonitor.request_stop();
+        g_autoWalkMonitor.join();
     }
 
     auto* task = SKSE::GetTaskInterface();
@@ -663,6 +749,18 @@ static void StopAutoWalk() {
             callback
         );
 
+        // Supprimer le temp marker C++ s'il existe (mode boussole/fallback)
+        if (g_autoWalkTempMarker != 0) {
+            auto* markerForm = RE::TESForm::LookupByID(g_autoWalkTempMarker);
+            auto* markerRef = markerForm ? markerForm->As<RE::TESObjectREFR>() : nullptr;
+            if (markerRef) {
+                markerRef->Disable();
+                markerRef->SetDelete(true);
+                LOG("AutoWalk: deleted C++ temp marker {:08X}", g_autoWalkTempMarker);
+            }
+            g_autoWalkTempMarker = 0;
+        }
+
         g_autoWalkTarget.clear();
         LOG("AutoWalk: stop requested");
     });
@@ -671,7 +769,7 @@ static void StopAutoWalk() {
 // Toggle autowalk vers l'objet sélectionné dans le scanner
 // Créer un XMarker temporaire à une position donnée pour l'autowalk
 // Retourne le FormID du marqueur créé, ou 0 en cas d'échec
-static RE::FormID g_autoWalkTempMarker{0};
+// NOTE: g_autoWalkTempMarker est déclaré plus haut (avant StopAutoWalk) pour le cleanup
 
 static RE::FormID CreateTempMarkerAt(const RE::NiPoint3& pos) {
     auto* player = RE::PlayerCharacter::GetSingleton();
@@ -722,6 +820,34 @@ static void ToggleAutoWalk() {
     }
 
     LOG("AutoWalk: ToggleAutoWalk called");
+
+    // Garde anti-crash : refuser si on est dans la fenêtre d'instabilité
+    // post-load / post-cell-change (skeleton encore en train de s'initialiser).
+    {
+        int64_t now = AutoWalkNowMs();
+        int64_t until = g_autoWalkUnsafeUntilMs.load();
+        if (now < until) {
+            int64_t waitMs = until - now;
+            LOG("AutoWalk: blocked by safety cooldown ({}ms remaining)", waitMs);
+            Speak(L"Please wait, game still loading");
+            return;
+        }
+    }
+
+    // Double-check : aussi refuser si un LoadingMenu ou Fader Menu est actif.
+    // Ces menus sont présents pendant les transitions (fast travel, cell change,
+    // load). Comme le cooldown, ça protège contre le crash skeleton/shader.
+    {
+        auto* ui = RE::UI::GetSingleton();
+        if (ui) {
+            if (ui->IsMenuOpen(RE::LoadingMenu::MENU_NAME) ||
+                ui->IsMenuOpen("Fader Menu")) {
+                LOG("AutoWalk: blocked because LoadingMenu or Fader Menu is open");
+                Speak(L"Please wait, game still loading");
+                return;
+            }
+        }
+    }
 
     // Désactiver l'aimlock et le toggle lock-on avant de marcher
     // (sinon la caméra tremble et le joueur ne bouge pas)
@@ -985,7 +1111,50 @@ static void ToggleAutoWalk() {
             StartAutoWalk(targetID, 100.0f, 0.f, 0.f, 0.f);  // fallback
         }
     } else {
-        StartAutoWalk(targetID, 100.0f, 0.f, 0.f, 0.f);
+        // FormID normal (non-FF). Stratégie :
+        //
+        // Cas 1: cell target CONNUE (ref->GetParentCell() != null)
+        //   → FormID brut. Le moteur Skyrim sait naviguer vers une cible interior
+        //   via Travel package (pathfind vers porte d'entrée du bâtiment).
+        //   Ex: Jarl à Fort-Dragon depuis Whiterun → engine pathfind vers la porte.
+        //
+        // Cas 2: cell target NULL, joueur en INTERIOR
+        //   → FormID brut. Le joueur est dans un donjon et la cible est dans une
+        //   autre worldspace. Coord mode ne marche pas (XMarker à coords exterior
+        //   dans cellule interior = absurde). Le moteur doit naviguer via exits.
+        //   Ex: "Échappez-vous d'Helgen" → target en Tamriel exterior, joueur en
+        //   interior → engine pathfind vers la sortie du donjon via Travel package.
+        //
+        // Cas 3: cell target NULL, joueur en EXTERIOR
+        //   → coord mode avec ref->GetPosition(). Le dispatch FormID brut sur un ref
+        //   exterior non chargé cause le crash BSShaderAccumulator (cas Alvor).
+        //   Ici le XMarker aux coords exterior est valide (même worldspace que joueur).
+        auto* finalForm = RE::TESForm::LookupByID(targetID);
+        auto* finalRef = finalForm ? finalForm->AsReference() : nullptr;
+        auto* finalCell = finalRef ? finalRef->GetParentCell() : nullptr;
+        auto* playerForCell = RE::PlayerCharacter::GetSingleton();
+        auto* playerCell = playerForCell ? playerForCell->GetParentCell() : nullptr;
+        bool playerInInterior = playerCell && playerCell->IsInteriorCell();
+
+        if (finalRef && finalCell) {
+            // Cas 1 : cell connue → FormID brut, le moteur gère la nav interior→exterior
+            LOG("AutoWalk: non-FF ref, cell='{}' known → FormID mode (engine handles nav)",
+                finalCell->GetName() ? finalCell->GetName() : "?");
+            StartAutoWalk(targetID, 100.0f, 0.f, 0.f, 0.f);
+        } else if (finalRef && playerInInterior) {
+            // Cas 2 : cell cible null + joueur en interior → FormID brut (engine via exits)
+            LOG("AutoWalk: non-FF ref cell=NULL, player in interior → FormID mode (engine navigates via exits)");
+            StartAutoWalk(targetID, 100.0f, 0.f, 0.f, 0.f);
+        } else if (finalRef) {
+            // Cas 3 : cell cible null + joueur exterior → coord mode (anti-crash Alvor)
+            auto pos = finalRef->GetPosition();
+            LOG("AutoWalk: non-FF ref cell=NULL, player in exterior → coord mode pos=({:.0f},{:.0f},{:.0f})",
+                pos.x, pos.y, pos.z);
+            StartAutoWalk(targetID, 100.0f, pos.x, pos.y, pos.z);
+        } else {
+            // Pas de ref du tout : dispatch brut (peut crasher mais on n'a rien d'autre)
+            StartAutoWalk(targetID, 100.0f, 0.f, 0.f, 0.f);
+        }
     }
 }
 

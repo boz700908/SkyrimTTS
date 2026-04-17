@@ -81,6 +81,23 @@ public:
             LOG("Menu {} : {}", e->opening ? "OPEN" : "CLOSE", e->menuName.c_str());
         }
 
+        // Si un menu bloquant le mouvement ouvre pendant un autowalk, stopper
+        // l'autowalk proprement pour éviter que AIDriven reste coincé à true.
+        // Sinon le joueur / cheval se fige à la fermeture du menu.
+        if (e->opening && g_autoWalking.load(std::memory_order_relaxed)) {
+            if (e->menuName == RE::DialogueMenu::MENU_NAME ||
+                e->menuName == RE::CraftingMenu::MENU_NAME ||
+                e->menuName == RE::BarterMenu::MENU_NAME ||
+                e->menuName == RE::ContainerMenu::MENU_NAME ||
+                e->menuName == RE::GiftMenu::MENU_NAME ||
+                e->menuName == RE::TrainingMenu::MENU_NAME ||
+                e->menuName == RE::SleepWaitMenu::MENU_NAME ||
+                e->menuName == RE::BookMenu::MENU_NAME) {
+                LOG("AutoWalk: stopping due to blocking menu open: {}", e->menuName.c_str());
+                StopAutoWalk();
+            }
+        }
+
         if (e->menuName == RE::DialogueMenu::MENU_NAME) {
             if (e->opening) {
                 g_dialogueOpen.store(true);
@@ -218,6 +235,10 @@ public:
                 g_lastLoadingText.clear();
             } else {
                 g_loadingOpen.store(false);
+                // Après un fast travel / changement de cellule, le skeleton/shader
+                // est encore instable pendant quelques secondes → même fenêtre de
+                // crash que post-load. On bloque l'autowalk pendant 5s.
+                AutoWalkArmSafetyCooldown(5000, "LoadingMenu close (cell change / fast travel)");
             }
         }
 
@@ -1423,6 +1444,7 @@ public:
                                     (code == RE::BSKeyboardDevice::Keys::kD);
                 if (navKey) {
                     g_craftingFirstReadDone = true;  // débloquer la lecture des items
+                    g_craftingForceAnnounce.store(true);  // forcer relecture (cas recettes dupliquées identiques)
                     QueueCraftingRead();
                 }
             }
@@ -1609,8 +1631,12 @@ public:
             }
 
             // H = stats contextuelles (en jeu: vitals, en inventaire: or/poids)
+            // Ctrl+H = effets actifs (poison, maladies, buffs)
             if (code == RE::BSKeyboardDevice::Keys::kH) {
-                if (g_invOpen.load(std::memory_order_relaxed)) {
+                const bool ctrl = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+                if (ctrl) {
+                    AnnounceActiveEffects();
+                } else if (g_invOpen.load(std::memory_order_relaxed)) {
                     AnnounceInventoryStats();
                 } else if (g_containerOpen.load(std::memory_order_relaxed)) {
                     AnnounceContainerStats();
@@ -2052,6 +2078,10 @@ SKSEPluginLoad(const SKSE::LoadInterface* skse) {
         // Après chargement d'une sauvegarde : remettre SpeedMult à 100 + re-remap sprint
         if (msg->type == SKSE::MessagingInterface::kPostLoadGame) {
             AutoWalkSafetyReset();
+            // Bloquer l'autowalk pendant 10s : le skeleton/shader du joueur est
+            // en cours de reconstruction, un SetAIDriven pendant cette fenêtre
+            // déclenche un null pointer dans le pipeline de rendu (crashs observés).
+            AutoWalkArmSafetyCooldown(10000, "kPostLoadGame");
             // PathfindingSafetyReset();  // Désactivé temporairement
             RemapGamepadControls();  // re-appliquer au cas où le jeu recharge les contrôles
             // Restaurer les contrôles gamepad si bloqués

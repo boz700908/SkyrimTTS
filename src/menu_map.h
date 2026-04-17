@@ -364,6 +364,14 @@ static void BuildMapMarkerList() {
 
             bool visible = mapData->flags.any(RE::MapMarkerData::Flag::kVisible);
             bool canTravel = mapData->flags.any(RE::MapMarkerData::Flag::kCanTravelTo);
+            // kVisible = mis a true UNIQUEMENT quand le joueur decouvre
+            // physiquement le lieu. kCanTravelTo peut etre pre-defini par le
+            // jeu/scripts (camps militaires, Solstheim) avant decouverte, donc
+            // ne convient pas comme indicateur "decouvert".
+            // kShowAllHidden exclu pour gerer le cas de la commande console
+            // "tmm 1" qui active tous les marqueurs.
+            bool discovered = visible &&
+                              !mapData->flags.any(RE::MapMarkerData::Flag::kShowAllHidden);
 
             RE::MARKER_TYPE markerType = mapData->type.get();
 
@@ -386,7 +394,7 @@ static void BuildMapMarkerList() {
             marker.markerType = markerType;
             marker.distance = dist;
             marker.direction = GetDirectionString(dx, dy);
-            marker.discovered = canTravel;
+            marker.discovered = discovered;
             marker.canTravelTo = canTravel;
             marker.worldPos = refPos;
 

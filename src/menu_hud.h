@@ -52,6 +52,7 @@ static CrosshairListener g_crosshairListener;
 
 // --- HUD AdvanceMovie hook (notifications, sous-titres, lieu, tutoriel) ---
 static std::string g_hudPrevNotif;
+static std::string g_hudPrevSubtitle;
 static std::string g_hudPrevLocation;
 static std::string g_hudPrevTutorial;
 static std::string g_hudPrevMessage;   // dernier message d'item (Gold added, etc.)
@@ -65,6 +66,7 @@ static bool g_cameraInitialized = false; // éviter annonce au lancement
 // Notifications : QuestName stocké sur AnimatedLetter_mc avant animation lettre par lettre
 static constexpr const char* HUD_NOTIF     = "_root.HUDMovieBaseInstance.QuestUpdateBaseInstance.AnimatedLetter_mc.QuestName";
 // Sous-titres de dialogue (SubtitleText = SubtitleTextHolder.textField, ligne 146)
+static constexpr const char* HUD_SUBTITLE  = "_root.HUDMovieBaseInstance.SubtitleTextHolder.textField.text";
 // Nom de lieu (SetLocationName, HUDMenu.as ligne 375)
 static constexpr const char* HUD_LOCATION  = "_root.HUDMovieBaseInstance.LocationLockBase.LocationNameBase.LocationTextBase.LocationTextInstance.text";
 // Tutoriel (ShowTutorialHintText, HUDMenu.as ligne 147)
@@ -230,8 +232,38 @@ static void HUDAdvanceMovie_Hook(RE::IMenu* a_this, float a_interval, std::uint3
         }
     }
 
-    // Sous-titres de dialogue — désactivé, les PNJ ont déjà des voix
-    // Le champ GFx peut être rempli même si les sous-titres sont désactivés dans les options
+    // Sous-titres de dialogue — lus seulement si le joueur a activé les sous-titres
+    // dans les options du jeu (bDialogueSubtitles ou bGeneralSubtitles dans SkyrimPrefs.ini).
+    // Le champ GFx est rempli par Skyrim même quand les subs sont désactivés, donc sans
+    // ce check on parlerait par-dessus toutes les voix des PNJ.
+    {
+        static bool s_subtitleSettingChecked = false;
+        static bool s_dialogueSubtitlesOn = false;
+        static bool s_generalSubtitlesOn = false;
+        if (!s_subtitleSettingChecked) {
+            auto* prefs = RE::INIPrefSettingCollection::GetSingleton();
+            if (prefs) {
+                auto* dlg = prefs->GetSetting("bDialogueSubtitles:Interface");
+                if (dlg && dlg->GetType() == RE::Setting::Type::kBool) s_dialogueSubtitlesOn = dlg->GetBool();
+                auto* gen = prefs->GetSetting("bGeneralSubtitles:Interface");
+                if (gen && gen->GetType() == RE::Setting::Type::kBool) s_generalSubtitlesOn = gen->GetBool();
+                s_subtitleSettingChecked = true;
+                LOG("HUD subtitle settings: dialogue={} general={}",
+                    s_dialogueSubtitlesOn, s_generalSubtitlesOn);
+            }
+        }
+        if (s_dialogueSubtitlesOn || s_generalSubtitlesOn) {
+            std::string subtitle;
+            if (GetGFxString(movie, HUD_SUBTITLE, subtitle)) {
+                if (subtitle.empty() || subtitle == " ") {
+                    g_hudPrevSubtitle.clear();
+                } else if (subtitle != g_hudPrevSubtitle) {
+                    g_hudPrevSubtitle = subtitle;
+                    Speak(StripMarkupForSpeech(Utf8ToWString(subtitle)));
+                }
+            }
+        }
+    }
 
     // Nom de lieu quand on entre dans une nouvelle zone
     std::string location;
@@ -311,6 +343,61 @@ static void AnnouncePlayerVitals() {
         std::wstring msg = std::to_wstring(curH) + L" / " + std::to_wstring(maxH) + L" health";
         msg += L", " + std::to_wstring(curM) + L" / " + std::to_wstring(maxM) + L" magicka";
         msg += L", " + std::to_wstring(curS) + L" / " + std::to_wstring(maxS) + L" stamina";
+        Speak(msg);
+    });
+}
+
+// Ctrl+H : annonce les effets actifs sur le joueur (poison, maladies, buffs)
+// Lit player->AsMagicTarget()->GetActiveEffectList() et formate :
+// "3 active effects: Poison 5 damage 12 seconds, Rockjoint, Fortify Health 50"
+static void AnnounceActiveEffects() {
+    auto* task = SKSE::GetTaskInterface();
+    if (!task) return;
+    task->AddUITask([]() {
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        if (!player) return;
+        auto* magicTarget = player->AsMagicTarget();
+        if (!magicTarget) return;
+        auto* list = magicTarget->GetActiveEffectList();
+        if (!list) { Speak(L"No active effects"); return; }
+
+        struct Entry { std::wstring name; float magnitude; float remaining; bool detrimental; };
+        std::vector<Entry> entries;
+
+        for (auto* ae : *list) {
+            if (!ae || !ae->effect || !ae->effect->baseEffect) continue;
+            // Skip effets terminés ou inactifs
+            if (ae->flags.any(RE::ActiveEffect::Flag::kInactive) ||
+                ae->flags.any(RE::ActiveEffect::Flag::kDispelled)) continue;
+            auto* base = ae->effect->baseEffect;
+            const char* rawName = base->GetFullName();
+            if (!rawName || !*rawName) continue;
+            Entry e;
+            e.name = Utf8ToWString(rawName);
+            e.magnitude = ae->magnitude;
+            e.remaining = (ae->duration > 0.0f) ? (ae->duration - ae->elapsedSeconds) : 0.0f;
+            e.detrimental = base->IsDetrimental() || base->IsHostile();
+            entries.push_back(std::move(e));
+        }
+
+        if (entries.empty()) { Speak(L"No active effects"); return; }
+
+        // Néfastes en premier
+        std::stable_sort(entries.begin(), entries.end(),
+                         [](const Entry& a, const Entry& b) { return a.detrimental && !b.detrimental; });
+
+        std::wstring msg = std::to_wstring(entries.size()) + L" active effect" +
+                           (entries.size() > 1 ? L"s: " : L": ");
+        bool first = true;
+        for (const auto& e : entries) {
+            if (!first) msg += L", ";
+            first = false;
+            msg += e.name;
+            if (e.magnitude > 0.0f)
+                msg += L" " + std::to_wstring(static_cast<int>(e.magnitude));
+            if (e.remaining > 0.0f)
+                msg += L" " + std::to_wstring(static_cast<int>(e.remaining)) + L" seconds";
+        }
         Speak(msg);
     });
 }

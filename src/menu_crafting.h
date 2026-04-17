@@ -9,6 +9,9 @@ static std::wstring     g_lastCraftingCat;
 static std::wstring     g_lastCraftingItemAnnounce;
 static std::wstring     g_lastCraftingDesc;
 static std::atomic_bool g_craftingFirstReadDone{false};
+// Mis à true par l'input handler clavier (Up/Down/W/S etc.) pour forcer la relecture
+// même quand l'item résultant est textuellement identique (recettes dupliquées).
+static std::atomic_bool g_craftingForceAnnounce{false};
 
 struct CraftingSnapshot {
     std::wstring itemText;
@@ -19,8 +22,28 @@ struct CraftingSnapshot {
     std::wstring weightText;
     std::wstring weaponDamageText;
     std::wstring apparelArmorText;
+    std::wstring enchantmentText;  // effets enchantements (ex: "Carry Weight +50") pour sacs à dos modés et items enchantés
     bool         inCategoryMode{true};  // true = dans les catégories, false = dans les items
 };
+
+// Lit le texte d'enchantement (effets) depuis l'ItemCard.
+// L'ItemCard du crafting bascule via gotoAndStop entre frames Apparel/Weapon/Apparel_Enchanted/Weapon_Enchanted.
+// On essaie les deux labels (armure/arme), htmlText puis text en fallback.
+static void ReadCraftingEnchantment(RE::GFxMovieView* movie, std::wstring& out) {
+    const char* paths[] = {
+        "_root.Menu.ItemInfoHolder.ItemInfo.ApparelEnchantedLabel.htmlText",
+        "_root.Menu.ItemInfoHolder.ItemInfo.ApparelEnchantedLabel.text",
+        "_root.Menu.ItemInfoHolder.ItemInfo.WeaponEnchantedLabel.htmlText",
+        "_root.Menu.ItemInfoHolder.ItemInfo.WeaponEnchantedLabel.text",
+    };
+    std::string raw;
+    for (auto* p : paths) {
+        if (GetGFxString(movie, p, raw) && !raw.empty()) {
+            out = StripMarkupForSpeech(Utf8ToWString(raw));
+            if (!out.empty()) return;
+        }
+    }
+}
 
 static std::atomic_bool g_craftingIsSimpleList{false};  // true = tannerie/meule/établi (pas de catégories)
 static std::atomic_bool g_craftingModeDetected{false};
@@ -70,6 +93,9 @@ static bool ReadCraftingSnapshotSimple(CraftingSnapshot& snap) {
     std::string ingredients;
     if (GetGFxString(movie, "_root.Menu.ItemInfoHolder.AdditionalDescriptionHolder.AdditionalDescription.text", ingredients) && !ingredients.empty())
         snap.ingredientsText = StripMarkupForSpeech(Utf8ToWString(ingredients));
+
+    // Effets enchantements (sacs à dos modés, items enchantés)
+    ReadCraftingEnchantment(movie, snap.enchantmentText);
 
     snap.inCategoryMode = false;
     return !snap.itemText.empty();
@@ -156,6 +182,9 @@ static bool ReadCraftingSnapshotForge(CraftingSnapshot& snap) {
     else if (GetGFxString(movie, "_root.Menu.ItemInfoHolder.AdditionalDescriptionHolder.AdditionalDescription.text", ingredients) && !ingredients.empty())
         snap.ingredientsText = StripMarkupForSpeech(Utf8ToWString(ingredients));
 
+    // Effets enchantements (sacs à dos modés, items enchantés)
+    ReadCraftingEnchantment(movie, snap.enchantmentText);
+
     return !snap.itemText.empty() || !snap.catText.empty();
 }
 
@@ -194,7 +223,10 @@ static void AnnounceCraftingChangeImpl() {
     if (!ok) return;
 
     const bool catChanged = !snap.catText.empty() && snap.catText != g_lastCraftingCat;
-    const bool itemChanged = !snap.itemText.empty() && snap.itemText != g_lastCraftingItemAnnounce;
+    // Force = touche de navigation clavier pressée → on relit même si texte identique
+    // (cas des recettes dupliquées affichées plusieurs fois dans la liste)
+    const bool forced = g_craftingForceAnnounce.exchange(false);
+    const bool itemChanged = !snap.itemText.empty() && (snap.itemText != g_lastCraftingItemAnnounce || forced);
 
     const bool firstRead = !g_craftingFirstReadDone;
 
@@ -210,6 +242,7 @@ static void AnnounceCraftingChangeImpl() {
             if (!snap.apparelArmorText.empty() && !isZero(snap.apparelArmorText))
                 announce += L", armor " + snap.apparelArmorText;
             if (firstRead) SpeakQueue(announce); else Speak(announce);
+            if (!snap.enchantmentText.empty()) SpeakQueue(snap.enchantmentText);
             g_lastCraftingItemAnnounce = snap.itemText;
             g_lastCraftingDesc.clear();
             g_craftingFirstReadDone = true;
@@ -256,6 +289,7 @@ static void AnnounceCraftingChangeImpl() {
             announce += L", armor " + snap.apparelArmorText;
 
         if (firstRead) SpeakQueue(announce); else Speak(announce);
+        if (!snap.enchantmentText.empty()) SpeakQueue(snap.enchantmentText);
         g_lastCraftingItemAnnounce = snap.itemText;
         g_lastCraftingDesc.clear();
     }

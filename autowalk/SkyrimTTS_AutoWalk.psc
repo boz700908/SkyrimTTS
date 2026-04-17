@@ -135,6 +135,14 @@ Function StartWalkToRefMounted(ObjectReference target, float stopDist, Actor mou
         return
     endIf
 
+    ; Clear sticky combat state on both the player AND the mount. Same
+    ; reason as foot mode: stuck IsInCombat flag forces combat stance
+    ; which slows movement below run speed.
+    PlayerRef.StopCombat()
+    PlayerRef.StopCombatAlarm()
+    mountActor.StopCombat()
+    mountActor.StopCombatAlarm()
+
     ; OPTION B — Étape clé : rediriger l'alias Traveler vers le CHEVAL.
     ; Notre Travel package est attaché à l'alias Traveler (via ALPC dans l'ESP).
     ; En changeant la ref de l'alias, le package va s'exécuter sur le cheval
@@ -180,11 +188,11 @@ Function CheckArrival()
         return
     endIf
 
-    if PlayerRef.IsInCombat()
-        Debug.Trace("SkyrimTTS:AutoWalk - Combat detected, stopping")
-        StopWalkingInternal(true)
-        return
-    endIf
+    ; Note : on ne vérifie PAS IsInCombat(). Le flag de combat Skyrim est parfois
+    ; "collé" après un combat (reste à true même quand tous les ennemis sont morts),
+    ; ce qui empêchait toute nouvelle autowalk de démarrer. Si un vrai combat
+    ; survient, le moteur sort naturellement le joueur de l'AI driven, et le
+    ; monitor C++ voit le mouvement input (l'attaque du joueur) → stoppe proprement.
 
     float dist = PlayerRef.GetDistance(CurrentTarget)
     Debug.Trace("SkyrimTTS:AutoWalk - Check: dist=" + dist)
@@ -227,6 +235,18 @@ Function StopWalkingInternal(bool abNotify)
         Debug.Trace("SkyrimTTS:AutoWalk - Stopped")
     endIf
 
+    ; Supprimer le temp marker si c'est un XMarker créé par PlaceAtMe (mode coordonnées).
+    ; Sans ça, les markers s'accumulent dans la save à chaque autowalk et finissent
+    ; par surcharger le scene graph → crash progressif.
+    if CurrentTarget != None && CurrentTarget != PlayerRef
+        Form baseForm = CurrentTarget.GetBaseObject()
+        if baseForm != None && baseForm.GetFormID() == 0x10
+            CurrentTarget.Disable()
+            CurrentTarget.Delete()
+            Debug.Trace("SkyrimTTS:AutoWalk - Deleted temp XMarker")
+        endIf
+    endIf
+
     CurrentTarget = None
     IsWalking = false
     MountedMode = false
@@ -248,6 +268,15 @@ Function StartWalkToRef(ObjectReference target, float stopDist)
         Debug.Trace("SkyrimTTS:AutoWalk - Already within range: " + dist)
         return
     endIf
+
+    ; Clear any sticky combat state. After a combat ends, Skyrim sometimes
+    ; keeps IsInCombat=true for 30+s (until music fully fades, until dead
+    ; enemies are "forgotten"). During that time the player is forced into
+    ; combat stance which walks slower than running. These two calls clear
+    ; the stuck flag. If real enemies are around they re-engage instantly,
+    ; so no combat is actually disrupted.
+    PlayerRef.StopCombat()
+    PlayerRef.StopCombatAlarm()
 
     ; Fill DstMarker alias with the target -> Travel package reads this
     DstMarker.ForceRefTo(target)

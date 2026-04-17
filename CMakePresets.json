@@ -3,7 +3,7 @@
   "configurePresets": [
   {
       "name": "base",
-      "hidden": true,
+            "hidden": true,
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/${presetName}",
       "installDir": "${sourceDir}/install/${presetName}",
