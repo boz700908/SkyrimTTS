@@ -139,7 +139,7 @@ static void HUDAdvanceMovie_Hook(RE::IMenu* a_this, float a_interval, std::uint3
         RE::GFxValue messagesBlock;
         if (SafeGetVariable(movie, messagesBlock, "_root.HUDMovieBaseInstance.MessagesBlock") && SafeIsObject(messagesBlock)) {
             RE::GFxValue shownArray;
-            if (messagesBlock.GetMember("ShownMessageArray", &shownArray) && SafeIsArray(shownArray)) {
+            if (SafeGetMember(messagesBlock, "ShownMessageArray", &shownArray) && SafeIsArray(shownArray)) {
                 uint32_t len = SafeGetArraySize(shownArray);
                 if (len == 0) {
                     g_hudPrevMessage.clear();
@@ -148,11 +148,11 @@ static void HUDAdvanceMovie_Hook(RE::IMenu* a_this, float a_interval, std::uint3
                         RE::GFxValue entry;
                         if (!shownArray.GetElement(i, &entry) || !SafeIsObject(entry)) continue;
                         RE::GFxValue textClip;
-                        if (!entry.GetMember("TextFieldClip", &textClip) || !SafeIsObject(textClip)) continue;
+                        if (!SafeGetMember(entry, "TextFieldClip", &textClip) || !SafeIsObject(textClip)) continue;
                         RE::GFxValue tf1;
-                        if (!textClip.GetMember("tf1", &tf1) || !SafeIsObject(tf1)) continue;
+                        if (!SafeGetMember(textClip, "tf1", &tf1) || !SafeIsObject(tf1)) continue;
                         RE::GFxValue htmlText;
-                        if (!tf1.GetMember("htmlText", &htmlText) || !SafeIsString(htmlText)) continue;
+                        if (!SafeGetMember(tf1, "htmlText", &htmlText) || !SafeIsString(htmlText)) continue;
                         std::string msg = SafeGetString(htmlText);
                         if (!msg.empty() && msg != g_hudPrevMessage) {
                             g_hudPrevMessage = msg;
