@@ -92,23 +92,17 @@ static bool ReadMcmSnapshot(McmSnapshot& snap) {
 
     // Focus (mod list vs options)
     double focusD = 0.0;
-    bool focusOk = GetGFxNumber(movie, MCM_FOCUS, focusD);
-    if (focusOk)
+    if (GetGFxNumber(movie, MCM_FOCUS, focusD))
         snap.focus = static_cast<int>(focusD);
-    LOG("McmDiag: focus path={} val={}", focusOk, snap.focus);
 
     // Mod list panel state
     double stateD = 0.0;
-    bool stateOk = GetGFxNumber(movie, MCM_MODLIST_STATE, stateD);
-    if (stateOk)
+    if (GetGFxNumber(movie, MCM_MODLIST_STATE, stateD))
         snap.modListState = static_cast<int>(stateD);
-    LOG("McmDiag: modListState path={} val={}", stateOk, snap.modListState);
 
     // Mod name (when browsing mod list)
-    bool modNameOk = GetGFxString(movie, MCM_MODLIST_ENTRY, tmp);
-    if (modNameOk && !tmp.empty())
+    if (GetGFxString(movie, MCM_MODLIST_ENTRY, tmp) && !tmp.empty())
         snap.modName = Utf8ToWString(tmp);
-    LOG("McmDiag: modName path={} val='{}'", modNameOk, tmp);
 
     // Sub-page name (when browsing pages of a mod)
     if (GetGFxString(movie, MCM_SUBLIST_ENTRY, tmp) && !tmp.empty())
