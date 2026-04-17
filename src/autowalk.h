@@ -257,15 +257,27 @@ static void StartAutoWalkMonitor() {
                 auto* player = RE::PlayerCharacter::GetSingleton();
                 if (!player) return;
 
-                // Pendant un écran de chargement (LoadingMenu) ou un fondu (Fader Menu),
-                // on met le moniteur en PAUSE TOTALE. Le skeleton/shader du joueur est
-                // en cours de reconstruction — toute intervention (stuck recovery,
-                // EvaluatePackage, SetAIDriven) peut déclencher le crash BSShaderAccumulator.
+                // Pendant un écran de chargement, un fondu, OU n'importe quel menu qui
+                // met le jeu en pause (Inventaire, Journal, Carte, Stats, MessageBox,
+                // Main Menu, etc.), on met le moniteur en PAUSE TOTALE.
+                //
+                // Deux raisons :
+                //   1. LoadingMenu/FaderMenu : le skeleton/shader du joueur est en cours
+                //      de reconstruction — toute intervention (stuck recovery,
+                //      EvaluatePackage, SetAIDriven) peut déclencher le crash
+                //      BSShaderAccumulator.
+                //   2. Menus pausants (Inventaire/Journal/Carte/...) : le joueur ne bouge
+                //      pas physiquement pendant qu'il lit son inventaire. Le stuck timer
+                //      atteindrait 4s rapidement et déclencherait la recovery AIDriven
+                //      toggle. Or le moteur est dans un état gelé pendant le pause →
+                //      EvaluatePackage sur un monde gelé peut désynchroniser l'AI.
+                //
                 // On remet le stuck timer et la last pos à zéro pour ne pas déclencher
                 // la recovery juste après la fermeture du menu.
                 auto* ui = RE::UI::GetSingleton();
                 if (ui && (ui->IsMenuOpen(RE::LoadingMenu::MENU_NAME) ||
-                           ui->IsMenuOpen("Fader Menu"))) {
+                           ui->IsMenuOpen("Fader Menu") ||
+                           ui->GameIsPaused())) {
                     g_autoWalkStuckTimer = 0.0f;
                     g_autoWalkLastPos = player->GetPosition();
                     return;
