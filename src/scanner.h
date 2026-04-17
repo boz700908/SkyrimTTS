@@ -522,6 +522,8 @@ static void ScannerNextCategoryImpl();
 static void ScannerPrevCategoryImpl();
 static void ScannerNextObject();
 static void ScannerPrevObject();
+static void ScannerNextObjectImpl();
+static void ScannerPrevObjectImpl();
 
 // Callback après scan automatique
 enum ScanAction { kScanOnly, kScanThenNextCat, kScanThenPrevCat, kScanThenNextObj, kScanThenPrevObj };
@@ -1259,12 +1261,14 @@ static void DoScan(ScanAction postAction = kScanOnly) {
     task->AddTask([]() {
         DoScanInternal();
 
-        // Exécuter l'action demandée après le scan
+        // Exécuter l'action demandée après le scan — on est déjà dans un AddTask
+        // (thread principal) donc on appelle directement les Impl pour éviter de
+        // re-queue inutilement un nouveau AddTask.
         switch (g_pendingScanAction) {
             case kScanThenNextCat: ScannerNextCategoryImpl(); break;
             case kScanThenPrevCat: ScannerPrevCategoryImpl(); break;
-            case kScanThenNextObj: ScannerNextObject(); break;
-            case kScanThenPrevObj: ScannerPrevObject(); break;
+            case kScanThenNextObj: ScannerNextObjectImpl(); break;
+            case kScanThenPrevObj: ScannerPrevObjectImpl(); break;
             default: {
                 // Scan manuel : annoncer le résultat
                 int count = static_cast<int>(g_scannedFiltered.size());
@@ -1419,8 +1423,19 @@ static void RefreshFilteredList() {
 }
 
 // --- Naviguer : objet suivant/précédent ---
+//
+// Wrapper public : appelé depuis le thread clavier. On délègue tout le travail
+// (lecture de refs, cellules, mise à jour de g_scannedFiltered) au thread
+// principal via AddTask pour éviter les races avec le cell streaming et le scan
+// automatique qui peut réallouer g_scannedAll à tout moment.
 static void ScannerNextObject() {
     LOG("InputDiag: ScannerNextObject ENTRY");
+    auto* task = SKSE::GetTaskInterface();
+    if (!task) { ScannerNextObjectImpl(); return; }
+    task->AddTask([]() { ScannerNextObjectImpl(); });
+}
+
+static void ScannerNextObjectImpl() {
     if (NeedsRescan()) {
         DoScan(kScanThenNextObj);
         return;
@@ -1457,8 +1472,16 @@ static void ScannerNextObject() {
     Speak(FormatObjectAnnounce(nextObj) + pos);
 }
 
+// Wrapper public : même pattern que ScannerNextObject, tout est délégué au
+// thread principal via AddTask.
 static void ScannerPrevObject() {
     LOG("InputDiag: ScannerPrevObject ENTRY");
+    auto* task = SKSE::GetTaskInterface();
+    if (!task) { ScannerPrevObjectImpl(); return; }
+    task->AddTask([]() { ScannerPrevObjectImpl(); });
+}
+
+static void ScannerPrevObjectImpl() {
     if (NeedsRescan()) {
         DoScan(kScanThenPrevObj);
         return;
