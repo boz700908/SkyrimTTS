@@ -208,7 +208,11 @@ public:
                 g_craftingFirstReadDone = false;
                 g_craftingModeDetected = false;
                 g_craftingIsSimpleList = false;
-                SpeakQueue(L"Crafting menu open");
+                // Speak (pas SpeakQueue) : on veut couper toute annonce HUD en cours
+                // (notification, tutoriel, furtivité) pour que l'ouverture du menu
+                // soit clairement entendue. Le firstRead interne au menu utilise
+                // ensuite SpeakQueue pour enchaîner après celle-ci.
+                Speak(L"Crafting menu open");
                 StartCraftingPolling();
             } else {
                 g_craftingOpen.store(false);
