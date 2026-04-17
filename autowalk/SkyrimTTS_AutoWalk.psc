@@ -301,6 +301,26 @@ Function ForceStop()
     endIf
 EndFunction
 
+; === Called from C++ at kPostLoadGame (delayed 3s) to hard-reset autowalk state.
+; Covers the "save corruption" case where the game crashed during an autowalk:
+; the save file then contains IsWalking=true, MountedMode=true, DstMarker filled,
+; Traveler redirected to a mount, and Game.SetPlayerAIDriven(true). On reload,
+; this residual state would fire a broken Travel package or cause the next autowalk
+; attempt to crash. This function forces a clean slate without trying to clean up
+; CurrentTarget (which could be a dangling ref from a deleted XMarker).
+Function OnLoadGameReset()
+    UnregisterForUpdate()
+    DstMarker.Clear()
+    Traveler.ForceRefTo(PlayerRef)
+    Game.SetPlayerAIDriven(false)
+    PlayerRef.EvaluatePackage()
+    IsWalking = false
+    MountedMode = false
+    CurrentTarget = None
+    currentLoopInstance = 0
+    Debug.Trace("SkyrimTTS:AutoWalk - OnLoadGameReset: full state cleanup")
+EndFunction
+
 ; === Called from C++ via DispatchMethodCall for fast travel ===
 Function OnFastTravel(int aiFormID)
     Form targetForm = Game.GetForm(aiFormID)
