@@ -448,8 +448,20 @@ static void StartAutoWalkMonitor() {
                         StopAutoWalk();
                     }
                 } else {
+                    // Escalade graduelle pour minimiser les risques de crash :
+                    //   - 4s : tentative douce (réappliquer les flags + un simple
+                    //          EvaluatePackage). Suffit pour la majorité des blocages
+                    //          (escaliers, petits obstacles, IA qui a besoin de
+                    //          reconsidérer son chemin). Pas de toggle AIDriven donc
+                    //          pas de risque de désynchroniser le moteur.
+                    //   - 6s : si le doux n'a pas suffi, on passe au toggle complet
+                    //          SetAIDriven(false)/(true) + EvaluatePackage. Plus
+                    //          violent, peut provoquer des races avec la physique ou
+                    //          les animations, mais nécessaire pour les blocages
+                    //          coriaces.
+                    //   - 10s : on abandonne, l'autowalk est vraiment coincé.
                     if (g_autoWalkStuckTimer > 4.0f && s_recoveryAttempt == 0) {
-                        LOG("AutoWalk: stuck for 4s, re-applying step flags and re-evaluating package");
+                        LOG("AutoWalk: stuck for 4s, gentle recovery (re-apply flags + EvaluatePackage)");
                         // Remettre les flags du char controller : au cas où ils auraient
                         // été effacés par un ragdoll, une transition de cellule ou une
                         // animation spéciale. Sans kTryStep, le joueur ne monte plus les
@@ -459,11 +471,23 @@ static void StartAutoWalkMonitor() {
                             charCtrl->flags.set(RE::CHARACTER_FLAGS::kTryStep);
                             charCtrl->flags.set(RE::CHARACTER_FLAGS::kCanJump);
                         }
+                        player->EvaluatePackage();
+                        s_recoveryAttempt = 1;
+                    } else if (g_autoWalkStuckTimer > 6.0f && s_recoveryAttempt == 1) {
+                        LOG("AutoWalk: still stuck at 6s, hard recovery (full AIDriven toggle)");
+                        // Toggle complet : dernier recours avant d'abandonner. Plus
+                        // risqué car peut perturber char controller / animations,
+                        // mais débloque les cas vraiment coincés.
+                        auto* charCtrl = player->GetCharController();
+                        if (charCtrl) {
+                            charCtrl->flags.set(RE::CHARACTER_FLAGS::kTryStep);
+                            charCtrl->flags.set(RE::CHARACTER_FLAGS::kCanJump);
+                        }
                         player->SetAIDriven(false);
                         player->EvaluatePackage();
                         player->SetAIDriven(true);
                         player->EvaluatePackage();
-                        s_recoveryAttempt = 1;
+                        s_recoveryAttempt = 2;
                     } else if (g_autoWalkStuckTimer > 10.0f) {
                         Speak(L"Can't reach target");
                         g_autoWalking.store(false);
