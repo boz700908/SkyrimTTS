@@ -93,6 +93,25 @@ static int                         g_scanIndex{-1};
 static constexpr float             RESCAN_DISTANCE = 100.0f; // auto-rescan si joueur bouge de >100 unités
 static RE::NiPoint3                g_lastScanPos{0, 0, 0};
 
+// Cache d'analyse des scripts Papyrus attachés aux refs. Les scripts attachés à
+// une ref sont stables à l'exécution (ils ne changent pas pendant une session
+// de jeu), donc on peut mémoriser le résultat d'une analyse VM et la réutiliser
+// à chaque scan. Gain énorme dans les donjons : avant le cache, on faisait 9
+// FindBoundObject par activator x N activators par scan (pour détecter les Murs
+// des Mots), plus jusqu'à 4 par pilier nommé. Avec le cache, on ne paie ce coût
+// qu'UNE seule fois par FormID, puis on sait immédiatement quoi faire.
+// L'état live du pilier (position01/02/03) continue d'être lu à chaque scan
+// car lui change à l'exécution.
+enum class ScriptTypeKind : uint8_t {
+    Unknown = 0,                // Pas encore analysé
+    NotSpecial,                 // Analysé : rien de spécial (pas un Mur ni un pilier)
+    WordWall,                   // Mur des Mots (un des 9 scripts WordWallTrigger*)
+    PillarStandard,             // defaultPuzzlePillarScript / DefaultPuzzlePillarScript
+    PillarInt,                  // intPuzzlePillarScript
+    RingHallOfStories           // HallofStoriesDiskScript (anneaux de la Gorge du Monde)
+};
+static std::unordered_map<RE::FormID, ScriptTypeKind> g_scriptTypeCache;
+
 // --- Quêtes actives (lues depuis le journal GFx) ---
 static std::set<RE::FormID> g_activeQuestFormIDs;    // FormIDs des quêtes traquées dans le journal
 static bool                 g_questFilterInitialized{false}; // true après la première lecture du journal
@@ -529,6 +548,63 @@ static void ScannerPrevObjectImpl();
 enum ScanAction { kScanOnly, kScanThenNextCat, kScanThenPrevCat, kScanThenNextObj, kScanThenPrevObj };
 static ScanAction g_pendingScanAction{kScanOnly};
 
+// Détermine le type de script spécial attaché à une référence (Mur des Mots,
+// Pilier puzzle, Anneau de la Gorge du Monde, ou rien de spécial). Utilise
+// g_scriptTypeCache : une seule requête VM par FormID pour toute la session,
+// ensuite c'est un simple lookup hash map. Les requêtes VM sont coûteuses
+// (~100μs chacune) et sans cache on en faisait 9 par activator à chaque scan,
+// ce qui donnait un gros freeze en donjons.
+//
+// IMPORTANT : on ne retourne PAS l'état live du pilier ici (position01/02/03) ;
+// ça doit être lu à chaque scan car ça change à l'exécution. Ici on ne dit que
+// "quelle FAMILLE de script est attachée", et c'est stable.
+static ScriptTypeKind GetScriptTypeCached(RE::TESObjectREFR& ref) {
+    RE::FormID fid = ref.GetFormID();
+    auto it = g_scriptTypeCache.find(fid);
+    if (it != g_scriptTypeCache.end()) return it->second;
+
+    ScriptTypeKind result = ScriptTypeKind::NotSpecial;
+    auto* vm = RE::SkyrimVM::GetSingleton();
+    if (vm && vm->impl) {
+        auto* policy = vm->impl->GetObjectHandlePolicy();
+        if (policy) {
+            auto vmH = policy->GetHandleForObject(
+                static_cast<RE::VMTypeID>(RE::FormType::Reference), &ref);
+            RE::BSTSmartPointer<RE::BSScript::Object> scriptObj;
+
+            // 1) Mur des Mots : 9 variantes possibles selon les DLCs et addons
+            static constexpr const char* kWordWallScripts[] = {
+                "WordWallTriggerScript", "WordWallTriggerBleakFallsScript",
+                "WordWallTrigger02Script", "DLC2WordWallTriggerScript",
+                "DLC1WordWallTriggerScript", "DBSanctuaryWordWallTriggerScript",
+                "DLC2WordWallTrigger02Script", "DLC2WordWallTriggerBendWillScript",
+                "DLC1WordWallTrigger02Script"
+            };
+            for (auto* ws : kWordWallScripts) {
+                if (vm->impl->FindBoundObject(vmH, ws, scriptObj) && scriptObj) {
+                    result = ScriptTypeKind::WordWall;
+                    break;
+                }
+            }
+
+            // 2) Pilier standard / int / anneau (seulement si pas déjà identifié)
+            if (result == ScriptTypeKind::NotSpecial) {
+                if ((vm->impl->FindBoundObject(vmH, "defaultPuzzlePillarScript", scriptObj) && scriptObj) ||
+                    (vm->impl->FindBoundObject(vmH, "DefaultPuzzlePillarScript", scriptObj) && scriptObj)) {
+                    result = ScriptTypeKind::PillarStandard;
+                } else if (vm->impl->FindBoundObject(vmH, "intPuzzlePillarScript", scriptObj) && scriptObj) {
+                    result = ScriptTypeKind::PillarInt;
+                } else if (vm->impl->FindBoundObject(vmH, "HallofStoriesDiskScript", scriptObj) && scriptObj) {
+                    result = ScriptTypeKind::RingHallOfStories;
+                }
+            }
+        }
+    }
+
+    g_scriptTypeCache[fid] = result;
+    return result;
+}
+
 // --- Scanner une cellule et ajouter ses références ---
 static void ScanCell(RE::TESObjectCELL* cell, RE::PlayerCharacter* player, const RE::NiPoint3& playerPos) {
     if (!cell) return;
@@ -567,112 +643,87 @@ static void ScanCell(RE::TESObjectCELL* cell, RE::PlayerCharacter* player, const
             float maxRange = g_mcmScanRange.load();
             if (maxRange > 0.0f && dist > maxRange) continue;
 
-            // Détecter les Murs des Mots (triggers invisibles sans nom)
-            if (base && base->Is(RE::FormType::Activator)) {
-                auto* vm = RE::SkyrimVM::GetSingleton();
-                if (vm && vm->impl) {
-                    auto* policy = vm->impl->GetObjectHandlePolicy();
-                    if (policy) {
-                        auto vmH = policy->GetHandleForObject(
-                            static_cast<RE::VMTypeID>(RE::FormType::Reference), &ref);
-                        RE::BSTSmartPointer<RE::BSScript::Object> wwObj;
-                        const char* wwScripts[] = {
-                            "WordWallTriggerScript", "WordWallTriggerBleakFallsScript",
-                            "WordWallTrigger02Script", "DLC2WordWallTriggerScript",
-                            "DLC1WordWallTriggerScript", "DBSanctuaryWordWallTriggerScript",
-                            "DLC2WordWallTrigger02Script", "DLC2WordWallTriggerBendWillScript",
-                            "DLC1WordWallTrigger02Script"
-                        };
-                        for (auto* ws : wwScripts) {
-                            if (vm->impl->FindBoundObject(vmH, ws, wwObj) && wwObj) {
-                                // C'est un Mur des Mots !
-                                ScannedObject obj;
-                                obj.formID = ref.GetFormID();
-                                obj.name = L"Word Wall";
-                                obj.distance = dist;
-                                obj.zDiff = refPos.z - playerPos.z;
-                                obj.lastKnownPos = refPos;
-                                obj.category = kCatActivators;
-                                LOG("Scanner: Word Wall found FormID={:08X} dist={:.0f}", ref.GetFormID(), dist);
-                                g_scannedAll.push_back(std::move(obj));
-                                break;
-                            }
-                        }
-                    }
-                }
+            // Détecter les Murs des Mots (triggers invisibles sans nom).
+            // Utilise le cache : première rencontre = 9 requêtes VM, ensuite 0.
+            if (base && base->Is(RE::FormType::Activator) &&
+                GetScriptTypeCached(ref) == ScriptTypeKind::WordWall) {
+                ScannedObject obj;
+                obj.formID = ref.GetFormID();
+                obj.name = L"Word Wall";
+                obj.distance = dist;
+                obj.zDiff = refPos.z - playerPos.z;
+                obj.lastKnownPos = refPos;
+                obj.category = kCatActivators;
+                g_scannedAll.push_back(std::move(obj));
             }
 
             // Nom
             const char* rawName = ref.GetDisplayFullName();
             if (!rawName || !*rawName) continue;
 
-            // Diagnostic pilier puzzle : lire l'état via le script Papyrus
+            // Diagnostic pilier puzzle : lire l'état via le script Papyrus.
+            // Le TYPE de script est mis en cache (stable), mais l'ÉTAT live
+            // (position01/02/03/busy) doit être relu à chaque scan car il change
+            // quand le joueur tourne le pilier.
             std::string nameStr = rawName;
-            if (nameStr.find("Pilier") != std::string::npos || nameStr.find("Pillar") != std::string::npos || nameStr.find("pilier") != std::string::npos) {
-                LOG("Scanner: PILLAR DIAGNOSTIC for '{}' FormID={:08X}", rawName, ref.GetFormID());
+            ScriptTypeKind stk = ScriptTypeKind::NotSpecial;
+            if (nameStr.find("Pilier") != std::string::npos ||
+                nameStr.find("Pillar") != std::string::npos ||
+                nameStr.find("pilier") != std::string::npos) {
+                stk = GetScriptTypeCached(ref);
+            }
+            if (stk == ScriptTypeKind::PillarStandard ||
+                stk == ScriptTypeKind::PillarInt ||
+                stk == ScriptTypeKind::RingHallOfStories) {
                 auto* vmSingleton = RE::SkyrimVM::GetSingleton();
                 if (vmSingleton && vmSingleton->impl) {
                     auto* handlePolicy = vmSingleton->impl->GetObjectHandlePolicy();
                     if (handlePolicy) {
                         auto vmHandle = handlePolicy->GetHandleForObject(
                             static_cast<RE::VMTypeID>(RE::FormType::Reference), &ref);
-                        // Essayer différents noms de scripts pour les piliers
-                        const char* scriptNames[] = {
-                            "defaultPuzzlePillarScript", "DefaultPuzzlePillarScript",
-                            "HallofStoriesDiskScript", "intPuzzlePillarScript"
-                        };
-                        for (auto* sName : scriptNames) {
-                            RE::BSTSmartPointer<RE::BSScript::Object> scriptObj;
-                            if (vmSingleton->impl->FindBoundObject(vmHandle, sName, scriptObj) && scriptObj) {
-                                // Lire le state Papyrus (position01, position02, position03)
-                                std::string state = scriptObj->currentState.c_str();
-                                LOG("Scanner: PUZZLE FormID={:08X} script='{}' state='{}'", ref.GetFormID(), sName, state);
+                        // On cible directement le bon script — plus besoin de boucler sur 4 noms.
+                        const char* sName = (stk == ScriptTypeKind::PillarStandard) ? "defaultPuzzlePillarScript"
+                                          : (stk == ScriptTypeKind::PillarInt)      ? "intPuzzlePillarScript"
+                                                                                    : "HallofStoriesDiskScript";
+                        RE::BSTSmartPointer<RE::BSScript::Object> scriptObj;
+                        if (vmSingleton->impl->FindBoundObject(vmHandle, sName, scriptObj) && scriptObj) {
+                            std::string state = scriptObj->currentState.c_str();
+                            int posNum = 0;
+                            if (state == "position01") posNum = 1;
+                            else if (state == "position02") posNum = 2;
+                            else if (state == "position03") posNum = 3;
 
-                                int posNum = 0;
-                                if (state == "position01") posNum = 1;
-                                else if (state == "position02") posNum = 2;
-                                else if (state == "position03") posNum = 3;
-
-                                const char* symbol = "unknown";
-                                if (state == "busy") {
-                                    symbol = "turning";
-                                } else if (posNum > 0) {
-                                    // Pour les piliers standard : Eagle/Snake/Whale
-                                    if (std::string(sName) == "defaultPuzzlePillarScript" ||
-                                        std::string(sName) == "DefaultPuzzlePillarScript" ||
-                                        std::string(sName) == "intPuzzlePillarScript") {
-                                        if (posNum == 1) symbol = "Eagle";
-                                        else if (posNum == 2) symbol = "Snake";
-                                        else if (posNum == 3) symbol = "Whale";
-                                    }
-                                    // Pour les anneaux : chercher les symboles via le linkedRef (serrure)
-                                    else if (std::string(sName) == "HallofStoriesDiskScript") {
-                                        // Le linkedRef de l'anneau pointe vers la serrure
-                                        auto* linkedRef = ref.GetLinkedRef(nullptr);
-                                        if (linkedRef) {
-                                            RE::FormID keyholeID = linkedRef->GetFormID();
-                                            for (size_t di = 0; di < sizeof(g_doorSymbolTable)/sizeof(g_doorSymbolTable[0]); di++) {
-                                                if (g_doorSymbolTable[di].keyhole == keyholeID) {
-                                                    if (posNum == 1) symbol = g_doorSymbolTable[di].s1;
-                                                    else if (posNum == 2) symbol = g_doorSymbolTable[di].s2;
-                                                    else if (posNum == 3) symbol = g_doorSymbolTable[di].s3;
-                                                    break;
-                                                }
+                            const char* symbol = "unknown";
+                            if (state == "busy") {
+                                symbol = "turning";
+                            } else if (posNum > 0) {
+                                if (stk == ScriptTypeKind::PillarStandard || stk == ScriptTypeKind::PillarInt) {
+                                    if (posNum == 1) symbol = "Eagle";
+                                    else if (posNum == 2) symbol = "Snake";
+                                    else if (posNum == 3) symbol = "Whale";
+                                } else if (stk == ScriptTypeKind::RingHallOfStories) {
+                                    auto* linkedRef = ref.GetLinkedRef(nullptr);
+                                    if (linkedRef) {
+                                        RE::FormID keyholeID = linkedRef->GetFormID();
+                                        for (size_t di = 0; di < sizeof(g_doorSymbolTable)/sizeof(g_doorSymbolTable[0]); di++) {
+                                            if (g_doorSymbolTable[di].keyhole == keyholeID) {
+                                                if (posNum == 1) symbol = g_doorSymbolTable[di].s1;
+                                                else if (posNum == 2) symbol = g_doorSymbolTable[di].s2;
+                                                else if (posNum == 3) symbol = g_doorSymbolTable[di].s3;
+                                                break;
                                             }
                                         }
-                                        // Si pas trouvé dans la table, afficher le numéro
-                                        if (std::string(symbol) == "unknown") {
-                                            if (posNum == 1) symbol = "Position 1";
-                                            else if (posNum == 2) symbol = "Position 2";
-                                            else if (posNum == 3) symbol = "Position 3";
-                                        }
+                                    }
+                                    if (std::string(symbol) == "unknown") {
+                                        if (posNum == 1) symbol = "Position 1";
+                                        else if (posNum == 2) symbol = "Position 2";
+                                        else if (posNum == 3) symbol = "Position 3";
                                     }
                                 }
-
-                                nameStr = std::string(rawName) + " (" + symbol + ")";
-                                rawName = nullptr;
-                                break;
                             }
+
+                            nameStr = std::string(rawName) + " (" + symbol + ")";
+                            rawName = nullptr;
                         }
                     }
                 }
@@ -1346,65 +1397,68 @@ static void RefreshFilteredList() {
         }
 
         // Mettre à jour le state des piliers/anneaux puzzle
+        // Rafraîchir l'état des piliers / anneaux (position01/02/03 peut changer).
+        // Le TYPE est mis en cache par GetScriptTypeCached, donc zéro requête VM pour
+        // les refs qu'on a déjà identifiées comme non-pilier (la majorité).
         std::string objNameUtf8 = WStringToUtf8(obj.name);
         if (objNameUtf8.find("Pilier") != std::string::npos || objNameUtf8.find("Pillar") != std::string::npos ||
             objNameUtf8.find("nneau") != std::string::npos || objNameUtf8.find("Ring") != std::string::npos ||
             objNameUtf8.find("Disk") != std::string::npos) {
-            auto* vm = RE::SkyrimVM::GetSingleton();
-            if (vm && vm->impl) {
-                auto* policy = vm->impl->GetObjectHandlePolicy();
-                if (policy) {
-                    auto handle = policy->GetHandleForObject(
-                        static_cast<RE::VMTypeID>(RE::FormType::Reference), ref);
-                    RE::BSTSmartPointer<RE::BSScript::Object> scriptObj;
-                    const char* refreshScripts[] = {"defaultPuzzlePillarScript", "HallofStoriesDiskScript"};
-                    std::string rfoundScript;
-                    for (auto* rs : refreshScripts) {
-                        if (vm->impl->FindBoundObject(handle, rs, scriptObj) && scriptObj) {
-                            rfoundScript = rs;
-                            break;
-                        }
-                    }
-                    if (!rfoundScript.empty()) {
-                        std::string state = scriptObj->currentState.c_str();
-                        int posNum = 0;
-                        if (state == "position01") posNum = 1;
-                        else if (state == "position02") posNum = 2;
-                        else if (state == "position03") posNum = 3;
+            ScriptTypeKind stk = GetScriptTypeCached(*ref);
+            if (stk == ScriptTypeKind::PillarStandard ||
+                stk == ScriptTypeKind::PillarInt ||
+                stk == ScriptTypeKind::RingHallOfStories) {
+                auto* vm = RE::SkyrimVM::GetSingleton();
+                if (vm && vm->impl) {
+                    auto* policy = vm->impl->GetObjectHandlePolicy();
+                    if (policy) {
+                        auto handle = policy->GetHandleForObject(
+                            static_cast<RE::VMTypeID>(RE::FormType::Reference), ref);
+                        const char* sName = (stk == ScriptTypeKind::PillarStandard) ? "defaultPuzzlePillarScript"
+                                          : (stk == ScriptTypeKind::PillarInt)      ? "intPuzzlePillarScript"
+                                                                                    : "HallofStoriesDiskScript";
+                        RE::BSTSmartPointer<RE::BSScript::Object> scriptObj;
+                        if (vm->impl->FindBoundObject(handle, sName, scriptObj) && scriptObj) {
+                            std::string state = scriptObj->currentState.c_str();
+                            int posNum = 0;
+                            if (state == "position01") posNum = 1;
+                            else if (state == "position02") posNum = 2;
+                            else if (state == "position03") posNum = 3;
 
-                        const char* symbol = "unknown";
-                        if (state == "busy") {
-                            symbol = "turning";
-                        } else if (posNum > 0) {
-                            if (rfoundScript == "defaultPuzzlePillarScript") {
-                                if (posNum == 1) symbol = "Eagle";
-                                else if (posNum == 2) symbol = "Snake";
-                                else if (posNum == 3) symbol = "Whale";
-                            } else if (rfoundScript == "HallofStoriesDiskScript") {
-                                auto* linkedRef = ref->GetLinkedRef(nullptr);
-                                if (linkedRef) {
-                                    RE::FormID kid = linkedRef->GetFormID();
-                                    for (size_t di = 0; di < sizeof(g_doorSymbolTable)/sizeof(g_doorSymbolTable[0]); di++) {
-                                        if (g_doorSymbolTable[di].keyhole == kid) {
-                                            if (posNum == 1) symbol = g_doorSymbolTable[di].s1;
-                                            else if (posNum == 2) symbol = g_doorSymbolTable[di].s2;
-                                            else if (posNum == 3) symbol = g_doorSymbolTable[di].s3;
-                                            break;
+                            const char* symbol = "unknown";
+                            if (state == "busy") {
+                                symbol = "turning";
+                            } else if (posNum > 0) {
+                                if (stk == ScriptTypeKind::PillarStandard || stk == ScriptTypeKind::PillarInt) {
+                                    if (posNum == 1) symbol = "Eagle";
+                                    else if (posNum == 2) symbol = "Snake";
+                                    else if (posNum == 3) symbol = "Whale";
+                                } else if (stk == ScriptTypeKind::RingHallOfStories) {
+                                    auto* linkedRef = ref->GetLinkedRef(nullptr);
+                                    if (linkedRef) {
+                                        RE::FormID kid = linkedRef->GetFormID();
+                                        for (size_t di = 0; di < sizeof(g_doorSymbolTable)/sizeof(g_doorSymbolTable[0]); di++) {
+                                            if (g_doorSymbolTable[di].keyhole == kid) {
+                                                if (posNum == 1) symbol = g_doorSymbolTable[di].s1;
+                                                else if (posNum == 2) symbol = g_doorSymbolTable[di].s2;
+                                                else if (posNum == 3) symbol = g_doorSymbolTable[di].s3;
+                                                break;
+                                            }
                                         }
                                     }
-                                }
-                                if (std::string(symbol) == "unknown") {
-                                    if (posNum == 1) symbol = "Position 1";
-                                    else if (posNum == 2) symbol = "Position 2";
-                                    else if (posNum == 3) symbol = "Position 3";
+                                    if (std::string(symbol) == "unknown") {
+                                        if (posNum == 1) symbol = "Position 1";
+                                        else if (posNum == 2) symbol = "Position 2";
+                                        else if (posNum == 3) symbol = "Position 3";
+                                    }
                                 }
                             }
-                        }
 
-                        // Reconstruire le nom avec le symbole actuel
-                        const char* baseName = ref->GetDisplayFullName();
-                        if (baseName) {
-                            obj.name = Utf8ToWString((std::string(baseName) + " (" + symbol + ")").c_str());
+                            // Reconstruire le nom avec le symbole actuel
+                            const char* baseName = ref->GetDisplayFullName();
+                            if (baseName) {
+                                obj.name = Utf8ToWString((std::string(baseName) + " (" + symbol + ")").c_str());
+                            }
                         }
                     }
                 }
