@@ -1791,8 +1791,19 @@ public:
         RE::BSTEventSource<RE::TESDeathEvent>*) override {
         if (!e || !e->dead) return RE::BSEventNotifyControl::kContinue;
 
-        // Seulement si le joueur a tué
         auto* player = RE::PlayerCharacter::GetSingleton();
+
+        // Si c'est le JOUEUR qui meurt pendant un autowalk, arrêter proprement.
+        // Sans ce handler, le monitor autowalk continue de tourner sur un ragdoll
+        // mort et finit par déclencher SetAIDriven(false)/(true) à 4s de blocage
+        // → crash du pipeline de rendu (skeleton inconsistant).
+        auto* dyingActor = e->actorDying ? e->actorDying->As<RE::Actor>() : nullptr;
+        if (dyingActor && dyingActor == player && g_autoWalking.load()) {
+            LOG("DeathListener: player died during autowalk — stopping");
+            StopAutoWalk();
+        }
+
+        // Seulement si le joueur a tué
         if (!e->actorKiller || e->actorKiller.get() != player) return RE::BSEventNotifyControl::kContinue;
 
         auto* victim = e->actorDying ? e->actorDying->As<RE::Actor>() : nullptr;
