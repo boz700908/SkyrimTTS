@@ -76,30 +76,24 @@ static bool ReadJournalSnapshot(JournalSnapshot& snap) {
     bool tabOk = GetGFxNumber(movie, JOURNAL_TAB_PATH, tab);
     if (tabOk)
         snap.tab = static_cast<int>(tab);
-    else
-        LOG("JournalDiag: tab path FAILED ('{}')", JOURNAL_TAB_PATH);
 
     if (snap.tab == JOURNAL_TAB_QUESTS) {
         std::string tmp;
         bool titleOk = GetGFxString(movie, JOURNAL_QUEST_TITLE_PATH, tmp);
-        LOG("JournalDiag: titlePath={} val='{}'", titleOk, tmp);
         if (!titleOk || tmp.empty()) {
-            bool listOk = GetGFxString(movie, JOURNAL_QUEST_LIST_PATH, tmp);
-            LOG("JournalDiag: listPath={} val='{}'", listOk, tmp);
+            GetGFxString(movie, JOURNAL_QUEST_LIST_PATH, tmp);
         }
         if (!tmp.empty())
             snap.questTitle = ResolveUIString(movie, tmp);
 
         std::string descTmp;
         bool descOk = GetGFxString(movie, JOURNAL_QUEST_DESC_PATH, descTmp);
-        LOG("JournalDiag: descPath={} val='{}'", descOk, descTmp);
         if (descOk && !descTmp.empty())
             snap.questDesc = StripMarkupForSpeech(ResolveUIString(movie, descTmp));
 
         // active : booléen sur l'objet centeredEntry (QuestCenteredList.as)
         RE::GFxValue activeVal;
         bool activeOk = SafeGetVariable(movie, activeVal, "_root.QuestJournalFader.Menu_mc.QuestsFader.Page_mc.TitleList_mc.List_mc.centeredEntry.active");
-        LOG("JournalDiag: activePath={} type={}", activeOk, activeOk ? static_cast<int>(activeVal.GetType()) : -1);
         if (activeOk)
             snap.questActive = SafeIsBool(activeVal) ? SafeGetBool(activeVal) : (SafeIsNumber(activeVal) && SafeGetNumber(activeVal) != 0.0);
 
