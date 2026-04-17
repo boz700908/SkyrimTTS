@@ -123,9 +123,15 @@ static void AnnounceStatsSelectionImpl() {
 }
 
 static void QueueStatsRead() {
+    // Guard : si le menu Stats n'est plus ouvert, on ne pose pas la main sur
+    // le flag. Sinon on risque que le polling (ou un déclenchement clavier
+    // résiduel) pose g_statsPendingUIRead à true juste après que StopStatsPoll
+    // ait été appelé, ce qui laisse le flag coincé à true et empêche toute
+    // future ouverture de fonctionner correctement.
+    if (!g_statsOpen.load(std::memory_order_relaxed)) return;
     if (g_statsPendingUIRead.exchange(true)) return;
     auto* task = SKSE::GetTaskInterface();
-    if (!task) return;
+    if (!task) { g_statsPendingUIRead.store(false); return; }
     task->AddUITask([]() {
         g_statsPendingUIRead.store(false);
         if (g_statsOpen.load()) AnnounceStatsSelectionImpl();
