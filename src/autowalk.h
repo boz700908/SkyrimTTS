@@ -832,6 +832,18 @@ static RE::FormID CreateTempMarkerAt(const RE::NiPoint3& pos) {
     return marker->GetFormID();
 }
 
+// Forward declaration — le corps est plus bas, défini après le wrapper.
+static void ToggleAutoWalkImpl();
+
+// Wrapper public appelé depuis le thread clavier. On route tout le travail de
+// lancement (lecture scanner, GFx HUD, recherche de porte dans les cellules
+// voisines) vers le thread principal via AddTask pour éviter les races avec le
+// cell streaming et le scan automatique qui peuvent modifier g_scannedAll et
+// les données de cellules en parallèle.
+//
+// L'arrêt d'un autowalk en cours (g_autoWalking=true) reste fait directement
+// depuis le thread clavier : StopAutoWalk() utilise déjà AddTask en interne
+// pour son cleanup, donc safe.
 static void ToggleAutoWalk() {
     LOG("InputDiag: ToggleAutoWalk ENTRY, g_autoWalking={}", g_autoWalking.load());
     if (g_autoWalking.load()) {
@@ -840,6 +852,12 @@ static void ToggleAutoWalk() {
         return;
     }
 
+    auto* task = SKSE::GetTaskInterface();
+    if (!task) { ToggleAutoWalkImpl(); return; }
+    task->AddTask([]() { ToggleAutoWalkImpl(); });
+}
+
+static void ToggleAutoWalkImpl() {
     LOG("AutoWalk: ToggleAutoWalk called");
 
     // Garde anti-crash : refuser si on est dans la fenêtre d'instabilité
