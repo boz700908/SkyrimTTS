@@ -2515,7 +2515,9 @@ static bool ReadQuestCompassHeading(float& outHeading) {
 //   - N'a PAS de limite de distance
 //   - Gère les cibles cross-cell via worldLocMarker (comme le scanner Quests)
 //   - Retourne la position 2D de la "porte d'entrée" si la cible est dans une autre cellule
-// Utilisée pour la navigation audio (quest_nav.h).
+// Dormant : utilisée par l'ancien module quest_nav.h (supprimé). Conservée pour
+// une éventuelle réactivation ultérieure ; sera éliminée par le compilateur tant
+// qu'elle n'est référencée nulle part.
 static bool GetActiveQuestNavTarget(RE::PlayerCharacter* player, RE::NiPoint3& outPos, std::wstring& outName) {
     if (!player) return false;
     auto* playerCell = player->GetParentCell();

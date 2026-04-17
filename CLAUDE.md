@@ -219,18 +219,6 @@ Quand on corrige un bug sur un atelier (meule, tannerie), verifier que la forge 
 ### Furtivite
 Suspendre la vocalisation de la furtivite (Hidden/Detected/Caution) quand le Crafting Menu est ouvert pour ne pas couper les tutoriels et annonces.
 
-## Pathfinding custom (src/pathfinding.h)
-
-Systeme de navigation A* sur navmesh, parallele a l'autowalk classique (autowalk.h).
-
-- **Ctrl+Home** = pathfinding A* (nouveau), **Shift+Home** = autowalk classique (inchange)
-- Lit les navmeshes du jeu (`BSNavmesh`, `BSNavmeshGrid`, `BSNavmeshTriangle`)
-- A* sur graphe de triangles avec portails inter-navmesh (`extraEdgeInfo`)
-- Lissage de chemin (string-pulling), ouverture de portes, saut auto, annonces vocales
-- 5 niveaux de recuperation en cas de blocage
-- Les deux systemes sont mutuellement exclusifs (lancer l'un stoppe l'autre)
-- L'indexation `extraEdgeInfo` (portails) doit etre verifiee empiriquement au premier test
-
 ## GitHub Actions (CI/CD)
 
 Release automatisee via `.github/workflows/build-and-release.yml`.

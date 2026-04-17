@@ -28,8 +28,6 @@
 #include "menu_character_sheet.h"
 #include "scanner.h"
 #include "autowalk.h"
-#include "pathfinding.h"
-#include "quest_nav.h"
 
 // ---------------- Gamepad state (déclaré tôt pour accès depuis MenuListener) ----------------
 static std::atomic_bool g_lbHeld{false};               // LB maintenu = mode scanner
@@ -1212,13 +1210,6 @@ public:
                 }
             }
 
-            // N = toggle quest audio navigation (DÉSACTIVÉ — moins précis que le mod de Diokiri)
-            // Le code reste en place dans quest_nav.h pour reprise ultérieure
-            // if (code == RE::BSKeyboardDevice::Keys::kN) {
-            //     ToggleQuestNav();
-            //     continue;
-            // }
-
             // Extended Hotkey System (EHS) : gestion des raccourcis dans le menu favoris.
             // EHS remplace favoritesmenu.swf et prend le controle de TOUTES les
             // assignations (numeros 1-8 ET Ctrl+F1-F12). Comme il stocke tout dans
@@ -2093,7 +2084,6 @@ SKSEPluginLoad(const SKSE::LoadInterface* skse) {
             // en cours de reconstruction, un SetAIDriven pendant cette fenêtre
             // déclenche un null pointer dans le pipeline de rendu (crashs observés).
             AutoWalkArmSafetyCooldown(10000, "kPostLoadGame");
-            // PathfindingSafetyReset();  // Désactivé temporairement
             RemapGamepadControls();  // re-appliquer au cas où le jeu recharge les contrôles
             // Restaurer les contrôles gamepad si bloqués
             if (g_controlsDisabled) {
@@ -2103,7 +2093,7 @@ SKSEPluginLoad(const SKSE::LoadInterface* skse) {
             }
             g_lbHeld.store(false);
             RegisterShoutListener();
-            LOG("kPostLoadGame: autowalk/pathfinding safety reset, sprint remap reapplied, shout listener registered");
+            LOG("kPostLoadGame: autowalk safety reset, sprint remap reapplied, shout listener registered");
         }
     });
 
