@@ -1819,6 +1819,33 @@ static void ScannerAnnounceCurrent() {
         ref = nullptr;  // traiter comme invalide
     }
 
+    // Cas spécial : les objets dynamiques (FormID FF*) disparaissent quand le
+    // joueur les ramasse ou quand ils sont détruits. Pour ces refs, !ref =
+    // objet parti pour de bon (contrairement à une ref statique dans une cellule
+    // déchargée qui pourrait revenir). On invalide l'entrée dans g_scannedAll,
+    // on la retire du filtre courant, et on passe automatiquement au suivant.
+    if (!ref && (obj.formID >> 24) == 0xFF) {
+        obj.formID = 0;
+        obj.category = kCatAll;
+        g_scannedFiltered.erase(g_scannedFiltered.begin() + g_scanIndex);
+
+        if (g_scannedFiltered.empty()) {
+            g_scanIndex = -1;
+            Speak(L"Object gone. No more objects in this category.");
+            return;
+        }
+        // Rester sur le même index (l'élément suivant a glissé à cette position),
+        // sauf si on était sur le dernier — alors wrap au début.
+        if (g_scanIndex >= static_cast<int>(g_scannedFiltered.size())) {
+            g_scanIndex = 0;
+        }
+        auto& nextObj = *g_scannedFiltered[g_scanIndex];
+        std::wstring posStr = L". " + std::to_wstring(g_scanIndex + 1) + L" of " +
+                              std::to_wstring(g_scannedFiltered.size());
+        Speak(L"Object gone. " + FormatObjectAnnounce(nextObj) + posStr);
+        return;
+    }
+
     // Si l'objet n'est plus accessible (cellule déchargée, objet dynamique FF*),
     // utiliser la boussole pour l'orientation (comme l'autowalk)
     if (!ref) {
