@@ -937,9 +937,22 @@ static void ToggleAutoWalkImpl() {
         auto* refForm = RE::TESForm::LookupByID(targetID);
         auto* ref = refForm ? refForm->AsReference() : nullptr;
         if (ref && ref->Is3DLoaded() && !ref->IsDisabled() && !ref->IsDeleted()) {
-            auto pos = ref->GetPosition();
-            LOG("AutoWalk: dynamic FormID {:08X} is loaded in 3D at ({:.0f},{:.0f},{:.0f}), using coords mode",
-                targetID, pos.x, pos.y, pos.z);
+            // Utiliser la position VISUELLE (mesh rendu) plutôt que la position
+            // physique (hitbox Havok). Pour un objet jeté qui rebondit / glisse,
+            // la hitbox physique continue de bouger pendant plusieurs secondes
+            // après l'impact au sol, ce qui faisait dériver la cible d'autowalk
+            // de jusqu'à 2-3 mètres. La position du mesh rendu correspond à ce
+            // que le joueur "voit" visuellement (ou audible via mods 3D audio).
+            // Fallback sur GetPosition() si le mesh n'est pas dispo (cas rare).
+            RE::NiPoint3 pos;
+            auto* node = ref->Get3D();
+            if (node) {
+                pos = node->world.translate;
+            } else {
+                pos = ref->GetPosition();
+            }
+            LOG("AutoWalk: dynamic FormID {:08X} is loaded in 3D at ({:.0f},{:.0f},{:.0f}), using coords mode (source={})",
+                targetID, pos.x, pos.y, pos.z, node ? "mesh" : "physics");
             Speak(L"Walking to " + targetName);
             StartAutoWalk(targetID, 150.0f, pos.x, pos.y, pos.z);
             return;
@@ -1165,7 +1178,16 @@ static void ToggleAutoWalkImpl() {
         auto* refForm = RE::TESForm::LookupByID(targetID);
         auto* ref = refForm ? refForm->AsReference() : nullptr;
         if (ref) {
-            auto pos = ref->GetPosition();
+            // Position visuelle (mesh) en priorité, fallback physique. Même
+            // justification que plus haut : évite la dérive Havok des objets
+            // jetés qui rebondissent encore.
+            RE::NiPoint3 pos;
+            auto* node = ref->Get3D();
+            if (node) {
+                pos = node->world.translate;
+            } else {
+                pos = ref->GetPosition();
+            }
             StartAutoWalk(targetID, 100.0f, pos.x, pos.y, pos.z);
         } else if (g_scanIndex >= 0 && g_scanIndex < static_cast<int>(g_scannedFiltered.size())) {
             auto& obj = *g_scannedFiltered[g_scanIndex];
