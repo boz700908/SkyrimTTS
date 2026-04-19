@@ -49,6 +49,8 @@ enum class ScanSubcategory : int {
     ItemBooks,
     ItemSoulGems,
     ItemMisc,
+    // Activators — sous-types spécifiques
+    ActivatorDestructible,  // toiles d'araignée, barricades, racines, portes fragiles
     COUNT
 };
 
@@ -67,6 +69,14 @@ struct ScannedObject {
     bool        isFurniture{false};    // meuble (chaise, lit, etc.)
     RE::FormType formType{RE::FormType::None};  // type Bethesda du base form (Weapon, Armor, AlchemyItem, etc.)
     std::wstring doorDestination;   // destination d'une porte (nom de la cellule)
+    // Obstacles destructibles (toiles d'araignée, barricades, racines, portes
+    // fragiles, etc.). isDestructible est stable pour un FormID donné (propriété
+    // du base form), healthPercent peut diminuer à chaque scan si l'objet a été
+    // partiellement endommagé. destructibleLabel pointe vers une chaîne statique
+    // (pas de gestion de lifetime nécessaire).
+    bool           isDestructible{false};
+    int            destructibleHealthPercent{100};  // 100 = intact, 0 = détruit
+    const wchar_t* destructibleLabel{nullptr};      // "Spider web", "Barricade", "Eldergleam root", etc.
 };
 
 // --- État global du scanner ---
@@ -108,7 +118,14 @@ enum class ScriptTypeKind : uint8_t {
     WordWall,                   // Mur des Mots (un des 9 scripts WordWallTrigger*)
     PillarStandard,             // defaultPuzzlePillarScript / DefaultPuzzlePillarScript
     PillarInt,                  // intPuzzlePillarScript
-    RingHallOfStories           // HallofStoriesDiskScript (anneaux de la Gorge du Monde)
+    RingHallOfStories,          // HallofStoriesDiskScript (anneaux de la Gorge du Monde)
+    // --- Obstacles destructibles (scripts Papyrus connus) ---
+    WebObstacle,                // toile d'araignée (MGRWebObstacleScript)
+    WebEggSac,                  // sac d'œufs (MGREggSackScript)
+    Barricade,                  // barricade guerre civile (CWBarricadeScript)
+    EldergleamRoot,             // racine d'Aubéternel, nécessite Nettlebane (DA16EldergleamRootScript)
+    BreakableDoor,              // porte fragile (defaultBreakableDoorSCRIPT)
+    GenericDestructible         // destructible mais script non identifié (fallback Tier 1)
 };
 static std::unordered_map<RE::FormID, ScriptTypeKind> g_scriptTypeCache;
 
@@ -276,6 +293,12 @@ static const std::vector<ScanSubcategory>& GetSubcategoriesFor(ScanCategory cat)
     static const std::vector<ScanSubcategory> twoTypes = {
         ScanSubcategory::All, ScanSubcategory::TypeA, ScanSubcategory::TypeB
     };
+    static const std::vector<ScanSubcategory> activatorTypes = {
+        ScanSubcategory::All,
+        ScanSubcategory::TypeA,
+        ScanSubcategory::TypeB,
+        ScanSubcategory::ActivatorDestructible
+    };
     static const std::vector<ScanSubcategory> items = {
         ScanSubcategory::All,
         ScanSubcategory::ItemWeapons,
@@ -289,7 +312,8 @@ static const std::vector<ScanSubcategory>& GetSubcategoriesFor(ScanCategory cat)
         ScanSubcategory::ItemMisc
     };
     if (cat == kCatItems) return items;
-    if (cat == kCatContainers || cat == kCatDoors || cat == kCatCorpses || cat == kCatActivators)
+    if (cat == kCatActivators) return activatorTypes;
+    if (cat == kCatContainers || cat == kCatDoors || cat == kCatCorpses)
         return twoTypes;
     return empty;
 }
@@ -322,6 +346,7 @@ static const wchar_t* GetSubcategoryName(ScanSubcategory sub) {
             case ScanSubcategory::All: return L"All";
             case ScanSubcategory::TypeA: return L"Furniture";
             case ScanSubcategory::TypeB: return L"Other";
+            case ScanSubcategory::ActivatorDestructible: return L"Destructible";
             default: return L"?";
         }
     } else if (g_scanCategory == kCatItems) {
@@ -358,6 +383,7 @@ static bool MatchesSubcategory(const ScannedObject& obj) {
     } else if (g_scanCategory == kCatActivators) {
         if (g_scanSubcategory == ScanSubcategory::TypeA) return obj.isFurniture;
         if (g_scanSubcategory == ScanSubcategory::TypeB) return !obj.isFurniture;
+        if (g_scanSubcategory == ScanSubcategory::ActivatorDestructible) return obj.isDestructible;
     } else if (g_scanCategory == kCatItems) {
         // AlchemyItem couvre potions ET nourriture — on distingue via la structure interne :
         // on traite tout AlchemyItem comme Potions par défaut, sauf si c'est explicitement Food.
@@ -410,6 +436,11 @@ static void ApplyCategoryFilter() {
     g_scannedFiltered.clear();
     for (auto& obj : g_scannedAll) {
         if (obj.formID == 0) continue;  // objet invalidé (ramassé/supprimé)
+        // En mode "All" : exclure les objectifs de quete (ils sont accessibles
+        // uniquement via la categorie Quests dediee, pour ne pas polluer la liste
+        // generale d'exploration). Meme logique pourrait s'appliquer aux Locations
+        // mais on les garde car le joueur s'attend a voir les lieux dans All.
+        if (g_scanCategory == kCatAll && obj.category == kCatQuests) continue;
         if (g_scanCategory == kCatAll || obj.category == g_scanCategory) {
             if (g_scanCategory == kCatAll || MatchesSubcategory(obj)) {
                 g_scannedFiltered.push_back(&obj);
@@ -519,6 +550,26 @@ static std::wstring FormatObjectAnnounce(const ScannedObject& obj) {
     if (obj.locked) msg += L", locked";
     if (obj.empty) msg += L", empty";
 
+    // Flag destructible : on ajoute le label ("Spider web", "Barricade", etc.)
+    // seulement si différent du nom affiché (pour éviter "Spider web, spider web").
+    // Puis la santé restante si < 100% (intact = pas d'info = plein par défaut).
+    if (obj.isDestructible && obj.destructibleLabel) {
+        std::wstring lbl = obj.destructibleLabel;
+        // Comparaison insensible à la casse pour éviter la redondance
+        auto toLower = [](std::wstring s) {
+            for (auto& c : s) c = static_cast<wchar_t>(towlower(c));
+            return s;
+        };
+        if (toLower(obj.name).find(toLower(lbl)) == std::wstring::npos) {
+            msg += L", " + lbl;
+        } else {
+            msg += L", destructible";
+        }
+        if (obj.destructibleHealthPercent < 100) {
+            msg += L" " + std::to_wstring(obj.destructibleHealthPercent) + L"%";
+        }
+    }
+
     msg += L", " + std::to_wstring(static_cast<int>(obj.distance)) + L" units";
 
     // Direction seulement pour les piliers puzzle
@@ -598,11 +649,71 @@ static ScriptTypeKind GetScriptTypeCached(RE::TESObjectREFR& ref) {
                     result = ScriptTypeKind::RingHallOfStories;
                 }
             }
+
+            // 3) Obstacles destructibles : toile, œufs, barricade, racine, porte fragile.
+            // On teste plusieurs casings pour chaque nom (les scripts Papyrus vanilla
+            // mélangent minuscules/majuscules selon la version du Creation Kit utilisée).
+            if (result == ScriptTypeKind::NotSpecial) {
+                auto try2 = [&](const char* a, const char* b) {
+                    return (vm->impl->FindBoundObject(vmH, a, scriptObj) && scriptObj) ||
+                           (vm->impl->FindBoundObject(vmH, b, scriptObj) && scriptObj);
+                };
+                if (try2("MGRWebObstacleScript", "mgrwebobstaclescript")) {
+                    result = ScriptTypeKind::WebObstacle;
+                } else if (try2("MGREggSackScript", "mgreggsackscript")) {
+                    result = ScriptTypeKind::WebEggSac;
+                } else if (try2("CWBarricadeScript", "cwbarricadescript")) {
+                    result = ScriptTypeKind::Barricade;
+                } else if (try2("DA16EldergleamRootScript", "DA16EldergleamRootsScript")) {
+                    result = ScriptTypeKind::EldergleamRoot;
+                } else if (try2("defaultBreakableDoorSCRIPT", "defaultBreakableDoorScript")) {
+                    result = ScriptTypeKind::BreakableDoor;
+                }
+            }
         }
     }
 
     g_scriptTypeCache[fid] = result;
     return result;
+}
+
+// Retourne le label utilisateur pour un ScriptTypeKind destructible.
+// NotSpecial et Unknown renvoient nullptr.
+static const wchar_t* GetDestructibleLabel(ScriptTypeKind stk) {
+    switch (stk) {
+        case ScriptTypeKind::WebObstacle:          return L"Spider web";
+        case ScriptTypeKind::WebEggSac:            return L"Spider egg sac";
+        case ScriptTypeKind::Barricade:            return L"Wooden barricade";
+        case ScriptTypeKind::EldergleamRoot:       return L"Eldergleam root";
+        case ScriptTypeKind::BreakableDoor:        return L"Breakable door";
+        case ScriptTypeKind::GenericDestructible:  return L"Destructible obstacle";
+        default:                                    return nullptr;
+    }
+}
+
+// Détecte si un base form a une "destruction data" (record DEST + stages).
+// C'est le Tier 1 universel : capture tous les objets cassables, même ceux
+// dont on ne connaît pas le script Papyrus spécifique.
+static bool BaseIsDestructible(RE::TESBoundObject* base) {
+    if (!base) return false;
+    auto* dest = base->As<RE::BGSDestructibleObjectForm>();
+    return dest && dest->data && dest->data->numStages > 0;
+}
+
+// Retourne le pourcentage de santé restante d'un ref destructible (0-100).
+// Regarde d'abord ExtraObjectHealth (présent seulement si l'objet a été endommagé),
+// sinon suppose 100% (intact).
+static int ReadDestructibleHealthPercent(RE::TESObjectREFR& ref, RE::TESBoundObject* base) {
+    // kDestroyed flag (bit 23) = détruit pour de bon
+    if (ref.GetFormFlags() & RE::TESForm::RecordFlags::kDestroyed) return 0;
+    auto* eh = ref.extraList.GetByType<RE::ExtraObjectHealth>();
+    if (!eh) return 100;  // pas de dégât pris = plein
+    auto* dest = base ? base->As<RE::BGSDestructibleObjectForm>() : nullptr;
+    if (!dest || !dest->data || dest->data->health <= 0) return 100;
+    float ratio = eh->health / static_cast<float>(dest->data->health);
+    if (ratio > 1.0f) ratio = 1.0f;
+    if (ratio < 0.0f) ratio = 0.0f;
+    return static_cast<int>(ratio * 100.0f + 0.5f);
 }
 
 // --- Scanner une cellule et ajouter ses références ---
@@ -659,7 +770,25 @@ static void ScanCell(RE::TESObjectCELL* cell, RE::PlayerCharacter* player, const
 
             // Nom
             const char* rawName = ref.GetDisplayFullName();
-            if (!rawName || !*rawName) continue;
+            // Les obstacles destructibles (toile d'araignee, barricade, racine...)
+            // n'ont souvent pas de nom affichable en jeu mais sont des elements
+            // importants pour le joueur aveugle. On les garde s'ils ont une DEST
+            // record et un type approprie. Le tri "vrai obstacle vs filon de fer"
+            // se fera plus bas via la liste blanche (label assigne ou pas).
+            bool hasNoName = (!rawName || !*rawName);
+            if (hasNoName) {
+                auto ft = base->GetFormType();
+                bool candidateType = (ft == RE::FormType::Activator ||
+                                      ft == RE::FormType::Door ||
+                                      ft == RE::FormType::MovableStatic);
+                if (!candidateType || !BaseIsDestructible(base) ||
+                    (ref.GetFormFlags() & RE::TESForm::RecordFlags::kDestroyed)) {
+                    continue;
+                }
+                // On continue : le scoring plus bas decidera si on garde l'objet
+                // (s'il a un label connu) ou si on l'ignore via le check final.
+                rawName = "";
+            }
 
             // Diagnostic pilier puzzle : lire l'état via le script Papyrus.
             // Le TYPE de script est mis en cache (stable), mais l'ÉTAT live
@@ -792,9 +921,101 @@ static void ScanCell(RE::TESObjectCELL* cell, RE::PlayerCharacter* player, const
             // Détection meuble (Furniture)
             bool isFurniture = (base->GetFormType() == RE::FormType::Furniture);
 
+            // Détection destructible (Tier 1 : DEST record sur le base form,
+            // Tier 2 : script Papyrus connu pour donner un label précis).
+            // Filtre de type : seulement Activator / Door / MovableStatic — les
+            // autres FormType n'ont pas de destruction data pertinente pour un
+            // obstacle de passage (les armes/armures qui ont un DEST ne nous
+            // intéressent pas ici).
+            bool isDestructible = false;
+            int  destructibleHealthPercent = 100;
+            const wchar_t* destructibleLabel = nullptr;
+            {
+                auto ft = base->GetFormType();
+                bool candidateType = (ft == RE::FormType::Activator ||
+                                      ft == RE::FormType::Door ||
+                                      ft == RE::FormType::MovableStatic);
+                if (candidateType && BaseIsDestructible(base) &&
+                    !(ref.GetFormFlags() & RE::TESForm::RecordFlags::kDestroyed)) {
+                    // LISTE BLANCHE STRICTE : on ne flag "destructible" que les
+                    // vrais obstacles de passage (toiles, sacs d'oeufs, barricades,
+                    // racines, portes fragiles). Les filons de fer, tonneaux
+                    // explosifs, poteries cassables, etc. ont aussi un DEST record
+                    // mais ne sont PAS des obstacles gameplay — on les ignore pour
+                    // ne pas polluer le sous-filtre Destructibles du scanner.
+                    ScriptTypeKind stk = GetScriptTypeCached(ref);
+                    const wchar_t* lbl = GetDestructibleLabel(stk);
+
+                    // 1) Detection par EditorID (necessite po3_Tweaks active)
+                    if (!lbl) {
+                        const char* bedid = base->GetFormEditorID();
+                        if (bedid && *bedid) {
+                            std::string e = bedid;
+                            auto has = [&](const char* s) {
+                                return e.find(s) != std::string::npos;
+                            };
+                            if (has("WebObstacle") || has("Webs") || has("SpiderWeb") ||
+                                has("MGRWeb")) {
+                                lbl = L"Spider web";
+                            } else if (has("EggSack") || has("EggSac") || has("MGREgg")) {
+                                lbl = L"Spider egg sac";
+                            } else if (has("Barricade") || has("CWBarricade")) {
+                                lbl = L"Wooden barricade";
+                            } else if (has("Eldergleam")) {
+                                lbl = L"Eldergleam root";
+                            } else if (has("BreakableDoor") || has("BreakableWall")) {
+                                lbl = L"Breakable door";
+                            }
+                        }
+                    }
+
+                    // 2) Fallback : detection par FormID vanilla du base form.
+                    // Ces IDs sont stables entre toutes les versions de Skyrim
+                    // (extrait des logs en jeu sur Bleak Falls Sanctum).
+                    if (!lbl) {
+                        RE::FormID baseID = base->GetFormID();
+                        switch (baseID) {
+                            // Toiles d'araignee (MGRWebObstacle variantes)
+                            case 0x00061501:
+                            case 0x000862CC:
+                            case 0x00090EFC:
+                            case 0x000EC3DE:
+                            case 0x0008B317:
+                                lbl = L"Spider web";
+                                break;
+                            default:
+                                break;
+                        }
+                    }
+
+                    // Seulement si on a un label reconnu on flag comme destructible.
+                    // Sinon (filon de fer, autre DEST random) : pas de flag.
+                    if (lbl) {
+                        isDestructible = true;
+                        destructibleHealthPercent = ReadDestructibleHealthPercent(ref, base);
+                        destructibleLabel = lbl;
+                    }
+                }
+            }
+
+            // Filtre final : si l'objet n'a pas de nom ET n'est pas reconnu
+            // comme destructible avec label, on le saute (sinon il apparaitrait
+            // anonyme dans la liste, polluant le scanner).
+            bool noUsableName = (!rawName || !*rawName) && nameStr.empty() && !destructibleLabel;
+            if (noUsableName) continue;
+
             ScannedObject obj;
             obj.formID = ref.GetFormID();
-            obj.name = rawName ? Utf8ToWString(rawName) : Utf8ToWString(nameStr.c_str());
+            // Si le nom est vide (typiquement un destructible sans nom affichable),
+            // utiliser le label destructible comme nom de substitution pour que le
+            // joueur entende quelque chose a la lecture.
+            if (rawName && *rawName) {
+                obj.name = Utf8ToWString(rawName);
+            } else if (!nameStr.empty()) {
+                obj.name = Utf8ToWString(nameStr.c_str());
+            } else {
+                obj.name = destructibleLabel;  // garanti non-null grace au check ci-dessus
+            }
             obj.distance = dist;
             obj.zDiff = zDiff;
             obj.lastKnownPos = refPos;
@@ -806,6 +1027,9 @@ static void ScanCell(RE::TESObjectCELL* cell, RE::PlayerCharacter* player, const
             obj.isFurniture = isFurniture;
             obj.formType = base->GetFormType();
             obj.doorDestination = std::move(doorDest);
+            obj.isDestructible = isDestructible;
+            obj.destructibleHealthPercent = destructibleHealthPercent;
+            obj.destructibleLabel = destructibleLabel;
 
             g_scannedAll.push_back(std::move(obj));
         } catch (...) {
@@ -1202,11 +1426,18 @@ static void DoScanInternal() {
                         auto* extraMarker = ref->extraList.GetByType<RE::ExtraMapMarker>();
                         if (!extraMarker || !extraMarker->mapData) continue;
 
+                        // Ignorer les markers desactives (kInitiallyDisabled + ExtraEnableStateParent).
+                        // Camps CW, Fort Garde-l'Aube : disabled tant que leur quete n'a pas appele Enable().
+                        if (ref->IsDisabled() || ref->IsMarkedForDeletion()) continue;
+
                         auto* mapData = extraMarker->mapData;
                         // On affiche les lieux même non découverts pour l'accessibilité :
                         // les joueurs aveugles ne peuvent pas explorer visuellement, donc le
                         // scanner doit leur révéler ce qu'il y a autour.
-                        bool visible = mapData->flags.any(RE::MapMarkerData::Flag::kVisible);
+                        // "Decouvert" = kCanTravelTo (bascule a 1 quand le joueur entre dans
+                        // le rayon de decouverte). kVisible est pre-set dans les ESM pour les
+                        // grandes villes et camps, donc ne reflete pas l'etat de decouverte.
+                        bool discovered = mapData->flags.any(RE::MapMarkerData::Flag::kCanTravelTo);
 
                         const char* rawName = mapData->locationName.GetFullName();
                         if (!rawName || !*rawName) continue;
@@ -1240,7 +1471,7 @@ static void DoScanInternal() {
                             obj.name += typeName;
                             obj.name += L")";
                         }
-                        if (!visible) {
+                        if (!discovered) {
                             obj.name += L" (undiscovered)";
                         }
                         obj.distance = dist;
@@ -1469,6 +1700,18 @@ static void RefreshFilteredList() {
         auto* base = ref->GetBaseObject();
         if (base && (base->Is(RE::FormType::Door) || base->Is(RE::FormType::Container))) {
             obj.locked = ref->IsLocked();
+        }
+
+        // Re-vérifier l'état destructible (santé peut avoir diminué depuis le
+        // scan ; objet peut avoir été détruit entre temps).
+        if (obj.isDestructible) {
+            if (ref->GetFormFlags() & RE::TESForm::RecordFlags::kDestroyed) {
+                obj.isDestructible = false;
+                obj.destructibleLabel = nullptr;
+                obj.destructibleHealthPercent = 0;
+            } else {
+                obj.destructibleHealthPercent = ReadDestructibleHealthPercent(*ref, base);
+            }
         }
     }
 
@@ -1824,7 +2067,13 @@ static void ScannerAnnounceCurrent() {
     // objet parti pour de bon (contrairement à une ref statique dans une cellule
     // déchargée qui pourrait revenir). On invalide l'entrée dans g_scannedAll,
     // on la retire du filtre courant, et on passe automatiquement au suivant.
-    if (!ref && (obj.formID >> 24) == 0xFF) {
+    // Exclusion : les cibles de quete (kCatQuests) peuvent avoir un FormID FF
+    // (instanciees par script Papyrus, ex: Pierre de Dragon FF000DA3) sans que
+    // !ref signifie "ramasse" — la cellule cible n'est juste pas streamee. Pour
+    // ces cibles, on a deja le mecanisme PASS 1/PASS 2 + boussole qui resout la
+    // position via worldLocMarker. Le check "Object gone" n'a de sens que pour
+    // les items du monde reellement disparus.
+    if (!ref && (obj.formID >> 24) == 0xFF && obj.category != kCatQuests) {
         obj.formID = 0;
         obj.category = kCatAll;
         g_scannedFiltered.erase(g_scannedFiltered.begin() + g_scanIndex);
@@ -2108,16 +2357,26 @@ static void ScannerTeleport() {
             return;
         }
 
-        // Marqueurs de quête : limite stricte de 1000 unités
-        // (souvent dans une autre cellule, téléporter peut casser la quête)
+        // Marqueurs de quête cross-cell : limite stricte de 1000 unités.
+        // Raison : quand la ref est dans une autre cellule, sa position est en
+        // coordonnees locales de cette cellule, et teleporter directement dessus
+        // depuis une position exterieure peut envoyer le joueur dans le vide
+        // et casser la quete. Si la cible est dans la MEME cellule que le joueur,
+        // on applique la limite normale du MCM (3000 par defaut) — pas de danger.
         if (category == kCatQuests) {
-            auto playerPos = player->GetPosition();
-            auto targetPos = targetRef->GetPosition();
-            float dist = (playerPos - targetPos).Length();
-            if (dist > 1000.0f) {
-                Speak(L"Quest target is too far to teleport");
-                LOG("ScannerTeleport: blocked - quest target distance {:.0f} > 1000", dist);
-                return;
+            auto* playerCellCheck = player->GetParentCell();
+            auto* targetCellCheck = targetRef->GetParentCell();
+            bool crossCell = playerCellCheck && targetCellCheck &&
+                             playerCellCheck != targetCellCheck;
+            if (crossCell) {
+                auto playerPos = player->GetPosition();
+                auto targetPos = targetRef->GetPosition();
+                float dist = (playerPos - targetPos).Length();
+                if (dist > 1000.0f) {
+                    Speak(L"Quest target is too far to teleport");
+                    LOG("ScannerTeleport: blocked - cross-cell quest target distance {:.0f} > 1000", dist);
+                    return;
+                }
             }
         }
 
