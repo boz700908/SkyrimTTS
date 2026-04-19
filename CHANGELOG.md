@@ -1,32 +1,46 @@
 # Changelog
 
-## v1.4.3 (2026-04-14)
+## v1.5 (2026-04-19)
+
+### Mod support
+- **QuickLoot IE / QuickLoot RE support** — the small loot overlay that lets you pick items directly from a corpse or chest without opening the full container menu is now fully vocalized. Items are announced as you scroll through the list
+- **RaceMenu mod support** — the character creation menu now automatically detects whether RaceMenu is installed and switches between RaceMenu-specific paths and vanilla paths. Falls back to vanilla gracefully if RaceMenu is not present
+- **Extended Hotkey System (EHS) support** — when EHS is installed in place of the vanilla favorites menu, hotkey assignments via number keys 1-8 and Ctrl+F1-F12 are now announced. EHS stores assignments in its own co-save invisible to the standard menu system, so the plugin maintains its own internal mapping to track and announce shortcuts
+- Translation loader: plugin can now load mod-specific translation files from `Interface\translations\<mod>_<LANG>.txt` (with fallback to `_english.txt` if the language isn't translated in your language)
 
 ### New features
-- Skyrim Character Sheet mod support — vocalizes the custom stats menu added by the "Skyrim Character Sheet" mod (opened via U key). Covers both ShowStats (player stats across Player/Attack/Defence/Magic/Warrior/Thief columns) and ShowFactions (Faction/Thane/Champion columns). The mod doesn't wire keyboard navigation in its own lists, so the plugin maintains its own selection index and adds these shortcuts:
-  - Up/Down arrows: scroll stats within the current column
-  - Left/Right arrows: switch between columns (Player → Defence → Magic etc.)
-  - N/P: cycle between ShowStats and ShowFactions menus (mod-native behavior)
-  - Announces the new column name when switching, and "empty" if a column has no data
-- Translation loader: plugin can now load mod-specific translation files from `Interface\translations\<mod>_<LANG>.txt` (with fallback to `_english.txt` if the language isn't translated). Loaded at startup for Skyrim Character Sheet
+- Container menu: follower carry weight — when trading items with a follower (companion), the H key now also announces the follower's current carry weight and capacity (e.g. "Lydia: 150 of 300")
+- **Autowalk: smarter quest routing in dungeons** — the plugin now uses Skyrim's location data to decide which door to take when following a quest objective, instead of just picking the door whose angle matches the compass marker. Concretely:
+  - From outside, autowalk on a quest objective inside a dungeon now reliably picks the official main entrance (the one tagged as the dungeon entrance in the game data), never the back exit even when both lead to the outside world
+  - Inside a multi-room dungeon, autowalk picks the door that actually leads toward the objective's room (or its sub-area), not a random door pointing in the right direction through walls
+  - When the objective is in another worldspace (e.g. carrying a quest item back to a city), autowalk picks doors that exit the current building toward the outside, not doors that go deeper into adjacent rooms (jail, jarl's quarters, etc.)
+  - Falls back to the original compass-angle search if the location data is unavailable (modded dungeons that don't tag their entrance, etc.), so no regression for existing setups
+- Scanner: destructible objects detection — spider webs (blocking or egg sacs), wooden barricades, Eldergleam roots and breakable doors are now announced with a "destructible" flag and their current health percentage. They appear in the Activators category with a new sub-filter so you can list them quickly. Useful for the Bleak Falls Barrow spider web and similar obstacles that block progression until destroyed
+- Scanner: "Object gone" detection — when you press Home to announce the currently selected object and that object has been picked up, destroyed or despawned since the last scan, the scanner now announces "Object gone" and automatically jumps to the next object in the list
+- Autowalk: more reliable targeting on dropped items — when autowalking to an item you dropped from your inventory, the plugin now uses the visible mesh position instead of the physics body position. The physics body can drift far from the visible item after bouncing, so autowalk was sometimes stopping away from the real object
+- Map: map filter and fast travel now use the real discovery state — the "Discovered" filter used to also show locations that just had their icon pre-placed on the map (Solitude, Whiterun, Imperial and Stormcloak camps, Fort Dawnguard before their quests enable them). The filter now only lists places you have physically visited, which matches the fast travel rules of the vanilla game. You still see all those places in "Undiscovered" and "All" until you reach them
+- Map: quest targets on the map — quest objectives now appear as navigable markers in the map menu, with the same position logic as the in-game scanner (fallback to the quest alias when condition checks fail). Only one marker per objective, no duplicates
+- Map: location type sub-filter now also cycles with Alt+Page Down / Alt+Page Up — in addition to the existing Alt+End shortcut. Easier to reach on most keyboards
+- Teleport: the scanner teleport (Alt+Home) now allows reaching quest targets up to the configured MCM range (3000 units by default) when the target is in your current cell. The previous hard 1000 unit limit is now only kept for cross-cell quest targets, where teleporting to raw coordinates from another cell could send you into the void
 
 ### Bug fixes
-- Journal menu + System tab detection — fixed false positive where the plugin would announce "Mod Configuration" and stop reading the Quests tab when mods like "Jaxonz MCM Kicker" or "Stay At The System Page" made the MCM container visible in the background. The detection now also requires the System tab to be active AND the internal MCM focus variable to exist, so the vanilla system page (Save/Load/Quit) and the Quests tab are read normally
-- Map sub-filter shortcut restored — location type sub-filter (All types → Cities → Towns → Dungeons → Forts → Camps) is now cycled with Alt+End again (was broken on laptops after a recent change that used Home+Arrow, which conflicts with Home being Fn+Arrow on laptop keyboards)
+- **Autowalk crash fix** — fixed a race condition where the autowalk monitor thread could read player or target game data at the same moment the engine was writing it, causing random null-pointer crashes. All game object reads now run on the main thread. Multiple users had reported this crash during long outdoor travels
+- Autowalk crash recovery after crossing a cell-change door — fixed secondary race conditions that could corrupt the save after an autowalk crash: autowalk state was persisting across reloads (AI-driven flag stuck on true, invalid travel target), causing the reloaded save to crash again. The plugin now resets the autowalk state three seconds after any save load, stops autowalk when the player dies, and pauses the autowalk monitor whenever the game is paused (menus, loading screens, console) so it can no longer fight the engine during unstable moments
+- Autowalk: fixed "quest not found" on Skyrim SE 1.5.97 — the quest lookup now tries multiple fallback methods instead of relying solely on the method that only works on AE or with po3_Tweaks
+- Autowalk: better recovery when stuck — instead of a single hard reset after 4 seconds, the plugin now tries a gentle recovery first (re-apply movement flags and re-evaluate the AI package), then a full AI-driven toggle at 6 seconds, and only gives up at 10 seconds. This fixes cases where the player was blocked on small obstacles and the old single recovery was either too aggressive (teleporting the camera) or not enough
+- Journal menu + System tab detection — fixed false positive where the plugin would announce "Mod Configuration" and stop reading the Quests tab when mods like "Jaxonz MCM Kicker" or "Stay At The System Page" made the MCM container visible in the background. The vanilla system page (Save/Load/Quit) and the Quests tab are now read normally
+- Map sub-filter shortcut restored — location type sub-filter (All types → Cities → Towns → Dungeons → Forts → Camps) is cycled with Alt+End again (was briefly broken on laptops after a change that used Home+Arrow, which conflicts with Home being Fn+Arrow on laptop keyboards)
+- Crafting menu: opening announce is no longer cut off by the first item readout
+- Stats menu: fixed a rare race where pressing the stats shortcut right as the menu was opening could leave the reader stuck
+- HUD: safer reading of on-screen messages — prevents a potential crash on heavily modded UIs
+- MCM and Journal: removed debug log spam that filled the log file with one line every 80 ms during normal navigation
+
+### Performance
+- Speech: the screen reader calls no longer block the keyboard input thread — moved to a dedicated worker thread so navigation stays responsive even when NVDA is busy announcing a long sentence
+- Scanner: the outdoor scan (5x5 cells around the player) is significantly faster — script type lookups for activators (word walls, puzzle pillars, etc.) are now cached per object, so each activator is only queried once per game session instead of on every scan. Reduces the small lag some players felt when the scanner refreshed in large exterior areas
 
 ### Diagnostics
-- Autowalk pre-dispatch state logging — the plugin now logs a comprehensive snapshot of the player and target state right before triggering the Papyrus autowalk call (3D model, character controller, parent cell, cell attached, position, running AI package, target FormID resolution, etc.). Helps diagnose the engine-level crash that some players hit when the game is in an unstable state. If you crash during autowalk, please send your `SkyrimNVDA.log` — the pre-dispatch diagnostic lines will show which field was null or missing
-
-## v1.4.1 (2026-04-12)
-
-### New features
-- Favorites menu: Extended Hotkey System (EHS) support — when EHS is installed, hotkey assignments via number keys 1-8 and Ctrl+F1-F12 are now announced. EHS replaces the favorites SWF and stores assignments in its own co-save invisible to GFx, so the plugin maintains its own internal mapping to track and announce shortcuts
-- Container menu: follower carry weight — when trading with a follower (companion), the H key now also announces the follower's current carry weight and capacity (e.g. "Lydia: 150 of 300")
-- RaceMenu mod detection — the character creation menu now automatically detects whether the RaceMenu mod is installed and switches between RaceMenu-specific GFx paths and vanilla paths. Falls back to vanilla gracefully if RaceMenu is not present
-
-### Bug fixes
-- Autowalk: fixed "quest not found" on SE 1.5.97 — the quest lookup now uses a multi-fallback strategy (EditorID, LookupForm, resolved FormID, light plugin FormID) instead of relying solely on EditorID which only works on AE or with po3_Tweaks
-- Speech: Speak() and SpeakQueue() no longer block the input listener thread — moved nvdaController calls to a dedicated async worker thread to prevent input lag when NVDA is busy
+- Autowalk pre-dispatch state logging — the plugin now logs a full snapshot of the player and target state right before triggering an autowalk call (3D model, character controller, parent cell, position, running AI package, target resolution, etc.). Helps diagnose the rare engine-level crash some players still hit. If you crash during autowalk, please send your `SkyrimNVDA.log` — the pre-dispatch lines will show which field was null or missing
 
 ## v1.4 (2026-04-07)
 
