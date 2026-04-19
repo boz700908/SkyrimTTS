@@ -357,20 +357,27 @@ static void BuildMapMarkerList() {
             if (!extraMarker) continue;
             if (!extraMarker->mapData) continue;
 
+            // Ignorer les markers desactives (kInitiallyDisabled + ExtraEnableStateParent
+            // controle par quest alias). Camps de guerre civile, Fort Garde-l'Aube, etc.
+            // ont kCanTravelTo=1 dans l'ESM mais restent disabled tant que leur quete
+            // n'a pas appele Enable() — le moteur ne les affiche pas sur la carte vanilla.
+            if (ref->IsDisabled() || ref->IsMarkedForDeletion()) continue;
+
             auto* mapData = extraMarker->mapData;
 
             const char* rawName = mapData->locationName.GetFullName();
             if (!rawName || !*rawName) continue;
 
-            bool visible = mapData->flags.any(RE::MapMarkerData::Flag::kVisible);
             bool canTravel = mapData->flags.any(RE::MapMarkerData::Flag::kCanTravelTo);
-            // kVisible = mis a true UNIQUEMENT quand le joueur decouvre
-            // physiquement le lieu. kCanTravelTo peut etre pre-defini par le
-            // jeu/scripts (camps militaires, Solstheim) avant decouverte, donc
-            // ne convient pas comme indicateur "decouvert".
+            // kCanTravelTo bascule a 1 UNIQUEMENT quand le joueur entre
+            // physiquement dans le rayon de decouverte du marker, et c'est
+            // le bit qui conditionne le fast travel cote moteur.
+            // kVisible est pre-defini a 1 dans les ESM pour les grandes
+            // villes (Solitude, Blancherive...) et les camps militaires,
+            // donc ne convient PAS comme indicateur "decouvert".
             // kShowAllHidden exclu pour gerer le cas de la commande console
             // "tmm 1" qui active tous les marqueurs.
-            bool discovered = visible &&
+            bool discovered = canTravel &&
                               !mapData->flags.any(RE::MapMarkerData::Flag::kShowAllHidden);
 
             RE::MARKER_TYPE markerType = mapData->type.get();
