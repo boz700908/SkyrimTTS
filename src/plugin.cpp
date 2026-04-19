@@ -1507,11 +1507,15 @@ public:
             // Map menu (quand la carte est ouverte)
             if (g_mapOpen.load(std::memory_order_relaxed)) {
                 if (code == RE::BSKeyboardDevice::Keys::kPageDown) {
-                    MapNextMarker();
+                    bool alt = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
+                    if (alt) MapCycleSubFilter();
+                    else MapNextMarker();
                     continue;
                 }
                 if (code == RE::BSKeyboardDevice::Keys::kPageUp) {
-                    MapPrevMarker();
+                    bool alt = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
+                    if (alt) MapCyclePrevSubFilter();
+                    else MapPrevMarker();
                     continue;
                 }
                 if (code == RE::BSKeyboardDevice::Keys::kHome) {
@@ -1524,9 +1528,7 @@ public:
                     continue;
                 }
                 if (code == RE::BSKeyboardDevice::Keys::kEnd) {
-                    bool alt = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
-                    if (alt) MapCycleSubFilter();
-                    else MapCycleFilter();
+                    MapCycleFilter();
                     continue;
                 }
                 if (code == RE::BSKeyboardDevice::Keys::kEnter) {
