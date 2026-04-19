@@ -72,6 +72,16 @@ static float            g_autoWalkStopDist{100.0f};
 static RE::NiPoint3     g_autoWalkTargetPos{0, 0, 0};  // pour le mode coordonnées
 static std::jthread     g_autoWalkMonitor;
 
+// --- Routing de quete : nouvelle methode location-based ---
+// true  = essayer d'abord le routing par hierarchie de locations (BGSLocation::specialRefs,
+//         LocTypeDungeonEntrance, parentLoc, etc.). Plus fiable car aligne sur la
+//         topologie logique du donjon (pas la geometrie 3D).
+// false = sauter direct au routing compass historique (matching d'angle).
+// En cas d'echec du routing location-based (location null, alias non rempli, mod
+// custom mal tagge...), on retombe AUTOMATIQUEMENT sur le compass — donc on n'est
+// jamais bloque, ce flag est juste un kill switch global au cas ou.
+static constexpr bool g_useLocationRouting = true;
+
 // Cooldown de sécurité : empêche de lancer l'autowalk pendant la fenêtre
 // fragile après un load ou un changement de cellule. Pendant cette fenêtre,
 // le skeleton/shader du joueur est en cours de reconstruction et un
@@ -867,6 +877,394 @@ static void ToggleAutoWalkImpl();
 //
 // L'arrêt d'un autowalk en cours (g_autoWalking=true) reste fait directement
 // depuis le thread clavier : StopAutoWalk() utilise déjà AddTask en interne
+// =============================================================================
+// Routing de quete : nouvelle methode "location-based"
+// =============================================================================
+//
+// Idee : au lieu de deviner la porte par angle de boussole (instable en donjon
+// multi-cellules), on lit la quete active du joueur, sa cible (alias resolu en
+// REFR), la BGSLocation cible, et on parcourt les portes de la cellule courante
+// pour trouver celle qui mene vers la bonne location.
+//
+// Cas geres :
+//   1. Cible meme cellule       -> deja gere par le code en amont (3D loaded ou
+//                                  same-cell quest fallback)
+//   2. Cible meme donjon (autre cellule interieure) -> porte dont la destination
+//                                  est == targetLoc OU enfant de targetLoc
+//   3. Cible hors du donjon courant -> porte dont la destination sort du donjon
+//                                  (worldspace exterieur OU location differente)
+//   4. Cible interieure depuis exterieur -> porte d'entree principale du donjon
+//                                  (taggee LocTypeDungeonEntrance dans l'ESM)
+//
+// Retourne nullptr si la methode n'est pas applicable -> appelant retombera sur
+// l'algo compass historique automatiquement.
+
+// Resolution de la quete active du joueur et de sa REFR cible.
+// On passe par BGSStoryTeller::runningQuests (offsets stables, pas via PLAYER_RUNTIME_DATA
+// dont le contenu varie selon la version SE/AE/VR du runtime). Pour chaque quete active
+// (cochee dans le journal du joueur), on lit ses BGSQuestObjective et on prend le
+// premier en etat "kDisplayed".
+//
+// IMPORTANT : `qt->alias` est un aliasID (identifiant unique), PAS un index dans
+// quest->aliases. On utilise donc la fonction native du moteur
+// `CreateRefHandleByAliasID` qui sait resoudre l'aliasID en ObjectRefHandle, peu
+// importe la position dans la liste. C'est ce que fait deja le scanner principal.
+static RE::TESObjectREFR* ResolveActiveQuestTargetRef() {
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    if (!player) {
+        LOG("LocRouting: PlayerCharacter singleton null");
+        return nullptr;
+    }
+
+    // Acces aux objectifs INSTANCIES du joueur (offset 0x580 SE / 0x588 AE).
+    // Memes offsets que ceux qu'utilise le scanner principal (scanner.h:997),
+    // qui lui trouve correctement les quetes actives. BGSStoryTeller::runningQuests
+    // est vide sur cette version du runtime — passer par PlayerCharacter est fiable.
+    int totalObj = 0;
+    int totalDisplayed = 0;
+    int totalTried = 0;
+    try {
+        auto& objectives = REL::RelocateMemberIfNewer<RE::BSTArray<RE::BGSInstancedQuestObjective>>(
+            SKSE::RUNTIME_SSE_1_6_629, player, 0x580, 0x588);
+
+        for (auto& instObj : objectives) {
+            totalObj++;
+            if (!instObj.Objective) continue;
+            if (instObj.InstanceState != RE::QUEST_OBJECTIVE_STATE::kDisplayed) continue;
+            totalDisplayed++;
+
+            auto* obj = instObj.Objective;
+            auto* quest = obj->ownerQuest;
+            if (!quest) continue;
+
+            // Filtrer : ne traiter QUE les quetes vraiment cochees dans le journal
+            // du joueur (la quete "trackee" qui apparait sur la boussole HUD).
+            // Sans ce filtre on prend la 1ere quete avec un objectif displayed,
+            // ce qui peut etre Ciceron ou n'importe quelle quete secondaire active.
+            if (!quest->IsActive()) continue;
+
+            if (obj->numTargets == 0 || !obj->targets) continue;
+
+            // Premier target -> resoudre via fonction native (gere l'aliasID
+            // unique, pas un index dans aliases).
+            auto* qt = obj->targets[0];
+            if (!qt) continue;
+            totalTried++;
+
+            RE::ObjectRefHandle refHandle;
+            quest->CreateRefHandleByAliasID(refHandle, qt->alias);
+            auto sp = refHandle.get();
+
+            LOG("LocRouting: try quest='{}' obj.idx={} alias.id={} handle={} ref={}",
+                quest->GetFullName() ? quest->GetFullName() : "?",
+                obj->index, qt->alias,
+                refHandle.native_handle(),
+                sp ? "ok" : "null");
+
+            if (sp) {
+                LOG("LocRouting: resolved -> ref={:08X}", sp->GetFormID());
+                return sp.get();
+            }
+        }
+    } catch (...) {
+        LOG("LocRouting: exception while iterating player objectives");
+        return nullptr;
+    }
+    LOG("LocRouting: nothing resolved. totalObj={} displayed={} tried={}",
+        totalObj, totalDisplayed, totalTried);
+    return nullptr;
+}
+
+// Remonte la hierarchie parentLoc jusqu'a trouver une location avec un keyword
+// de type "donjon" (LocTypeDungeon). Si pas trouvee, retourne la location de depart.
+static RE::BGSLocation* FindDungeonRootLocation(RE::BGSLocation* loc) {
+    if (!loc) return nullptr;
+    static RE::BGSKeyword* dungeonKw = nullptr;
+    static bool dungeonKwTried = false;
+    if (!dungeonKwTried) {
+        dungeonKw = RE::TESForm::LookupByEditorID<RE::BGSKeyword>("LocTypeDungeon");
+        dungeonKwTried = true;
+        LOG("LocRouting: LocTypeDungeon keyword lookup -> {}", dungeonKw ? "found" : "null");
+    }
+
+    auto* cur = loc;
+    int depth = 0;
+    while (cur && depth < 10) {
+        LOG("LocRouting: walk parentLoc[{}]='{}' hasDungeonKw={}",
+            depth,
+            cur->GetName() ? cur->GetName() : "?",
+            (dungeonKw && cur->HasKeyword(dungeonKw)) ? 1 : 0);
+        if (dungeonKw && cur->HasKeyword(dungeonKw)) return cur;
+        if (!cur->parentLoc) break;
+        cur = cur->parentLoc;
+        depth++;
+    }
+    return loc;  // pas de tag dungeon trouve -> renvoyer la location originale
+}
+
+// Cherche dans specialRefs de la location la ref de l'entree principale du donjon.
+// Tag standard Skyrim : "OutsideEntranceMarker" (XMarker pose juste devant la porte
+// d'entree, cote exterieur). Fallback : "MapMarkerRefType" (le map marker du donjon,
+// generalement co-localise avec l'entree).
+static RE::TESObjectREFR* FindDungeonEntranceRef(RE::BGSLocation* root) {
+    if (!root) return nullptr;
+
+    LOG("LocRouting: scanning specialRefs of '{}' (count={})",
+        root->GetName() ? root->GetName() : "?",
+        root->specialRefs.size());
+
+    RE::TESObjectREFR* outsideMarker = nullptr;
+    RE::TESObjectREFR* mapMarker = nullptr;
+
+    for (auto& sr : root->specialRefs) {
+        const char* typeName = sr.type && sr.type->GetFormEditorID() ? sr.type->GetFormEditorID() : "?";
+        std::string n = typeName ? typeName : "";
+        bool isOutside = (n == "OutsideEntranceMarker");
+        bool isMapMarker = (n == "MapMarkerRefType");
+
+        LOG("LocRouting:   specialRef type='{}' refID={:08X} outside={} map={}",
+            typeName, sr.refData.refID, isOutside ? 1 : 0, isMapMarker ? 1 : 0);
+
+        if (isOutside && !outsideMarker) {
+            auto* form = RE::TESForm::LookupByID(sr.refData.refID);
+            if (form) {
+                auto* ref = form->AsReference();
+                if (ref) outsideMarker = ref;
+            }
+        }
+        if (isMapMarker && !mapMarker) {
+            auto* form = RE::TESForm::LookupByID(sr.refData.refID);
+            if (form) {
+                auto* ref = form->AsReference();
+                if (ref) mapMarker = ref;
+            }
+        }
+    }
+
+    // Priorite : OutsideEntranceMarker (devant la porte) > MapMarkerRefType (carte)
+    if (outsideMarker) return outsideMarker;
+    return mapMarker;
+}
+
+// Choix de porte par hierarchie de location. Retourne nullptr si aucune porte
+// pertinente trouvee ou si l'info necessaire n'est pas disponible.
+static RE::TESObjectREFR* TryFindQuestDoorByLocation() {
+    if (!g_useLocationRouting) {
+        LOG("LocRouting: disabled by g_useLocationRouting flag");
+        return nullptr;
+    }
+
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    if (!player) return nullptr;
+
+    // 1) Resoudre la cible de la quete active
+    auto* targetRef = ResolveActiveQuestTargetRef();
+    if (!targetRef) {
+        LOG("LocRouting: no active quest target ref -> fallback compass");
+        return nullptr;
+    }
+
+    // 2) Determiner la location cible
+    auto* targetLoc = targetRef->GetCurrentLocation();
+    if (!targetLoc) {
+        // GetEditorLocation : version ESM-time, dispo meme si ref pas chargee
+        targetLoc = targetRef->GetEditorLocation();
+    }
+    auto* targetCell = targetRef->GetParentCell();
+    bool targetIsInterior = targetCell ? targetCell->IsInteriorCell() : false;
+
+    // 3) Determiner ou est le joueur
+    auto* playerCell = player->GetParentCell();
+    if (!playerCell) {
+        LOG("LocRouting: player has no parent cell -> fallback");
+        return nullptr;
+    }
+    bool playerInInterior = playerCell->IsInteriorCell();
+    auto* playerLoc = player->GetCurrentLocation();
+
+    // Bug Skyrim : juste apres une transition de cellule, playerCell->IsInteriorCell()
+    // peut retourner false alors qu'on est deja a l'interieur du donjon. Pour fiabiliser,
+    // on regarde aussi si le joueur est dans la meme location que la cible : si oui, on
+    // est forcement dans le donjon, peu importe ce que dit IsInteriorCell. Sans ce
+    // check, on tomberait dans le mode "ext->dungeon" et l'autowalk pointerait vers
+    // la sortie au lieu de continuer la progression.
+    bool playerInsideTargetDungeon = false;
+    if (targetLoc && playerLoc) {
+        playerInsideTargetDungeon = (targetLoc == playerLoc) ||
+                                    targetLoc->IsChild(playerLoc) ||
+                                    playerLoc->IsChild(targetLoc);
+    }
+    bool effectivelyInInterior = playerInInterior || playerInsideTargetDungeon;
+
+    LOG("LocRouting: targetRef={:08X} targetLoc='{}' targetInt={} playerLoc='{}' playerInt={} sameDungeon={} -> mode={}",
+        targetRef->GetFormID(),
+        targetLoc && targetLoc->GetName() ? targetLoc->GetName() : "?",
+        targetIsInterior ? 1 : 0,
+        playerLoc && playerLoc->GetName() ? playerLoc->GetName() : "?",
+        playerInInterior ? 1 : 0,
+        playerInsideTargetDungeon ? 1 : 0,
+        effectivelyInInterior ? "interior" : "exterior");
+
+    // === CAS 4 : Joueur exterieur, cible interieure -> chercher entree principale ===
+    if (!effectivelyInInterior && targetIsInterior) {
+        auto* root = FindDungeonRootLocation(targetLoc);
+        if (root) {
+            auto* entrance = FindDungeonEntranceRef(root);
+            if (entrance) {
+                LOG("LocRouting: ext->dungeon entrance found '{}' FormID={:08X} via location '{}'",
+                    entrance->GetDisplayFullName() ? entrance->GetDisplayFullName() : "?",
+                    entrance->GetFormID(),
+                    root->GetName() ? root->GetName() : "?");
+                return entrance;
+            }
+        }
+        LOG("LocRouting: ext->dungeon no LocTypeDungeonEntrance found -> fallback compass");
+        return nullptr;
+    }
+
+    // === CAS 2 et 3 : Joueur en interieur (ou dans la meme location que la cible) ===
+    if (effectivelyInInterior) {
+        // Determiner si on doit "sortir" du donjon ou "progresser" dedans
+        bool needToExit = false;
+        if (!targetIsInterior) {
+            needToExit = true;
+        } else if (targetLoc && playerLoc) {
+            // Cible interieure mais autre donjon -> sortir d'abord
+            bool sameDungeon = (targetLoc == playerLoc) ||
+                               targetLoc->IsChild(playerLoc) ||
+                               playerLoc->IsChild(targetLoc);
+            if (!sameDungeon) needToExit = true;
+        }
+        LOG("LocRouting: interior mode, needToExit={}", needToExit ? 1 : 0);
+
+        // Parcourir les portes de la cellule du joueur
+        struct DoorCand {
+            RE::TESObjectREFR* door;
+            int score;
+            float dist;
+        };
+        std::vector<DoorCand> cands;
+        auto playerPos = player->GetPosition();
+
+        for (auto& refHandle : playerCell->GetRuntimeData().references) {
+            auto refPtr = refHandle.get();
+            if (!refPtr) continue;
+            auto* base = refPtr->GetBaseObject();
+            if (!base || base->GetFormType() != RE::FormType::Door) continue;
+            auto* et = refPtr->extraList.GetByType<RE::ExtraTeleport>();
+            if (!et || !et->teleportData) {
+                LOG("LocRouting: door '{}' FormID={:08X} REJECTED (no ExtraTeleport)",
+                    refPtr->GetDisplayFullName() ? refPtr->GetDisplayFullName() : "?",
+                    refPtr->GetFormID());
+                continue;
+            }
+            auto destDoor = et->teleportData->linkedDoor.get();
+            if (!destDoor) {
+                LOG("LocRouting: door '{}' FormID={:08X} REJECTED (no linkedDoor)",
+                    refPtr->GetDisplayFullName() ? refPtr->GetDisplayFullName() : "?",
+                    refPtr->GetFormID());
+                continue;
+            }
+            // destCell peut etre null si la cellule destination n'est pas chargee
+            // en memoire (cas frequent pour les portes vers exterieur quand on est
+            // en interieur). Dans ce cas on utilise GetWorldspace() qui retourne
+            // le worldspace meme sans cellule chargee.
+            auto* destCell = destDoor->GetParentCell();
+            auto* destWorld = destDoor->GetWorldspace();
+            bool destIsInterior = destCell ? destCell->IsInteriorCell() : (destWorld == nullptr);
+            // Si la porte mene vers un worldspace exterieur ET la cellule du joueur
+            // est interieure : c'est forcement une sortie vers exterieur, meme si
+            // destCell est null parce que pas chargee.
+            if (!destCell && destWorld) {
+                destIsInterior = false;
+            }
+            auto* destLoc = destCell ? destCell->GetLocation() : nullptr;
+
+            int score = 0;
+            if (needToExit) {
+                // Cas idéal : la porte mène vraiment vers l'exterieur (worldspace).
+                // C'est le SEUL cas qui merite un score eleve, parce qu'on veut
+                // sortir du complexe interieur pour aller a un objectif exterieur.
+                if (!destIsInterior) {
+                    score += 100;
+                } else {
+                    // Toutes les portes vers une autre cellule interieure (autre
+                    // salle du donjon, prison, quartiers du jarl...) ne sortent
+                    // PAS vraiment. On leur donne un petit score pour qu'elles
+                    // restent candidates en dernier recours, mais elles seront
+                    // rejetees si une vraie sortie exterieure existe ou si le
+                    // seuil 50 est atteint. Si aucune ne sort, on tombera sur
+                    // le fallback compass plus intelligent.
+                    score += 10;
+                }
+            } else {
+                // On veut PROGRESSER vers targetLoc (rester dans le donjon).
+                // PIEGE : une porte qui sort vers l'exterieur (destInt=0) peut avoir
+                // un destLoc qui matche playerLoc/targetLoc parce que le marker
+                // exterieur est rattache a la meme location dans l'ESM. Mais c'est
+                // une porte de SORTIE, pas de progression. On l'exclut donc du
+                // scoring eleve : score 1 (en-dessous du seuil 50, donc rejet).
+                if (!destIsInterior) {
+                    score += 1;
+                }
+                else if (destLoc == targetLoc) score += 100;
+                else if (targetLoc && destLoc && targetLoc->IsChild(destLoc)) score += 70;
+                else if (targetLoc && destLoc && destLoc->IsChild(targetLoc)) score += 80;
+                else score += 5;
+            }
+
+            float dx = refPtr->GetPositionX() - playerPos.x;
+            float dy = refPtr->GetPositionY() - playerPos.y;
+            float dist = std::sqrt(dx * dx + dy * dy);
+
+            const char* destCellName = destCell && destCell->GetName() ? destCell->GetName() :
+                                       (destWorld && destWorld->GetName() ? destWorld->GetName() : "?");
+            LOG("LocRouting: door '{}' FormID={:08X} -> '{}' destInt={} destLoc='{}' score={} dist={:.0f}",
+                refPtr->GetDisplayFullName() ? refPtr->GetDisplayFullName() : "?",
+                refPtr->GetFormID(),
+                destCellName,
+                destIsInterior ? 1 : 0,
+                destLoc && destLoc->GetName() ? destLoc->GetName() : "?",
+                score, dist);
+
+            DoorCand c{};
+            c.door = refPtr;
+            c.score = score;
+            c.dist = dist;
+            cands.push_back(c);
+        }
+
+        if (cands.empty()) {
+            LOG("LocRouting: no doors in player cell -> fallback compass");
+            return nullptr;
+        }
+
+        // Trier par score decroissant, distance croissante en tie-breaker
+        std::sort(cands.begin(), cands.end(), [](const DoorCand& a, const DoorCand& b) {
+            if (a.score != b.score) return a.score > b.score;
+            return a.dist < b.dist;
+        });
+
+        auto& best = cands.front();
+        // Refuser si meilleur score est trop faible (aucune porte vraiment pertinente)
+        if (best.score < 50) {
+            LOG("LocRouting: best door score={} too low (no clear winner) -> fallback compass", best.score);
+            return nullptr;
+        }
+
+        LOG("LocRouting: chose door '{}' FormID={:08X} score={} dist={:.0f}",
+            best.door->GetDisplayFullName() ? best.door->GetDisplayFullName() : "?",
+            best.door->GetFormID(), best.score, best.dist);
+        return best.door;
+    }
+
+    // Cas non gere (ex: ext->ext, devrait etre traite ailleurs)
+    LOG("LocRouting: no rule matches -> fallback compass");
+    return nullptr;
+}
+
+// =============================================================================
+
 // pour son cleanup, donc safe.
 static void ToggleAutoWalk() {
     LOG("InputDiag: ToggleAutoWalk ENTRY, g_autoWalking={}", g_autoWalking.load());
@@ -995,6 +1393,24 @@ static void ToggleAutoWalkImpl() {
             }
         }
 
+        // === NOUVEAU : routing par hierarchie de location (plus fiable que compass) ===
+        // Avant de tomber sur l'algo compass historique, essayer de resoudre la cible
+        // de quete via BGSStoryTeller -> objectifs -> alias -> location -> hierarchie.
+        // Si ca trouve la bonne porte, on l'utilise direct. Sinon fallback compass.
+        {
+            auto* locDoor = TryFindQuestDoorByLocation();
+            if (locDoor) {
+                targetID = locDoor->GetFormID();
+                LOG("AutoWalk: routed via location, target door FormID={:08X} '{}'",
+                    targetID,
+                    locDoor->GetDisplayFullName() ? locDoor->GetDisplayFullName() : "?");
+                Speak(L"Walking to " + targetName);
+                StartAutoWalk(targetID, 150.0f, 0.0f, 0.0f, 0.0f);
+                return;
+            }
+            LOG("AutoWalk: location-based routing returned nullptr, falling back to compass");
+        }
+
         LOG("AutoWalk: dynamic FormID {:08X}, searching for entrance door via compass", targetID);
 
         auto* player = RE::PlayerCharacter::GetSingleton();
@@ -1025,22 +1441,38 @@ static void ToggleAutoWalkImpl() {
 
                         LOG("AutoWalk: quest marker types: quest={:.0f} questDoor={:.0f}", questType, questDoorType);
 
+                        // PASSE 1 : chercher EN PRIORITE un marker questDoor.
+                        // Skyrim pose ce type de marker directement sur la porte qu'il
+                        // faut traverser pour suivre la prochaine etape de la quete
+                        // (calcul interne via les waypoints invisibles du moteur).
+                        // C'est notre "GPS" le plus fiable : il pointe sur une porte
+                        // precise, pas vers la cible finale a travers les murs.
                         // Stride = 4 : heading, alpha, type, scale
+                        float questHeadingFallback = -1.0f;
                         for (uint32_t i = 0; i + 3 < arrSize; i += 4) {
                             RE::GFxValue headingVal, typeVal;
-                            dataArr.GetElement(i, &headingVal);      // heading
-                            dataArr.GetElement(i + 2, &typeVal);     // type
+                            dataArr.GetElement(i, &headingVal);
+                            dataArr.GetElement(i + 2, &typeVal);
 
                             if (!SafeIsNumber(typeVal)) continue;
                             float type = static_cast<float>(SafeGetNumber(typeVal));
 
-                            if (type == questType || type == questDoorType) {
-                                if (SafeIsNumber(headingVal)) {
-                                    compassHeading = static_cast<float>(SafeGetNumber(headingVal));
-                                    LOG("AutoWalk: found compass quest marker heading={:.1f} type={:.0f}", compassHeading, type);
-                                    break;
-                                }
+                            if (type == questDoorType && SafeIsNumber(headingVal)) {
+                                compassHeading = static_cast<float>(SafeGetNumber(headingVal));
+                                LOG("AutoWalk: found compass questDoor marker heading={:.1f} (priority)", compassHeading);
+                                break;
                             }
+                            if (type == questType && SafeIsNumber(headingVal) && questHeadingFallback < 0) {
+                                questHeadingFallback = static_cast<float>(SafeGetNumber(headingVal));
+                            }
+                        }
+
+                        // PASSE 2 : aucun questDoor trouve (cible deja dans la meme
+                        // cellule, ou quete sans etape intermediaire) -> fallback
+                        // sur le marker quest classique (cible finale a travers murs).
+                        if (compassHeading < 0 && questHeadingFallback >= 0) {
+                            compassHeading = questHeadingFallback;
+                            LOG("AutoWalk: no questDoor marker, falling back to quest marker heading={:.1f}", compassHeading);
                         }
                     }
                 }
