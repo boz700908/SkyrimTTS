@@ -30,6 +30,9 @@ target_include_directories(${PROJECT_NAME} PRIVATE
 # --- nvdaControllerClient (in lib/) ---
 target_link_libraries(${PROJECT_NAME} PRIVATE "${CMAKE_SOURCE_DIR}/lib/nvdaControllerClient.lib")
 
+# XInput : pour lire l'etat physique du gamepad (detection LB "colle")
+target_link_libraries(${PROJECT_NAME} PRIVATE "Xinput.lib")
+
 # Copy nvdaControllerClient.dll next to the plugin DLL so it can load at runtime
 add_custom_command(
     TARGET "${PROJECT_NAME}"

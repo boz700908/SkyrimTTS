@@ -29,6 +29,8 @@
 #include "scanner.h"
 #include "autowalk.h"
 
+#include <Xinput.h>  // pour lire l'etat physique du gamepad dans le stuck watcher
+
 // ---------------- Gamepad state (déclaré tôt pour accès depuis MenuListener) ----------------
 static std::atomic_bool g_lbHeld{false};               // LB maintenu = mode scanner
 static std::atomic_bool g_lbWasModifier{false};         // LB a été utilisé comme modificateur
@@ -43,6 +45,139 @@ static bool g_controlsDisabled = false;                  // true si on a désact
 // le moteur Skyrim mette aussi l'item en favori. Restauré au relâchement de LB.
 static std::uint16_t g_savedItemMenuYButtonKey = 0xFFFF;  // 0xFFFF = pas sauvegardé
 static bool          g_itemMenuYButtonDisabled = false;
+
+// =============================================================================
+// Détection "LB collé" — bug joueur : quand un dialogue forcé, fast travel, ou
+// téléport vers activator s'ouvre pendant que LB est maintenu, l'event "LB up"
+// n'arrive jamais à notre InputListener (filtré par le menu/état bloquant), et
+// g_lbHeld reste à true indéfiniment. Résultat : tous les boutons suivants sont
+// traités comme combos LB+X et les contrôles gameplay restent masqués.
+//
+// Solution : thread de polling qui lit l'état RÉEL du gamepad via XInput
+// (XInputGetState + XINPUT_GAMEPAD_LEFT_SHOULDER).
+// Si g_lbHeld=true mais LB pas physiquement pressé depuis > 2s, reset forcé.
+// =============================================================================
+static std::atomic<int64_t> g_lbLastSeenPressedMs{0};  // timestamp dernier moment où on a vu LB réellement enfoncé (physiquement ou event pressed)
+static std::jthread         g_lbStuckWatcher;
+
+static int64_t PluginNowMs() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+// Reset complet du state LB : restaure enabledControls, restaure YButton dans
+// kItemMenu, clear des flags. Doit tourner sur le main thread (modifie
+// ControlMap + mapping.inputKey). Appelé depuis le polling thread via AddTask,
+// ou directement depuis MenuListener (qui tourne déjà main thread).
+static void ResetLbStateMainThread(const char* reason) {
+    auto* cm = RE::ControlMap::GetSingleton();
+
+    // Restaurer les contrôles masqués
+    if (g_controlsDisabled) {
+        if (cm) {
+            cm->enabledControls = static_cast<RE::UserEvents::USER_EVENT_FLAG>(g_savedControls);
+        }
+        g_controlsDisabled = false;
+        LOG("GAMEPAD: ResetLbState ({}) — controls restored (0x{:08X})", reason, g_savedControls);
+    }
+
+    // Restaurer le mapping YButton dans kItemMenu si désactivé
+    if (cm && g_itemMenuYButtonDisabled) {
+        constexpr auto kItemMenuCtxId = static_cast<size_t>(
+            RE::UserEvents::INPUT_CONTEXT_ID::kItemMenu);
+        auto* itemCtx = cm->controlMap[kItemMenuCtxId];
+        if (itemCtx) {
+            for (auto& mapping : itemCtx->deviceMappings[RE::INPUT_DEVICE::kGamepad]) {
+                if (mapping.eventID == RE::BSFixedString("YButton") && mapping.inputKey == 0xFFFF) {
+                    mapping.inputKey = g_savedItemMenuYButtonKey;
+                    g_itemMenuYButtonDisabled = false;
+                    LOG("GAMEPAD: ResetLbState ({}) — YButton mapping restored (0x{:04X})",
+                        reason, g_savedItemMenuYButtonKey);
+                    break;
+                }
+            }
+        }
+    }
+
+    // Reset du flag principal
+    g_lbHeld.store(false);
+    g_lbWasModifier.store(false);
+}
+
+// Helper : reset depuis n'importe quel thread (dispatch sur main).
+static void ResetLbStateAsync(const char* reason) {
+    auto* task = SKSE::GetTaskInterface();
+    if (!task) {
+        // Pas de task interface (trop tôt dans le cycle de vie) — on tente direct.
+        ResetLbStateMainThread(reason);
+        return;
+    }
+    std::string reasonStr = reason;
+    task->AddTask([reasonStr]() {
+        ResetLbStateMainThread(reasonStr.c_str());
+    });
+}
+
+// Thread de surveillance : polling toutes les 500ms de l'état physique de LB
+// via XInput. Si on a g_lbHeld=true mais LB pas physiquement enfoncé depuis
+// > 2s, on force le reset.
+static void StartLbStuckWatcher() {
+    if (g_lbStuckWatcher.joinable()) return;
+
+    g_lbStuckWatcher = std::jthread([](std::stop_token stoken) {
+        constexpr int64_t kStuckThresholdMs = 2000;  // 2s sans voir LB pressé -> stuck
+
+        while (!stoken.stop_requested()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            if (stoken.stop_requested()) break;
+
+            // Si on ne pense pas que LB est maintenu, rien à vérifier.
+            if (!g_lbHeld.load()) continue;
+
+            // XInput est thread-safe et ne dépend pas du scenegraph Skyrim.
+            // On peut l'appeler depuis ce worker sans passer par AddTask.
+            XINPUT_STATE state{};
+            DWORD result = XInputGetState(0, &state);  // manette 0
+
+            int64_t now = PluginNowMs();
+
+            if (result != ERROR_SUCCESS) {
+                // Pas de manette branchée ou erreur — si on croit LB maintenu, stuck évident.
+                int64_t lastSeen = g_lbLastSeenPressedMs.load();
+                int64_t since = now - lastSeen;
+                if (lastSeen != 0 && since > kStuckThresholdMs) {
+                    LOG("GAMEPAD: LB stuck — no controller detected and {}ms since last event", since);
+                    // Reset doit se faire sur main thread (modifie ControlMap).
+                    auto* task = SKSE::GetTaskInterface();
+                    if (task) task->AddTask([]() { ResetLbStateMainThread("no-controller"); });
+                }
+                continue;
+            }
+
+            const bool lbPhysicallyDown =
+                (state.Gamepad.wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER) != 0;
+
+            if (lbPhysicallyDown) {
+                g_lbLastSeenPressedMs.store(now);
+                continue;
+            }
+
+            // LB pas physiquement pressé. Depuis combien de temps ?
+            int64_t lastSeen = g_lbLastSeenPressedMs.load();
+            int64_t since = now - lastSeen;
+
+            if (lastSeen != 0 && since > kStuckThresholdMs) {
+                LOG("GAMEPAD: LB stuck detected (g_lbHeld=true but not pressed for {}ms) — forcing reset", since);
+                auto* task = SKSE::GetTaskInterface();
+                if (task) task->AddTask([]() { ResetLbStateMainThread("stuck-watcher"); });
+                // On reset aussi g_lbHeld localement ici pour arrêter de log en boucle.
+                // Le vrai cleanup (ControlMap etc) se fera sur main thread au-dessus.
+                g_lbHeld.store(false);
+            }
+        }
+        LOG("GAMEPAD: LB stuck watcher thread stopped");
+    });
+}
 
 // ---------------- Menu open/close listener ----------------
 
@@ -77,6 +212,24 @@ public:
             e->menuName != CHARSHEET_MENU_SHOWFACTIONS &&
             e->menuName != UILIST_MENU_NAME) {
             LOG("Menu {} : {}", e->opening ? "OPEN" : "CLOSE", e->menuName.c_str());
+        }
+
+        // Reset immédiat du state LB si un menu "piégeur" s'ouvre pendant LB
+        // maintenu. Ces menus filtrent les events ButtonEvent, donc on ne verra
+        // jamais le "LB released" : g_lbHeld resterait à true indéfiniment.
+        // On force le reset dès l'ouverture pour couper court au bug.
+        if (e->opening && g_lbHeld.load()) {
+            if (e->menuName == RE::DialogueMenu::MENU_NAME ||
+                e->menuName == RE::MessageBoxMenu::MENU_NAME ||
+                e->menuName == RE::LoadingMenu::MENU_NAME ||
+                e->menuName == RE::FaderMenu::MENU_NAME ||
+                e->menuName == RE::Console::MENU_NAME ||
+                e->menuName == RE::SleepWaitMenu::MENU_NAME ||
+                e->menuName == RE::TutorialMenu::MENU_NAME ||
+                e->menuName == RE::BookMenu::MENU_NAME) {
+                LOG("GAMEPAD: '{}' opening with LB held — preemptive reset", e->menuName.c_str());
+                ResetLbStateMainThread("menu-preempt");
+            }
         }
 
         // Si un menu bloquant le mouvement ouvre pendant un autowalk, stopper
@@ -831,6 +984,7 @@ public:
                     if (lbDown) {
                         g_lbHeld.store(true);
                         g_lbWasModifier.store(false);
+                        g_lbLastSeenPressedMs.store(PluginNowMs());  // pour le stuck watcher
                         // Désactiver les contrôles pendant LB pour que les boutons
                         // de combo (A/B/X/Y/etc) ne déclenchent pas leur action
                         // vanilla en parallèle de notre combo :
@@ -1608,23 +1762,41 @@ public:
             // Dans l'inventaire/conteneur/marchand/magie/favoris, F a une autre
             // signification (toggle favorite SkyUI, etc.) et ne change pas la camera,
             // donc on ne doit pas annoncer "First/Third person" dans ces contextes.
+            //
+            // Approche (même logique que le combo gamepad LB+POV) : on fait
+            // NOUS-MÊMES le toggle via ForceFirst/ThirdPerson, on annonce le
+            // nouvel état, et on consomme l'event pour éviter que le moteur
+            // fasse un second toggle (double bascule = pas de changement visible).
+            //
+            // Pourquoi pas laisser le moteur faire : avant, on faisait AddTask +
+            // IsInFirstPerson() pour lire l'état "après" le moteur. Mais selon le
+            // timing des ticks, AddTask s'exécutait PARFOIS avant que le toggle
+            // moteur soit appliqué -> annonce inversée. En faisant le toggle
+            // nous-mêmes et en consommant l'event, on élimine la course.
             if (code == RE::BSKeyboardDevice::Keys::kF) {
                 auto* ui = RE::UI::GetSingleton();
                 const bool inGame = ui && !ui->GameIsPaused();
                 if (inGame) {
-                    // Délai court pour laisser le jeu changer la caméra avant de lire
-                    auto* task = SKSE::GetTaskInterface();
-                    if (task) {
-                        task->AddTask([]() {
-                            auto* camera = RE::PlayerCamera::GetSingleton();
-                            if (camera) {
-                                bool fp = camera->IsInFirstPerson();
-                                Speak(fp ? L"First person" : L"Third person");
-                            }
-                        });
+                    auto* camera = RE::PlayerCamera::GetSingleton();
+                    if (camera) {
+                        if (camera->IsInFirstPerson()) {
+                            camera->ForceThirdPerson();
+                            Speak(L"Third person");
+                        } else {
+                            camera->ForceFirstPerson();
+                            Speak(L"First person");
+                        }
                     }
+                    // Consommer l'event pour empêcher le moteur de re-toggler.
+                    // Le const sur a_event est un artefact de l'API SKSE — les
+                    // plugins peuvent modifier l'event en place pour "absorber"
+                    // un input (même logique que pour LB dans un menu item).
+                    auto* mutableBtn = const_cast<RE::ButtonEvent*>(btn);
+                    mutableBtn->value = 0.0f;
+                    mutableBtn->heldDownSecs = 0.0f;
                 }
-                // Ne pas 'continue' — laisser le jeu traiter F normalement
+                // En menu (Inventaire, etc.) on laisse F passer pour que le
+                // favorite SkyUI fonctionne normalement.
             }
 
             // H = stats contextuelles (en jeu: vitals, en inventaire: or/poids)
@@ -2081,6 +2253,7 @@ SKSEPluginLoad(const SKSE::LoadInterface* skse) {
 
         if (msg->type == SKSE::MessagingInterface::kInputLoaded) {
             RegisterInputListener();
+            StartLbStuckWatcher();  // polling LB stuck (bug: dialogue forcé pendant LB maintenu)
         }
 
         // Après chargement d'une sauvegarde : remettre SpeedMult à 100 + re-remap sprint
