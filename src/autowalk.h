@@ -65,6 +65,21 @@ static RE::TESQuest* FindAutoWalkQuest() {
     return nullptr;
 }
 
+// =============================================================================
+// DEBUG FLAGS - Tests de rollback anti-crash BSShaderAccumulator (2026-04-20)
+// =============================================================================
+// Pour identifier laquelle de ces 3 differences v1.3 -> v1.5 declenche le crash,
+// on desactive chacune independamment. Remettre a true quand le coupable est
+// identifie pour restaurer le comportement normal.
+//
+// Pour reactiver : changer chaque flag a 'true' et rebuild.
+// Cote Papyrus (autowalk/SkyrimTTS_AutoWalk.psc) : des lignes 'ROLLBACK test'
+// commentent StopCombat/StopCombatAlarm et le Disable/Delete du XMarker. Pour
+// restaurer, decommenter ces blocs dans le .psc et recompiler.
+// =============================================================================
+static constexpr bool g_autoWalkEnableStuckRecovery = true;   // v1.5: true. rollback: pas de SetAIDriven toggle toutes les 4s
+static constexpr bool g_autoWalkEnableXMarkerDelete = true;   // v1.5: true. rollback: pas de Disable+Delete du temp marker C++
+
 static std::atomic_bool g_autoWalking{false};
 static std::wstring     g_autoWalkTarget;
 static RE::FormID       g_autoWalkTargetID{0};
@@ -470,7 +485,7 @@ static void StartAutoWalkMonitor() {
                     //          les animations, mais nécessaire pour les blocages
                     //          coriaces.
                     //   - 10s : on abandonne, l'autowalk est vraiment coincé.
-                    if (g_autoWalkStuckTimer > 4.0f && s_recoveryAttempt == 0) {
+                    if (g_autoWalkEnableStuckRecovery && g_autoWalkStuckTimer > 4.0f && s_recoveryAttempt == 0) {
                         LOG("AutoWalk: stuck for 4s, gentle recovery (re-apply flags + EvaluatePackage)");
                         // Remettre les flags du char controller : au cas où ils auraient
                         // été effacés par un ragdoll, une transition de cellule ou une
@@ -483,7 +498,7 @@ static void StartAutoWalkMonitor() {
                         }
                         player->EvaluatePackage();
                         s_recoveryAttempt = 1;
-                    } else if (g_autoWalkStuckTimer > 6.0f && s_recoveryAttempt == 1) {
+                    } else if (g_autoWalkEnableStuckRecovery && g_autoWalkStuckTimer > 6.0f && s_recoveryAttempt == 1) {
                         LOG("AutoWalk: still stuck at 6s, hard recovery (full AIDriven toggle)");
                         // Toggle complet : dernier recours avant d'abandonner. Plus
                         // risqué car peut perturber char controller / animations,
@@ -516,11 +531,389 @@ static void StartAutoWalkMonitor() {
     });
 }
 
+// =============================================================================
+// DIAG-CRASH : dump de l'etat du joueur/scenegraph pour traquer le crash BSShaderAccumulator.
+// Appele juste avant le dispatch (tag="PRE-DISPATCH") puis en continu apres le dispatch
+// (tag="T+XXXms") par le CrashDiagPoll thread. Si un champ bascule entre deux appels,
+// on le verra dans les logs juste avant le crash.
+// IMPORTANT : doit tourner sur le main thread (AddTask), jamais sur un jthread.
+// =============================================================================
+static void AutoWalkRunCrashDiag(RE::FormID targetFormID, bool useCoords,
+                                 float posX, float posY, float posZ, const char* tag) {
+    auto* p = RE::PlayerCharacter::GetSingleton();
+    if (!p) {
+        LOG("AutoWalk DIAG [{}]: Player singleton is NULL !!!", tag);
+        return;
+    }
+
+    auto* body3D = p->Get3D();
+    auto* charCtrl = p->GetCharController();
+    auto* cell = p->GetParentCell();
+    auto pos = p->GetPosition();
+    bool posValid = !std::isnan(pos.x) && !std::isnan(pos.y) && !std::isnan(pos.z);
+    auto* process = p->GetActorRuntimeData().currentProcess;
+
+    auto* ui = RE::UI::GetSingleton();
+    bool loadingOpen = ui && ui->IsMenuOpen(RE::LoadingMenu::MENU_NAME);
+    bool faderOpen = ui && ui->IsMenuOpen("Fader Menu");
+    bool anyMenuOpen = ui && ui->GameIsPaused();
+
+    LOG("=== AutoWalk DIAG [{}] ===", tag);
+    LOG("  [Player core]");
+    LOG("    Singleton:          OK");
+    LOG("    3D model:           {}", body3D ? "OK" : "NULL !!!");
+    LOG("    Char controller:    {}", charCtrl ? "OK" : "NULL !!!");
+    LOG("    Position:           ({:.1f},{:.1f},{:.1f}) valid={}",
+        pos.x, pos.y, pos.z, posValid);
+    LOG("    currentProcess:     {}", process ? "OK" : "NULL !!!");
+    LOG("    Race:               {}",
+        p->GetRace() && p->GetRace()->GetName() ? p->GetRace()->GetName() : "?");
+
+    LOG("  [Player state]");
+    LOG("    IsDead:             {}", p->IsDead());
+    LOG("    IsInCombat:         {}", p->IsInCombat());
+    LOG("    IsOnMount:          {}", p->IsOnMount());
+    LOG("    IsSneaking:         {}", p->IsSneaking());
+    LOG("    IsInKillMove:       {}", p->IsInKillMove());
+    LOG("    IsAIEnabled:        {}", p->IsAIEnabled());
+    if (auto* avo = p->AsActorValueOwner()) {
+        LOG("    Health:             {:.0f}/{:.0f}",
+            avo->GetActorValue(RE::ActorValue::kHealth),
+            avo->GetPermanentActorValue(RE::ActorValue::kHealth));
+        LOG("    SpeedMult:          current={:.0f} base={:.0f}",
+            avo->GetActorValue(RE::ActorValue::kSpeedMult),
+            avo->GetBaseActorValue(RE::ActorValue::kSpeedMult));
+    }
+
+    LOG("  [Cell / world]");
+    LOG("    Parent cell:        {} ({})",
+        cell ? "OK" : "NULL !!!",
+        cell && cell->GetName() ? cell->GetName() : "?");
+    LOG("    Cell attached:      {}",
+        cell ? (cell->IsAttached() ? "yes" : "no (loading?)") : "N/A");
+    LOG("    Cell interior:      {}",
+        cell ? (cell->IsInteriorCell() ? "yes" : "no (exterior)") : "N/A");
+    if (auto* worldspace = p->GetWorldspace()) {
+        LOG("    Worldspace:         {}",
+            worldspace->GetName() ? worldspace->GetName() : "?");
+    }
+
+    LOG("  [UI / context]");
+    LOG("    LoadingMenu open:   {}", loadingOpen);
+    LOG("    Fader Menu open:    {}", faderOpen);
+    LOG("    Game paused:        {}", anyMenuOpen);
+
+    LOG("  [Char controller state]");
+    if (charCtrl) {
+        const char* stateStr = "?";
+        switch (charCtrl->context.currentState) {
+            case RE::hkpCharacterStateType::kOnGround: stateStr = "OnGround"; break;
+            case RE::hkpCharacterStateType::kJumping:  stateStr = "Jumping"; break;
+            case RE::hkpCharacterStateType::kInAir:    stateStr = "InAir"; break;
+            case RE::hkpCharacterStateType::kClimbing: stateStr = "Climbing"; break;
+            case RE::hkpCharacterStateType::kSwimming: stateStr = "Swimming"; break;
+            default: break;
+        }
+        LOG("    State:              {} (raw={})",
+            stateStr, static_cast<int>(charCtrl->context.currentState));
+        LOG("    wantState:          {}", static_cast<int>(charCtrl->wantState));
+    }
+
+    LOG("  [AI / package]");
+    if (process) {
+        if (auto* pkg = process->GetRunningPackage()) {
+            LOG("    Running package:    formID=0x{:08X} type={}",
+                pkg->GetFormID(),
+                static_cast<int>(pkg->packData.packType.underlying()));
+        } else {
+            LOG("    Running package:    NONE");
+        }
+    } else {
+        LOG("    Running package:    N/A (no process)");
+    }
+
+    LOG("  [Target]");
+    if (targetFormID != 0) {
+        auto* tform = RE::TESForm::LookupByID(targetFormID);
+        if (!tform) {
+            LOG("    FormID:             0x{:08X} (NOT FOUND !!!)", targetFormID);
+        } else {
+            auto* tref = tform->AsReference();
+            LOG("    FormID:             0x{:08X} type={}",
+                targetFormID, static_cast<int>(tform->GetFormType()));
+            LOG("    IsReference:        {}", tref ? "yes" : "no");
+            if (tref) {
+                auto tp = tref->GetPosition();
+                auto* tcell = tref->GetParentCell();
+                LOG("    Target position:    ({:.1f},{:.1f},{:.1f})", tp.x, tp.y, tp.z);
+                LOG("    Target cell:        {} ({})",
+                    tcell ? "OK" : "NULL",
+                    tcell && tcell->GetName() ? tcell->GetName() : "?");
+                LOG("    Target 3D:          {}",
+                    tref->Get3D() ? "OK" : "NULL (not loaded)");
+                auto diff = pos - tp;
+                LOG("    Distance:           {:.1f}", diff.Length());
+            }
+        }
+    } else if (useCoords) {
+        LOG("    Coords mode:        pos=({:.1f},{:.1f},{:.1f})", posX, posY, posZ);
+    } else {
+        LOG("    No target specified");
+    }
+
+    // ============ DIAG ENRICHI POUR TRAQUER LE CRASH BSShaderAccumulator ============
+    // Instruction qui crashe = and dword ptr [rax+0xF4] avec rax=0.
+    // Offset 0xF4 = NiAVObject::flags. Donc le moteur tente de modifier
+    // les flags d'un node 3D null pendant une passe de rendu/culling.
+    // On logue tous les etats critiques liees au 3D/fade/render.
+    LOG("  [DIAG-CRASH]");
+    try {
+        // --- Skeleton BSFadeNode du joueur : fade en cours ? ---
+        if (body3D) {
+            auto* fadeNode = body3D->AsFadeNode();
+            if (fadeNode) {
+                auto& rt = fadeNode->GetRuntimeData();
+                LOG("    fadeNode.currentFade={:.3f} u128={:.3f} u140={:.3f}",
+                    rt.currentFade, rt.unk128, rt.unk140);
+                LOG("    fadeNode.flags152/153/154/155={:02X}/{:02X}/{:02X}/{:02X}",
+                    (int)rt.unk152, (int)rt.unk153, (int)rt.unk154, (int)rt.unk155);
+            }
+            // --- Scan des enfants du skeleton : y a-t-il des nullptr ou flags aberrants ? ---
+            auto* node = body3D->AsNode();
+            if (node) {
+                auto& children = node->GetChildren();
+                int nullCount = 0;
+                int totalCount = static_cast<int>(children.size());
+                for (std::uint32_t i = 0; i < children.size(); ++i) {
+                    if (!children[i]) nullCount++;
+                }
+                LOG("    skeleton.children total={} null={} selfFlags={:08X}",
+                    totalCount, nullCount, body3D->GetFlags().underlying());
+
+                // --- Dump recursif des enfants du skeleton : nom + type + flags + pointeur. ---
+                // Si un enfant devient null d'un tick au suivant, on le verra. On se limite au
+                // premier niveau (pas recursif profond) pour ne pas noyer le log.
+                for (std::uint32_t i = 0; i < children.size() && i < 32; ++i) {
+                    auto& ch = children[i];
+                    if (!ch) {
+                        LOG("      child[{}]=NULL", i);
+                    } else {
+                        const char* cname = ch->name.empty() ? "?" : ch->name.c_str();
+                        LOG("      child[{}] name='{}' flags={:08X} ptr={:p}",
+                            i, cname, ch->GetFlags().underlying(), static_cast<void*>(ch.get()));
+                    }
+                }
+            }
+        } else {
+            LOG("    skeleton.3D=NULL (player has no 3D model)");
+        }
+    } catch (...) { LOG("    [diag skeleton] exception"); }
+
+    try {
+        // --- Actor flags internes (delayUpdateScenegraph, resetAI, etc.) ---
+        auto& rt = p->GetActorRuntimeData();
+        LOG("    actor.boolBits={:08X} boolFlags={:08X} criticalStage={}",
+            rt.boolBits.underlying(), rt.boolFlags.underlying(),
+            static_cast<int>(rt.criticalStage.underlying()));
+    } catch (...) { LOG("    [diag actor flags] exception"); }
+
+    try {
+        // --- Char controller detail (state, want state, fall time, havok) ---
+        if (charCtrl) {
+            LOG("    cc.flags={:08X} fallTime={:.2f} speedPct={:.3f} scale={:.2f}",
+                charCtrl->flags.underlying(), charCtrl->fallTime,
+                charCtrl->speedPct, charCtrl->scale);
+        }
+    } catch (...) { LOG("    [diag cc detail] exception"); }
+
+    try {
+        // --- Camera state (transition, zoom) ---
+        auto* cam = RE::PlayerCamera::GetSingleton();
+        if (cam) {
+            int camStateId = cam->currentState ? static_cast<int>(cam->currentState->id) : -1;
+            LOG("    cam.state={} idleTimer={:.2f} yaw={:.3f} bowZoom={} weapSheath={}",
+                camStateId, cam->idleTimer, cam->yaw,
+                cam->bowZoomedIn, cam->isWeapSheathed);
+        }
+    } catch (...) { LOG("    [diag camera] exception"); }
+
+    try {
+        // --- Process + package detail ---
+        if (process) {
+            auto& pkg = process->currentPackage;
+            LOG("    pkg.cur={:08X} target={:08X} procIdx={} startT={:.2f}",
+                pkg.package ? pkg.package->GetFormID() : 0,
+                pkg.target.native_handle(),
+                pkg.currentProcedureIndex, pkg.packageStartTime);
+            LOG("    pkg.modFlags={:08X} modIntFlag={:04X} actorPkgFlags={:02X}",
+                pkg.modifiedPackageFlag, pkg.modifiedInterruptFlag,
+                pkg.actorPackageFlags.underlying());
+
+            // MiddleHigh (update 3D pending, killmove, furniture...)
+            if (auto* mh = process->middleHigh) {
+                LOG("    mh.update3D={:02X} alphaMult={:.2f} killMoveT={:.2f} forceNextUpdate={}",
+                    mh->update3DModel.underlying(), mh->alphaMult,
+                    mh->killMoveTimer, mh->forceNextUpdate);
+                LOG("    mh.cc={} weapBone={} headNode={} furnID={} occupiedFurn={:08X}",
+                    mh->charController.get() ? "ok" : "null",
+                    mh->weaponBone ? "ok" : "null",
+                    mh->headNode ? "ok" : "null",
+                    mh->currentFurnitureMarkerID,
+                    mh->occupiedFurniture.native_handle());
+            }
+            // High (fade, voice, door approach)
+            if (auto* h = process->high) {
+                LOG("    hi.fadeState={} fadeTrigger={:08X} maxAlpha={:.2f} approachDoor={}",
+                    static_cast<int>(h->fadeState.underlying()),
+                    h->fadeTrigger ? h->fadeTrigger->GetFormID() : 0,
+                    h->maxAlpha, h->approachingAutoTeleportDoor);
+                LOG("    hi.voiceState={} voiceT={:.2f} greetingPC={} talkingToPC={}",
+                    static_cast<int>(h->voiceState.underlying()),
+                    h->voiceTimer, h->greetingPlayer, h->talkingToPC);
+            }
+        }
+    } catch (...) { LOG("    [diag process] exception"); }
+
+    try {
+        // --- Cell detail (state, detached, flags) ---
+        if (cell) {
+            LOG("    cell.state={} detached={} flags={:04X}",
+                static_cast<int>(cell->cellState.underlying()),
+                cell->cellDetached,
+                cell->cellFlags.underlying());
+        }
+    } catch (...) { LOG("    [diag cell detail] exception"); }
+
+    try {
+        // --- Main state (freeze, onIdle, reload) ---
+        auto* main = RE::Main::GetSingleton();
+        if (main) {
+            LOG("    main.gameActive={} onIdle={} freezeTime={} freezeNext={} reloadContent={} resetGame={} quitGame={}",
+                main->gameActive, main->onIdle,
+                main->freezeTime, main->freezeNextFrame,
+                main->reloadContent, main->resetGame, main->quitGame);
+        }
+    } catch (...) { LOG("    [diag main] exception"); }
+
+    try {
+        // --- UI stack (menus en cours) ---
+        auto* ui2 = RE::UI::GetSingleton();
+        if (ui2) {
+            LOG("    ui.stack={} pauses={} itemMenus={} modal={} closingAll={} visible={}",
+                ui2->menuStack.size(),
+                ui2->numPausesGame, ui2->numItemMenus,
+                static_cast<int>(ui2->modal),
+                static_cast<int>(ui2->closingAllMenus),
+                static_cast<int>(ui2->menuSystemVisible));
+        }
+    } catch (...) { LOG("    [diag ui] exception"); }
+
+    try {
+        // --- ProcessLists (charge NPC, queues de tâches) ---
+        auto* pl = RE::ProcessLists::GetSingleton();
+        if (pl) {
+            LOG("    pl.actors high={} mh={} ml={} low={}",
+                pl->highActorHandles.size(),
+                pl->middleHighActorHandles.size(),
+                pl->middleLowActorHandles.size(),
+                pl->lowActorHandles.size());
+            LOG("    pl.runSched={} runMov={} runAnim={} magicEff={}",
+                pl->runSchedules, pl->runMovement, pl->runAnimations,
+                pl->magicEffects.size());
+        }
+    } catch (...) { LOG("    [diag processlists] exception"); }
+
+    try {
+        // --- Time / calendar (pour correler avec autres events) ---
+        auto* cal = RE::Calendar::GetSingleton();
+        if (cal) {
+            LOG("    time.hour={:.3f} days={:.3f} scale={:.1f}",
+                cal->GetHour(), cal->rawDaysPassed, cal->GetTimescale());
+        }
+    } catch (...) { LOG("    [diag time] exception"); }
+
+    LOG("=== END AutoWalk DIAG [{}] ===", tag);
+}
+
+// =============================================================================
+// CRASH DIAG POLL : thread dedie qui loggue l'etat du joueur en continu apres le
+// dispatch pour capturer le moment exact ou un champ bascule et cause le crash.
+//
+// Cadence :
+//   - Premieres 3s : toutes les 100ms (capture fine)
+//   - Apres 3s     : toutes les 500ms (moins fin, ne sature pas le log)
+//   - Arret        : quand g_autoWalking devient false OU apres 60s max
+// =============================================================================
+static std::jthread g_autoWalkCrashDiag;
+
+static void StartAutoWalkCrashDiagPoll(RE::FormID targetFormID, bool useCoords,
+                                       float posX, float posY, float posZ) {
+    // Arreter un eventuel poll precedent (safety)
+    if (g_autoWalkCrashDiag.joinable()) {
+        g_autoWalkCrashDiag.request_stop();
+        g_autoWalkCrashDiag.join();
+    }
+
+    g_autoWalkCrashDiag = std::jthread([targetFormID, useCoords, posX, posY, posZ](std::stop_token stoken) {
+        auto start = std::chrono::steady_clock::now();
+        int tickCount = 0;
+        while (!stoken.stop_requested()) {
+            auto now = std::chrono::steady_clock::now();
+            auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - start).count();
+
+            // Stop conditions
+            if (!g_autoWalking.load()) break;
+            if (elapsedMs > 60000) break;  // 60s max
+
+            // Log en fonction de l'age
+            int sleepMs = (elapsedMs < 3000) ? 100 : 500;
+            std::this_thread::sleep_for(std::chrono::milliseconds(sleepMs));
+            if (stoken.stop_requested()) break;
+
+            // Dispatcher le dump sur le main thread
+            auto* taskIf = SKSE::GetTaskInterface();
+            if (!taskIf) continue;
+            long elapsedCapture = static_cast<long>(elapsedMs);
+            taskIf->AddTask([targetFormID, useCoords, posX, posY, posZ, elapsedCapture]() {
+                if (!g_autoWalking.load()) return;
+                char tag[32];
+                std::snprintf(tag, sizeof(tag), "T+%ldms", elapsedCapture);
+                AutoWalkRunCrashDiag(targetFormID, useCoords, posX, posY, posZ, tag);
+            });
+            tickCount++;
+        }
+        LOG("AutoWalk CrashDiagPoll: stopped after {} ticks", tickCount);
+    });
+}
+
+// =============================================================================
+// ANTI-REBOND : empeche deux dispatches rapproches sur le meme FormID.
+// Bien qu'un dispatch unique puisse aussi crasher, la rafale de dispatches rapides
+// observee dans certains crash logs (20 dispatches en 20s) augmente nettement les
+// chances de crash, probablement en empilant des EvaluatePackage mal finalises.
+// Fenetre minimale : 500ms entre deux dispatches.
+// =============================================================================
+static std::atomic<int64_t> g_autoWalkLastDispatchMs{0};
+static constexpr int64_t kAutoWalkMinDispatchGapMs = 500;
+
 // Appelle OnWalkToTarget sur le script Papyrus de la quete AutoWalk
 // Si posX/posY/posZ sont fournis (non-zero), le FormID est passé à 0 et le Papyrus
 // utilise les coordonnées directement (mode FF* pour objets dynamiques).
 static void StartAutoWalk(RE::FormID targetFormID, float stopDistance = 100.0f,
                           float posX = 0.f, float posY = 0.f, float posZ = 0.f) {
+    // Anti-rebond : si moins de 500ms depuis le dernier dispatch, on refuse.
+    {
+        int64_t now = AutoWalkNowMs();
+        int64_t last = g_autoWalkLastDispatchMs.load();
+        int64_t gap = now - last;
+        if (last > 0 && gap < kAutoWalkMinDispatchGapMs) {
+            LOG("AutoWalk: REJECTED - too soon since last dispatch ({}ms ago, min={}ms)",
+                gap, kAutoWalkMinDispatchGapMs);
+            return;
+        }
+        g_autoWalkLastDispatchMs.store(now);
+    }
+
     auto* task = SKSE::GetTaskInterface();
     if (!task) return;
 
@@ -603,9 +996,12 @@ static void StartAutoWalk(RE::FormID targetFormID, float stopDistance = 100.0f,
             quest->IsRunning(), quest->GetFormID(), handle);
 
         // === DIAGNOSTIC PRE-DISPATCH ===
-        // Pour detecter si le crash vient d'un etat instable du jeu au moment
-        // du dispatch. Si les joueurs crashent, on verra dans leurs logs quel
-        // champ etait null/invalide juste avant le crash.
+        // Factorise dans AutoWalkRunCrashDiag() pour pouvoir etre re-appele par
+        // le CrashDiagPoll thread apres le dispatch (toutes les 100ms les 3 premieres
+        // secondes, puis 500ms). Si un champ bascule entre deux ticks, on le voit
+        // juste avant le crash.
+        AutoWalkRunCrashDiag(targetFormID, useCoords, posX, posY, posZ, "PRE-DISPATCH");
+#if 0
         {
             auto* p = RE::PlayerCharacter::GetSingleton();
             if (!p) {
@@ -726,9 +1122,167 @@ static void StartAutoWalk(RE::FormID targetFormID, float stopDistance = 100.0f,
                     LOG("    No target specified");
                 }
 
+                // ============ DIAG ENRICHI POUR TRAQUER LE CRASH BSShaderAccumulator ============
+                // Instruction qui crashe = and dword ptr [rax+0xF4] avec rax=0.
+                // Offset 0xF4 = NiAVObject::flags. Donc le moteur tente de modifier
+                // les flags d'un node 3D null pendant une passe de rendu/culling.
+                // On logue tous les etats critiques liees au 3D/fade/render.
+                LOG("  [DIAG-CRASH]");
+                try {
+                    // --- Skeleton BSFadeNode du joueur : fade en cours ? ---
+                    if (body3D) {
+                        auto* fadeNode = body3D->AsFadeNode();
+                        if (fadeNode) {
+                            auto& rt = fadeNode->GetRuntimeData();
+                            LOG("    fadeNode.currentFade={:.3f} u128={:.3f} u140={:.3f}",
+                                rt.currentFade, rt.unk128, rt.unk140);
+                            LOG("    fadeNode.flags152/153/154/155={:02X}/{:02X}/{:02X}/{:02X}",
+                                (int)rt.unk152, (int)rt.unk153, (int)rt.unk154, (int)rt.unk155);
+                        }
+                        // --- Scan des enfants du skeleton : y a-t-il des nullptr ou flags aberrants ? ---
+                        auto* node = body3D->AsNode();
+                        if (node) {
+                            auto& children = node->GetChildren();
+                            int nullCount = 0;
+                            int totalCount = static_cast<int>(children.size());
+                            for (std::uint32_t i = 0; i < children.size(); ++i) {
+                                if (!children[i]) nullCount++;
+                            }
+                            LOG("    skeleton.children total={} null={} selfFlags={:08X}",
+                                totalCount, nullCount, body3D->GetFlags().underlying());
+                        }
+                    } else {
+                        LOG("    skeleton.3D=NULL (player has no 3D model)");
+                    }
+                } catch (...) { LOG("    [diag skeleton] exception"); }
+
+                try {
+                    // --- Actor flags internes (delayUpdateScenegraph, resetAI, etc.) ---
+                    auto& rt = p->GetActorRuntimeData();
+                    LOG("    actor.boolBits={:08X} boolFlags={:08X} criticalStage={}",
+                        rt.boolBits.underlying(), rt.boolFlags.underlying(),
+                        static_cast<int>(rt.criticalStage.underlying()));
+                } catch (...) { LOG("    [diag actor flags] exception"); }
+
+                try {
+                    // --- Char controller detail (state, want state, fall time, havok) ---
+                    if (charCtrl) {
+                        LOG("    cc.flags={:08X} fallTime={:.2f} speedPct={:.3f} scale={:.2f}",
+                            charCtrl->flags.underlying(), charCtrl->fallTime,
+                            charCtrl->speedPct, charCtrl->scale);
+                    }
+                } catch (...) { LOG("    [diag cc detail] exception"); }
+
+                try {
+                    // --- Camera state (transition, zoom) ---
+                    auto* cam = RE::PlayerCamera::GetSingleton();
+                    if (cam) {
+                        int camStateId = cam->currentState ? static_cast<int>(cam->currentState->id) : -1;
+                        LOG("    cam.state={} idleTimer={:.2f} yaw={:.3f} bowZoom={} weapSheath={}",
+                            camStateId, cam->idleTimer, cam->yaw,
+                            cam->bowZoomedIn, cam->isWeapSheathed);
+                    }
+                } catch (...) { LOG("    [diag camera] exception"); }
+
+                try {
+                    // --- Process + package detail ---
+                    if (process) {
+                        auto& pkg = process->currentPackage;
+                        LOG("    pkg.cur={:08X} target={:08X} procIdx={} startT={:.2f}",
+                            pkg.package ? pkg.package->GetFormID() : 0,
+                            pkg.target.native_handle(),
+                            pkg.currentProcedureIndex, pkg.packageStartTime);
+                        LOG("    pkg.modFlags={:08X} modIntFlag={:04X} actorPkgFlags={:02X}",
+                            pkg.modifiedPackageFlag, pkg.modifiedInterruptFlag,
+                            pkg.actorPackageFlags.underlying());
+
+                        // MiddleHigh (update 3D pending, killmove, furniture...)
+                        if (auto* mh = process->middleHigh) {
+                            LOG("    mh.update3D={:02X} alphaMult={:.2f} killMoveT={:.2f} forceNextUpdate={}",
+                                mh->update3DModel.underlying(), mh->alphaMult,
+                                mh->killMoveTimer, mh->forceNextUpdate);
+                            LOG("    mh.cc={} weapBone={} headNode={} furnID={} occupiedFurn={:08X}",
+                                mh->charController.get() ? "ok" : "null",
+                                mh->weaponBone ? "ok" : "null",
+                                mh->headNode ? "ok" : "null",
+                                mh->currentFurnitureMarkerID,
+                                mh->occupiedFurniture.native_handle());
+                        }
+                        // High (fade, voice, door approach)
+                        if (auto* h = process->high) {
+                            LOG("    hi.fadeState={} fadeTrigger={:08X} maxAlpha={:.2f} approachDoor={}",
+                                static_cast<int>(h->fadeState.underlying()),
+                                h->fadeTrigger ? h->fadeTrigger->GetFormID() : 0,
+                                h->maxAlpha, h->approachingAutoTeleportDoor);
+                            LOG("    hi.voiceState={} voiceT={:.2f} greetingPC={} talkingToPC={}",
+                                static_cast<int>(h->voiceState.underlying()),
+                                h->voiceTimer, h->greetingPlayer, h->talkingToPC);
+                        }
+                    }
+                } catch (...) { LOG("    [diag process] exception"); }
+
+                try {
+                    // --- Cell detail (state, detached, flags) ---
+                    if (cell) {
+                        LOG("    cell.state={} detached={} flags={:04X}",
+                            static_cast<int>(cell->cellState.underlying()),
+                            cell->cellDetached,
+                            cell->cellFlags.underlying());
+                    }
+                } catch (...) { LOG("    [diag cell detail] exception"); }
+
+                try {
+                    // --- Main state (freeze, onIdle, reload) ---
+                    auto* main = RE::Main::GetSingleton();
+                    if (main) {
+                        LOG("    main.gameActive={} onIdle={} freezeTime={} freezeNext={} reloadContent={} resetGame={} quitGame={}",
+                            main->gameActive, main->onIdle,
+                            main->freezeTime, main->freezeNextFrame,
+                            main->reloadContent, main->resetGame, main->quitGame);
+                    }
+                } catch (...) { LOG("    [diag main] exception"); }
+
+                try {
+                    // --- UI stack (menus en cours) ---
+                    auto* ui2 = RE::UI::GetSingleton();
+                    if (ui2) {
+                        LOG("    ui.stack={} pauses={} itemMenus={} modal={} closingAll={} visible={}",
+                            ui2->menuStack.size(),
+                            ui2->numPausesGame, ui2->numItemMenus,
+                            static_cast<int>(ui2->modal),
+                            static_cast<int>(ui2->closingAllMenus),
+                            static_cast<int>(ui2->menuSystemVisible));
+                    }
+                } catch (...) { LOG("    [diag ui] exception"); }
+
+                try {
+                    // --- ProcessLists (charge NPC, queues de tâches) ---
+                    auto* pl = RE::ProcessLists::GetSingleton();
+                    if (pl) {
+                        LOG("    pl.actors high={} mh={} ml={} low={}",
+                            pl->highActorHandles.size(),
+                            pl->middleHighActorHandles.size(),
+                            pl->middleLowActorHandles.size(),
+                            pl->lowActorHandles.size());
+                        LOG("    pl.runSched={} runMov={} runAnim={} magicEff={}",
+                            pl->runSchedules, pl->runMovement, pl->runAnimations,
+                            pl->magicEffects.size());
+                    }
+                } catch (...) { LOG("    [diag processlists] exception"); }
+
+                try {
+                    // --- Time / calendar (pour correler avec autres events) ---
+                    auto* cal = RE::Calendar::GetSingleton();
+                    if (cal) {
+                        LOG("    time.hour={:.3f} days={:.3f} scale={:.1f}",
+                            cal->GetHour(), cal->rawDaysPassed, cal->GetTimescale());
+                    }
+                } catch (...) { LOG("    [diag time] exception"); }
+
                 LOG("=== END PRE-DISPATCH DIAG ===");
             }
         }
+#endif
 
         RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback;
         bool ok = vm->DispatchMethodCall(
@@ -747,6 +1301,8 @@ static void StartAutoWalk(RE::FormID targetFormID, float stopDistance = 100.0f,
             if (p) g_autoWalkLastPos = p->GetPosition();
             LOG("AutoWalk: started toward FormID {:08X}, distance {}", targetFormID, stopDistance);
             StartAutoWalkMonitor();
+            // Lance le poll de crash diag (se arrete auto quand g_autoWalking=false ou apres 60s)
+            StartAutoWalkCrashDiagPoll(targetFormID, useCoords, posX, posY, posZ);
         } else {
             LOG("AutoWalk: DispatchMethodCall failed");
             Speak(L"AutoWalk error");
@@ -762,6 +1318,12 @@ static void StopAutoWalk() {
     if (g_autoWalkMonitor.joinable()) {
         g_autoWalkMonitor.request_stop();
         g_autoWalkMonitor.join();
+    }
+
+    // Arreter le poll de crash diag
+    if (g_autoWalkCrashDiag.joinable()) {
+        g_autoWalkCrashDiag.request_stop();
+        g_autoWalkCrashDiag.join();
     }
 
     auto* task = SKSE::GetTaskInterface();
@@ -805,7 +1367,9 @@ static void StopAutoWalk() {
         );
 
         // Supprimer le temp marker C++ s'il existe (mode boussole/fallback)
-        if (g_autoWalkTempMarker != 0) {
+        // ROLLBACK test : g_autoWalkEnableXMarkerDelete=false garde le marker en vie.
+        // Les markers s'accumulent mais c'est leger et on elimine un suspect du crash.
+        if (g_autoWalkEnableXMarkerDelete && g_autoWalkTempMarker != 0) {
             auto* markerForm = RE::TESForm::LookupByID(g_autoWalkTempMarker);
             auto* markerRef = markerForm ? markerForm->As<RE::TESObjectREFR>() : nullptr;
             if (markerRef) {
@@ -813,6 +1377,9 @@ static void StopAutoWalk() {
                 markerRef->SetDelete(true);
                 LOG("AutoWalk: deleted C++ temp marker {:08X}", g_autoWalkTempMarker);
             }
+            g_autoWalkTempMarker = 0;
+        } else if (g_autoWalkTempMarker != 0) {
+            LOG("AutoWalk: kept C++ temp marker {:08X} alive (rollback test)", g_autoWalkTempMarker);
             g_autoWalkTempMarker = 0;
         }
 
@@ -852,16 +1419,22 @@ static RE::FormID CreateTempMarkerAt(const RE::NiPoint3& pos) {
     marker->SetObjectReference(static_cast<RE::TESBoundObject*>(xmarkerBase));
     marker->data.location = pos;
 
-    // Placer dans la cellule du joueur
+    // Placer dans la cellule du joueur via MoveTo (attache le ref a la cellule
+    // et enregistre dans la grille), puis deplacer via SetPosition qui fait un
+    // update complet (contrairement a l'ecriture directe de data.location qui
+    // peut ne pas notifier le systeme de navmesh).
     auto* cell = player->GetParentCell();
     if (cell) {
-        // Utiliser MoveTo pour placer correctement
         marker->MoveTo(player);
-        marker->data.location = pos;
+        marker->SetPosition(pos);
+        // Forcer le chargement du 3D : sans ca le package Travel refuse de
+        // pathfinder vers la ref et le joueur reste stuck (desired speed=0).
+        marker->Load3D(false);
     }
 
-    LOG("AutoWalk: created temp marker FormID={:08X} at ({:.0f}, {:.0f}, {:.0f})",
-        marker->GetFormID(), pos.x, pos.y, pos.z);
+    LOG("AutoWalk: created temp marker FormID={:08X} at ({:.0f}, {:.0f}, {:.0f}) 3D={}",
+        marker->GetFormID(), pos.x, pos.y, pos.z,
+        marker->Is3DLoaded() ? "loaded" : "not loaded");
 
     return marker->GetFormID();
 }
@@ -1081,6 +1654,18 @@ static RE::TESObjectREFR* TryFindQuestDoorByLocation() {
     }
     bool playerInInterior = playerCell->IsInteriorCell();
     auto* playerLoc = player->GetCurrentLocation();
+
+    // Short-circuit : si la cible est DANS LA MEME CELLULE que le joueur, le routing
+    // par porte n'a aucun sens — le moteur peut pathfinder directement vers elle
+    // dans la piece courante. Cas typique : Yarle dans la salle du tr�ne de Fort-Dragon,
+    // joueur aussi dans la salle du tr�ne. Notre code tentait sinon de router vers
+    // une porte (Quartiers du jarl) parce que plusieurs sous-cellules de Fort-Dragon
+    // partagent la meme location parente — mauvaise porte choisie.
+    if (targetCell && targetCell == playerCell) {
+        LOG("LocRouting: target in same cell as player ('{}'), skipping routing -> FormID direct",
+            targetCell->GetName() ? targetCell->GetName() : "?");
+        return nullptr;  // caller retombera sur Cas 1 (FormID direct vers le ref)
+    }
 
     // Bug Skyrim : juste apres une transition de cellule, playerCell->IsInteriorCell()
     // peut retourner false alors qu'on est deja a l'interieur du donjon. Pour fiabiliser,
@@ -1653,6 +2238,29 @@ static void ToggleAutoWalkImpl() {
         auto* playerCell = playerForCell ? playerForCell->GetParentCell() : nullptr;
         bool playerInInterior = playerCell && playerCell->IsInteriorCell();
 
+        // === NOUVEAU : routing par hierarchie de location pour les cibles de quete
+        // Si la cible courante est un objectif de quete (Irileth, Cicero, etc.) et
+        // qu'on a une porte de routing identifiee, on l'utilise comme cible
+        // intermediaire au lieu de tomber dans le coord mode du cas 3 qui bug
+        // sur les PNJ dont la cellule n'est pas chargee.
+        // Coherent avec le systeme location-based deja utilise pour les FF*.
+        bool currentIsQuest = false;
+        if (g_scanIndex >= 0 && g_scanIndex < static_cast<int>(g_scannedFiltered.size())) {
+            currentIsQuest = (g_scannedFiltered[g_scanIndex]->category == kCatQuests);
+        }
+        if (currentIsQuest) {
+            auto* locDoor = TryFindQuestDoorByLocation();
+            if (locDoor) {
+                targetID = locDoor->GetFormID();
+                LOG("AutoWalk: non-FF quest target -> routed via location, target door FormID={:08X} '{}'",
+                    targetID,
+                    locDoor->GetDisplayFullName() ? locDoor->GetDisplayFullName() : "?");
+                StartAutoWalk(targetID, 100.0f, 0.f, 0.f, 0.f);
+                return;
+            }
+            LOG("AutoWalk: non-FF quest, location routing returned nullptr, falling back to regular non-FF logic");
+        }
+
         if (finalRef && finalCell) {
             // Cas 1 : cell connue → FormID brut, le moteur gère la nav interior→exterior
             LOG("AutoWalk: non-FF ref, cell='{}' known → FormID mode (engine handles nav)",
@@ -1660,14 +2268,259 @@ static void ToggleAutoWalkImpl() {
             StartAutoWalk(targetID, 100.0f, 0.f, 0.f, 0.f);
         } else if (finalRef && playerInInterior) {
             // Cas 2 : cell cible null + joueur en interior → FormID brut (engine via exits)
+            //
+            // GARDE ANTI-CRASH : si la cible est extremement lointaine (> 30000u)
+            // ET n'a pas son 3D charge, le dispatch FormID mode peut causer un
+            // crash BSShaderAccumulator (cas vu sur "Visit the College of
+            // Winterhold" depuis Arcadia's Cauldron a 153000u — crash dump :
+            // acces a rax+0xF4 avec rax=0, skeleton.nif + BSShaderAccumulator).
+            // On bascule alors en coord mode sur la position cible, qui est sur
+            // (meme principe que le Cas 3 qui marche deja en exterieur).
+            auto* playerForDist = RE::PlayerCharacter::GetSingleton();
+            auto tpos = finalRef->GetPosition();
+            float tdist = 0;
+            if (playerForDist) {
+                auto pp = playerForDist->GetPosition();
+                float dx = tpos.x - pp.x, dy = tpos.y - pp.y;
+                tdist = std::sqrt(dx * dx + dy * dy);
+            }
+            bool crashRisk = !finalRef->Is3DLoaded() && tdist > 30000.0f;
+            if (crashRisk) {
+                LOG("AutoWalk: non-FF ref cell=NULL, player in interior BUT target too far ({:.0f}u) and 3D not loaded -> coord mode (anti-crash)",
+                    tdist);
+                StartAutoWalk(targetID, 100.0f, tpos.x, tpos.y, tpos.z);
+                return;
+            }
             LOG("AutoWalk: non-FF ref cell=NULL, player in interior → FormID mode (engine navigates via exits)");
             StartAutoWalk(targetID, 100.0f, 0.f, 0.f, 0.f);
         } else if (finalRef) {
-            // Cas 3 : cell cible null + joueur exterior → coord mode (anti-crash Alvor)
-            auto pos = finalRef->GetPosition();
-            LOG("AutoWalk: non-FF ref cell=NULL, player in exterior → coord mode pos=({:.0f},{:.0f},{:.0f})",
-                pos.x, pos.y, pos.z);
-            StartAutoWalk(targetID, 100.0f, pos.x, pos.y, pos.z);
+            // Cas 3 : cell cible null + joueur exterior.
+            //
+            // Probleme : coord mode vers finalRef->GetPosition() ne marche pas
+            // pour les PNJ distants (Irileth en voyage de quete, Cicero avec sa
+            // caravane) -- le moteur ne peut pas pathfinder sur 14000+ unites en
+            // coord mode sans navmesh intermediaire charge.
+            //
+            // Solution hierarchique (par ordre de preference) :
+            //   3a. PNJ proche (< 8000u) et meme worldspace racine -> coord direct.
+            //   3b. Lire le heading du marker compass quete/questDoor du HUD
+            //       (tjrs a jour, c'est ce que Skyrim utilise pour guider le
+            //       joueur voyant) et placer un XMarker temporaire a 6000u dans
+            //       cette direction. Navigation "par bonds" : joueur arrive,
+            //       re-toggle, nouveau bond. Garanti dans le navmesh charge.
+            //   3c. Fallback NAM0 (horseLocMarker, plus fiable que MNAM) de la
+            //       location cible, avec check IsDisabled + distance max.
+            //   3d. Dernier recours : coord direct (comportement historique).
+            //
+            // ATTENTION : worldLocMarker (MNAM) est BUGUE dans beaucoup de LCTN
+            // vanilla (ex: WhiterunWatchtowerLocation pointe sur FortGreymoor
+            // a 20000u de la). On ne l'utilise QU'apres validation stricte.
+
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            if (!player) {
+                StartAutoWalk(targetID, 100.0f, 0.f, 0.f, 0.f);
+                return;
+            }
+            auto playerPos = player->GetPosition();
+            auto* playerWS = player->GetWorldspace();
+            auto targetPos = finalRef->GetPosition();
+
+            auto dist2D = [](const RE::NiPoint3& a, const RE::NiPoint3& b) {
+                float dx = a.x - b.x, dy = a.y - b.y;
+                return std::sqrt(dx * dx + dy * dy);
+            };
+
+            auto worldspacesCompatible = [](RE::TESWorldSpace* a, RE::TESWorldSpace* b) -> bool {
+                if (!a || !b) return true;
+                if (a == b) return true;
+                auto* ra = a;
+                while (ra->parentWorld) ra = ra->parentWorld;
+                auto* rb = b;
+                while (rb->parentWorld) rb = rb->parentWorld;
+                return ra == rb;
+            };
+
+            constexpr float kNearCoordRadius = 8000.0f;
+            constexpr float kHopDistance = 6000.0f;
+            constexpr float kMaxMarkerDist = 30000.0f;
+
+            // ============ 3.0 Joueur dans un sous-worldspace walled (ville) ============
+            // Blancherive, Solitude, Vendeaume, etc. sont des worldspaces separes
+            // du Tamriel racine. Leur navmesh s'arrete aux murs. Si la cible est
+            // hors de ce sous-worldspace, il faut d'abord sortir par la porte
+            // principale. On cherche une porte dans TOUTES les cellules attachees
+            // de la grille + persistentCell + cellule du joueur, dont la destination
+            // est dans un worldspace different du notre.
+            auto* playerCellNow = player->GetParentCell();
+            auto* targetWS = finalRef->GetWorldspace();
+            if (playerWS && playerWS->parentWorld != nullptr &&
+                (!targetWS || !worldspacesCompatible(playerWS, targetWS) || targetWS != playerWS)) {
+                RE::TESObjectREFR* exitDoor = nullptr;
+                float bestExitDist = 999999.0f;
+
+                auto scanCellForExit = [&](RE::TESObjectCELL* c) {
+                    if (!c) return;
+                    for (auto& refHandle : c->GetRuntimeData().references) {
+                        auto refPtr = refHandle.get();
+                        if (!refPtr) continue;
+                        auto* base = refPtr->GetBaseObject();
+                        if (!base || base->GetFormType() != RE::FormType::Door) continue;
+                        auto* et = refPtr->extraList.GetByType<RE::ExtraTeleport>();
+                        if (!et || !et->teleportData) continue;
+                        auto destDoor = et->teleportData->linkedDoor.get();
+                        if (!destDoor) continue;
+                        auto* destWS = destDoor->GetWorldspace();
+                        if (!destWS || destWS == playerWS) continue;  // on veut sortir
+                        float dx = refPtr->GetPositionX() - playerPos.x;
+                        float dy = refPtr->GetPositionY() - playerPos.y;
+                        float d = std::sqrt(dx * dx + dy * dy);
+                        if (d < bestExitDist) {
+                            bestExitDist = d;
+                            exitDoor = refPtr;
+                        }
+                    }
+                };
+
+                // 1) Cellule courante du joueur
+                scanCellForExit(playerCellNow);
+                // 2) Persistent cell du worldspace (markers, portes globales)
+                scanCellForExit(playerWS->persistentCell);
+                // 3) Toutes les cellules attachees de la grille active
+                auto* tes = RE::TES::GetSingleton();
+                if (tes && tes->gridCells) {
+                    for (uint32_t gx = 0; gx < tes->gridCells->length; gx++) {
+                        for (uint32_t gy = 0; gy < tes->gridCells->length; gy++) {
+                            auto* c = tes->gridCells->GetCell(gx, gy);
+                            if (c && c->IsAttached() && c != playerCellNow) scanCellForExit(c);
+                        }
+                    }
+                }
+
+                if (exitDoor) {
+                    LOG("AutoWalk case 3.0: walled city exit found, door FormID={:08X} '{}' dist={:.0f}",
+                        exitDoor->GetFormID(),
+                        exitDoor->GetDisplayFullName() ? exitDoor->GetDisplayFullName() : "?",
+                        bestExitDist);
+                    StartAutoWalk(exitDoor->GetFormID(), 100.0f, 0.f, 0.f, 0.f);
+                    return;
+                }
+                LOG("AutoWalk case 3.0: player in walled worldspace '{}' but no exit door found after scanning grid+persistent",
+                    playerWS->GetName() ? playerWS->GetName() : "?");
+            }
+
+            // ============ 3a. Cible proche -> coord direct ============
+            bool targetPosPlausible =
+                (targetPos.x != 0 || targetPos.y != 0) &&
+                worldspacesCompatible(playerWS, finalRef->GetWorldspace());
+            if (targetPosPlausible && dist2D(playerPos, targetPos) <= kNearCoordRadius) {
+                LOG("AutoWalk case 3a: target close ({:.0f}u) -> coord mode pos=({:.0f},{:.0f},{:.0f})",
+                    dist2D(playerPos, targetPos), targetPos.x, targetPos.y, targetPos.z);
+                StartAutoWalk(targetID, 100.0f, targetPos.x, targetPos.y, targetPos.z);
+                return;
+            }
+
+            // ============ 3b. Compass heading + XMarker par bonds ============
+            float compassHeading = -1.0f;
+            auto* ui = RE::UI::GetSingleton();
+            if (ui) {
+                auto hudMenu = ui->GetMenu(RE::HUDMenu::MENU_NAME);
+                if (hudMenu && hudMenu->uiMovie) {
+                    RE::GFxValue hudRoot;
+                    if (hudMenu->uiMovie->GetVariable(&hudRoot, "_root.HUDMovieBaseInstance") && SafeIsObject(hudRoot)) {
+                        RE::GFxValue dataArr;
+                        if (hudRoot.GetMember("CompassTargetDataA", &dataArr) && SafeIsArray(dataArr)) {
+                            RE::GFxValue qtVal, qdVal;
+                            float qt = -1, qd = -1;
+                            if (hudRoot.GetMember("CompassMarkerQuest", &qtVal) && SafeIsNumber(qtVal))
+                                qt = static_cast<float>(SafeGetNumber(qtVal));
+                            if (hudRoot.GetMember("CompassMarkerQuestDoor", &qdVal) && SafeIsNumber(qdVal))
+                                qd = static_cast<float>(SafeGetNumber(qdVal));
+
+                            uint32_t arrSize = SafeGetArraySize(dataArr);
+                            float questFallback = -1.0f;
+                            for (uint32_t i = 0; i + 3 < arrSize; i += 4) {
+                                RE::GFxValue hVal, tVal;
+                                dataArr.GetElement(i, &hVal);
+                                dataArr.GetElement(i + 2, &tVal);
+                                if (!SafeIsNumber(tVal) || !SafeIsNumber(hVal)) continue;
+                                float tp = static_cast<float>(SafeGetNumber(tVal));
+                                float h  = static_cast<float>(SafeGetNumber(hVal));
+                                if (tp == qd) { compassHeading = h; break; }
+                                if (tp == qt && questFallback < 0) questFallback = h;
+                            }
+                            if (compassHeading < 0 && questFallback >= 0) {
+                                compassHeading = questFallback;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (compassHeading >= 0) {
+                float rad = compassHeading * 3.14159265f / 180.0f;
+                RE::NiPoint3 hopPos;
+                hopPos.x = playerPos.x + std::sin(rad) * kHopDistance;
+                hopPos.y = playerPos.y + std::cos(rad) * kHopDistance;
+                hopPos.z = playerPos.z;
+
+                RE::FormID markerID = CreateTempMarkerAt(hopPos);
+                if (markerID != 0) {
+                    g_autoWalkTempMarker = markerID;
+                    LOG("AutoWalk case 3b: compass hop marker FormID={:08X} heading={:.1f} deg at ({:.0f},{:.0f},{:.0f})",
+                        markerID, compassHeading, hopPos.x, hopPos.y, hopPos.z);
+                    // Dispatch en coord mode (pos x/y/z != 0) pour que le package
+                    // Papyrus utilise SetPosition du marker plutot que ForceRefTo,
+                    // ce qui contourne le probleme du Travel package qui echoue
+                    // silencieusement sur un XMarker runtime FF*.
+                    StartAutoWalk(markerID, 150.0f, hopPos.x, hopPos.y, hopPos.z);
+                    return;
+                }
+                LOG("AutoWalk case 3b: compass heading={:.1f} deg but CreateTempMarkerAt failed", compassHeading);
+            } else {
+                LOG("AutoWalk case 3b: no compass quest marker available");
+            }
+
+            // ============ 3c. Fallback NAM0 / MNAM validated ============
+            auto validateMarker = [&](RE::TESObjectREFR* m) -> bool {
+                if (!m) return false;
+                if (m->IsDisabled() || m->IsDeleted() || m->IsMarkedForDeletion()) return false;
+                if (!worldspacesCompatible(playerWS, m->GetWorldspace())) return false;
+                return dist2D(playerPos, m->GetPosition()) <= kMaxMarkerDist;
+            };
+
+            RE::TESObjectREFR* routeMarker = nullptr;
+            const char* routeReason = "?";
+            auto* loc = finalRef->GetCurrentLocation();
+            if (!loc) loc = finalRef->GetEditorLocation();
+            for (int depth = 0; loc && depth < 5 && !routeMarker; ++depth) {
+                auto hlm = loc->horseLocMarker.get();
+                auto wlm = loc->worldLocMarker.get();
+                auto* hRaw = hlm.get();
+                auto* wRaw = wlm.get();
+                LOG("AutoWalk routing: loc[{}]='{}' NAM0={} MNAM={} parent={}",
+                    depth,
+                    loc->GetName() ? loc->GetName() : "?",
+                    hRaw ? (hRaw->IsDisabled() ? "disabled" : hRaw->IsDeleted() ? "deleted" : "ok") : "null",
+                    wRaw ? (wRaw->IsDisabled() ? "disabled" : wRaw->IsDeleted() ? "deleted" : "ok") : "null",
+                    loc->parentLoc && loc->parentLoc->GetName() ? loc->parentLoc->GetName() : "null");
+
+                if (validateMarker(hRaw)) { routeMarker = hRaw; routeReason = "NAM0"; break; }
+                if (validateMarker(wRaw)) { routeMarker = wRaw; routeReason = "MNAM"; break; }
+                loc = loc->parentLoc;
+            }
+
+            if (routeMarker) {
+                auto mp = routeMarker->GetPosition();
+                LOG("AutoWalk case 3c: fallback {} FormID={:08X} pos=({:.0f},{:.0f},{:.0f}) dist={:.0f}",
+                    routeReason, routeMarker->GetFormID(), mp.x, mp.y, mp.z, dist2D(playerPos, mp));
+                StartAutoWalk(routeMarker->GetFormID(), 100.0f, 0.f, 0.f, 0.f);
+                return;
+            }
+
+            // ============ 3d. Dernier recours : coord direct ============
+            LOG("AutoWalk case 3d: no compass/NAM0/MNAM usable -> last-resort coord mode pos=({:.0f},{:.0f},{:.0f})",
+                targetPos.x, targetPos.y, targetPos.z);
+            StartAutoWalk(targetID, 100.0f, targetPos.x, targetPos.y, targetPos.z);
         } else {
             // Pas de ref du tout : dispatch brut (peut crasher mais on n'a rien d'autre)
             StartAutoWalk(targetID, 100.0f, 0.f, 0.f, 0.f);
