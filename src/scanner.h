@@ -1367,23 +1367,51 @@ static void DoScanInternal() {
                 obj.empty = false;
                 obj.dead = false;
 
-                // Éviter les doublons (même texte d'objectif)
+                // Suffixe desambiguisant quand un objectif a plusieurs targets
+                // (ex: "Rejoignez Irileth a la tour de guet" peut avoir target[0]=Irileth
+                // et target[1]=la tour de guet). On suffixe avec le nom de chaque cible
+                // pour que le joueur distingue les deux entrees dans le scanner.
+                if (questObj->numTargets > 1) {
+                    std::wstring suffix;
+                    // Priorite : nom de la ref, sinon nom de l'alias
+                    const char* refName = targetRef->GetDisplayFullName();
+                    if (refName && *refName) {
+                        suffix = Utf8ToWString(refName);
+                    } else if (target->alias < quest->aliases.size()) {
+                        auto* alias = quest->aliases[target->alias];
+                        if (alias && !alias->aliasName.empty()) {
+                            suffix = Utf8ToWString(alias->aliasName.c_str());
+                        }
+                    }
+                    if (!suffix.empty()) {
+                        obj.name += L" (" + suffix + L")";
+                    }
+                }
+
+                // Déduplication par FormID + nom du target. Un objectif peut avoir
+                // plusieurs targets = plusieurs entrees distinctes (ex: Irileth +
+                // Tour de guet). Avant on dedupliquait par nom seul, ce qui fusionnait
+                // les 2 targets d'un meme objectif. Avec le suffixe ajoute ci-dessus,
+                // les noms sont differents et donc les deux targets coexistent.
                 bool duplicate = false;
                 for (auto& existing : g_scannedAll) {
-                    if (existing.category == kCatQuests && existing.name == obj.name) {
+                    if (existing.category == kCatQuests &&
+                        existing.formID == obj.formID &&
+                        existing.name == obj.name) {
                         duplicate = true;
                         break;
                     }
                 }
                 if (duplicate) {
-                    LOG("Scanner: skipping duplicate quest objective '{}'", objText);
+                    LOG("Scanner: skipping duplicate quest target '{}' FormID={:08X}",
+                        objText, obj.formID);
                     continue;
                 }
 
                 g_scannedAll.push_back(std::move(obj));
                 questTargetResolved = true;  // au moins un target a abouti → pas de PASS 1 nécessaire
-                LOG("Scanner: quest objective '{}' at distance {} (target FormID={:08X})",
-                    objText, dist, targetRef->GetFormID());
+                LOG("Scanner: quest objective '{}' target[{}] FormID={:08X} dist={:.0f}",
+                    objText, t, targetRef->GetFormID(), dist);
             }
             }  // fin de la boucle des 2 passes (CTDA puis fallback sans CTDA)
         }
@@ -1489,11 +1517,24 @@ static void DoScanInternal() {
                     scanLocations(worldSpace->persistentCell);
                 }
 
-                // Scanner les autres worldspaces (villes, DLC)
+                // Calculer la racine du worldspace du joueur (Tamriel, Solstheim,
+                // Sovngarde...). On ne scannera QUE les worldspaces qui partagent
+                // la meme racine, pour eviter que des markers de Solstheim ou de
+                // Tamriel apparaissent quand le joueur est dans Sovngarde (bug
+                // rapporte par Josh).
+                auto* playerRoot = worldSpace;
+                while (playerRoot->parentWorld) playerRoot = playerRoot->parentWorld;
+
+                // Scanner les autres worldspaces (villes, sous-worldspaces) de la
+                // meme racine uniquement.
                 auto& worldSpaces = dataHandler->GetFormArray<RE::TESWorldSpace>();
                 for (auto* ws : worldSpaces) {
                     if (!ws || ws == worldSpace) continue;
                     if (!ws->persistentCell) continue;
+                    // Remonter la hierarchie parentWorld du ws candidat
+                    auto* wsRoot = ws;
+                    while (wsRoot->parentWorld) wsRoot = wsRoot->parentWorld;
+                    if (wsRoot != playerRoot) continue;  // racine differente → skip
                     scanLocations(ws->persistentCell);
                 }
             }
