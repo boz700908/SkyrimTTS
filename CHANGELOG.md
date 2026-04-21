@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.6 (unreleased)
+
+### New features
+- Scanner: containers and corpses the player has already opened are now announced with a `looted` flag, independently of whether they still contain items. Useful to avoid re-visiting a container or corpse you already checked. The flag persists across saves (stored in the SKSE cosave). When the game engine respawns a reference (e.g. dungeon chests refill after ~30 days), the `looted` flag is automatically cleared for that reference, so the scanner correctly announces the re-filled chest as unlooted. A safety fallback also clears any entry older than 30 in-game days in case the engine reset event was missed
+
 ## v1.5 (2026-04-19)
 
 ### Mod support

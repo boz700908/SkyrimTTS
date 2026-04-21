@@ -1,5 +1,7 @@
 #pragma once
 
+#include "loot_tracker.h"
+
 // SCANNER D'OBJETS — Navigation par catégories pour joueurs aveugles
 
 // --- Catégories ---
@@ -378,8 +380,15 @@ static bool MatchesSubcategory(const ScannedObject& obj) {
         if (g_scanSubcategory == ScanSubcategory::TypeA) return obj.locked;
         if (g_scanSubcategory == ScanSubcategory::TypeB) return obj.isCellDoor;
     } else if (g_scanCategory == kCatCorpses) {
-        if (g_scanSubcategory == ScanSubcategory::TypeA) return !obj.empty;  // unlooted = non-vide
-        if (g_scanSubcategory == ScanSubcategory::TypeB) return obj.empty;   // looted = vide
+        // Sous-filtre cadavres : base sur l'etat "deja fouille par le joueur"
+        // (via LootTracker) plutot que sur "conteneur vide" (obj.empty).
+        // Un cadavre peut etre non-vide mais deja fouille (le joueur a laisse
+        // des objets sans valeur) — il compte comme "Looted". Inversement un
+        // cadavre vide peut ne jamais avoir ete ouvert (mort custom, event) —
+        // il compte comme "Unlooted".
+        bool looted = LootTracker::GetSingleton()->IsLooted(obj.formID);
+        if (g_scanSubcategory == ScanSubcategory::TypeA) return !looted;  // Unlooted
+        if (g_scanSubcategory == ScanSubcategory::TypeB) return looted;   // Looted
     } else if (g_scanCategory == kCatActivators) {
         if (g_scanSubcategory == ScanSubcategory::TypeA) return obj.isFurniture;
         if (g_scanSubcategory == ScanSubcategory::TypeB) return !obj.isFurniture;
@@ -549,6 +558,16 @@ static std::wstring FormatObjectAnnounce(const ScannedObject& obj) {
     if (!obj.doorDestination.empty()) msg += L", to " + obj.doorDestination;
     if (obj.locked) msg += L", locked";
     if (obj.empty) msg += L", empty";
+
+    // Flag "deja fouille par le joueur" : s'applique aux conteneurs et cadavres.
+    // Indique au joueur qu'il a deja ouvert ce conteneur/cadavre au moins une
+    // fois, meme s'il n'en a rien pris (utile pour ne pas le re-visiter
+    // inutilement). Independant de obj.empty (qui regarde le contenu actuel).
+    // Voir src/loot_tracker.h pour la logique de persistance et respawn.
+    if ((obj.category == kCatContainers || obj.category == kCatCorpses) &&
+        LootTracker::GetSingleton()->IsLooted(obj.formID)) {
+        msg += L", looted";
+    }
 
     // Flag destructible : on ajoute le label ("Spider web", "Barricade", etc.)
     // seulement si différent du nom affiché (pour éviter "Spider web, spider web").

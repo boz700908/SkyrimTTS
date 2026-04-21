@@ -26,6 +26,7 @@
 #include "menu_training.h"
 #include "menu_console.h"
 #include "menu_character_sheet.h"
+#include "loot_tracker.h"
 #include "scanner.h"
 #include "autowalk.h"
 
@@ -308,6 +309,16 @@ public:
                 Speak(L"Container open");
                 QueueContainerRead();
                 StartContainerPolling();
+
+                // Marque le conteneur/cadavre comme fouille des l'ouverture.
+                // Meme si le joueur ne prend rien, il a deja "vu" le contenu,
+                // donc le marquer "looted" est pertinent pour eviter de le
+                // re-visiter. Le TESResetEvent nettoiera l'entree au respawn.
+                if (auto* ref = GetActiveContainerMenuRef()) {
+                    RE::FormID fid = ref->GetFormID();
+                    LootTracker::GetSingleton()->MarkLooted(fid);
+                    LOG("LootTracker: marked {:08X} as looted (ContainerMenu open)", fid);
+                }
             } else {
                 g_containerOpen.store(false);
                 StopContainerPolling();
@@ -2066,6 +2077,111 @@ static void RegisterFurnitureListener() {
     }
 }
 
+// =============================================================================
+// LootTracker event sinks — nettoie le flag "looted" quand le moteur respawn
+// une ref (TESResetEvent), et marque via take quand un item bouge depuis un
+// conteneur vers le joueur (TESContainerChangedEvent) — utile pour les loots
+// via QuickLoot IE / RE qui ne passent pas par le ContainerMenu standard.
+// =============================================================================
+class LootResetListener : public RE::BSTEventSink<RE::TESResetEvent> {
+public:
+    RE::BSEventNotifyControl ProcessEvent(const RE::TESResetEvent* e,
+        RE::BSTEventSource<RE::TESResetEvent>*) override {
+        if (!e || !e->object) return RE::BSEventNotifyControl::kContinue;
+        RE::FormID fid = e->object->GetFormID();
+        LootTracker::GetSingleton()->Clear(fid);
+        LOG("LootTracker: reset event for {:08X}, cleared", fid);
+        return RE::BSEventNotifyControl::kContinue;
+    }
+};
+
+class LootContainerChangedListener : public RE::BSTEventSink<RE::TESContainerChangedEvent> {
+public:
+    RE::BSEventNotifyControl ProcessEvent(const RE::TESContainerChangedEvent* e,
+        RE::BSTEventSource<RE::TESContainerChangedEvent>*) override {
+        if (!e) return RE::BSEventNotifyControl::kContinue;
+
+        // On s'interesse aux transferts VERS le joueur (take) depuis un conteneur
+        // ou un cadavre. Le event payload contient des FormID, pas des refs, donc
+        // on doit faire LookupByID pour savoir si la source est un conteneur.
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        if (!player) return RE::BSEventNotifyControl::kContinue;
+
+        // Si la destination n'est pas le joueur, ignorer.
+        if (e->newContainer != player->GetFormID()) {
+            return RE::BSEventNotifyControl::kContinue;
+        }
+
+        // La source doit exister (pas 0) et etre un conteneur ou un acteur mort.
+        if (e->oldContainer == 0) return RE::BSEventNotifyControl::kContinue;
+
+        auto* srcForm = RE::TESForm::LookupByID(e->oldContainer);
+        if (!srcForm) return RE::BSEventNotifyControl::kContinue;
+
+        auto* srcRef = srcForm->AsReference();
+        if (!srcRef) return RE::BSEventNotifyControl::kContinue;
+
+        // Ignorer le joueur lui-meme (swap inventory/hotkey, equip, etc.).
+        if (srcRef == player) return RE::BSEventNotifyControl::kContinue;
+
+        // Filtrage : accepter UNIQUEMENT les conteneurs et les acteurs morts.
+        // Sans ce filtre, recevoir une recompense de quete (PNJ vivant qui te
+        // donne un item) marquerait le PNJ comme "looted", et quand il mourrait
+        // plus tard, son cadavre s'annoncerait deja fouille sans avoir ete
+        // ouvert. On veut eviter ce faux positif.
+        auto* baseForm = srcRef->GetBaseObject();
+        bool isContainer = baseForm && baseForm->Is(RE::FormType::Container);
+        bool isDeadActor = false;
+        if (auto* actor = srcRef->As<RE::Actor>()) {
+            isDeadActor = actor->IsDead(false);
+        }
+        if (!isContainer && !isDeadActor) {
+            return RE::BSEventNotifyControl::kContinue;
+        }
+
+        LootTracker::GetSingleton()->MarkLooted(e->oldContainer);
+        LOG("LootTracker: marked {:08X} as looted (ContainerChanged take, {})",
+            e->oldContainer, isContainer ? "container" : "dead actor");
+        return RE::BSEventNotifyControl::kContinue;
+    }
+};
+
+static void RegisterLootListeners() {
+    auto* source = RE::ScriptEventSourceHolder::GetSingleton();
+    if (source) {
+        static LootResetListener resetListener;
+        source->AddEventSink(&resetListener);
+        LOG("LootResetListener registered");
+
+        static LootContainerChangedListener changedListener;
+        source->AddEventSink(&changedListener);
+        LOG("LootContainerChangedListener registered");
+    }
+}
+
+// =============================================================================
+// LootTracker SKSE serialization — persiste l'etat entre sauvegardes.
+// =============================================================================
+static void LootTrackerOnSave(SKSE::SerializationInterface* intf) {
+    LootTracker::GetSingleton()->Save(intf);
+}
+
+static void LootTrackerOnLoad(SKSE::SerializationInterface* intf) {
+    std::uint32_t type = 0;
+    std::uint32_t version = 0;
+    std::uint32_t length = 0;
+    while (intf->GetNextRecordInfo(type, version, length)) {
+        if (type == LootTracker::kRecordType) {
+            LootTracker::GetSingleton()->Load(intf, version);
+        }
+    }
+}
+
+static void LootTrackerOnRevert(SKSE::SerializationInterface*) {
+    LootTracker::GetSingleton()->ClearAll();
+    LOG("LootTracker: reverted (new game / exit to main menu)");
+}
+
 // ---------------- Plugin load ----------------
 
 // ---------------- MCM Papyrus native functions ----------------
@@ -2208,6 +2324,22 @@ SKSEPluginLoad(const SKSE::LoadInterface* skse) {
 
     SKSE::GetPapyrusInterface()->Register(MCMNative::BindPapyrusFunctions);
 
+    // Enregistre le LootTracker pour la persistance cosave. Le UniqueID est
+    // notre signature plugin (arbitraire mais doit rester stable entre versions
+    // pour que les saves se relisent correctement).
+    {
+        constexpr std::uint32_t kSkyrimNVDAUniqueID = 'SNVD';
+        auto* serial = SKSE::GetSerializationInterface();
+        if (serial) {
+            serial->SetUniqueID(kSkyrimNVDAUniqueID);
+            serial->SetSaveCallback(LootTrackerOnSave);
+            serial->SetLoadCallback(LootTrackerOnLoad);
+            serial->SetRevertCallback(LootTrackerOnRevert);
+            LOG("LootTracker: SKSE serialization registered (uniqueID=0x{:08X})",
+                kSkyrimNVDAUniqueID);
+        }
+    }
+
     SKSE::GetMessagingInterface()->RegisterListener([](SKSE::MessagingInterface::Message* msg) {
         if (!msg) return;
 
@@ -2239,6 +2371,7 @@ SKSEPluginLoad(const SKSE::LoadInterface* skse) {
             RegisterActivateListener();
             RegisterDeathListener();
             RegisterHitListener();
+            RegisterLootListeners();  // TESResetEvent + TESContainerChangedEvent
             // RegisterFurnitureListener();  // DÉSACTIVÉ POUR TEST
             InstallHUDAdvanceMovieHook();
             InstallConsoleAdvanceMovieHook();
