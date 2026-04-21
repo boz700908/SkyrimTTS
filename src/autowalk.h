@@ -67,9 +67,6 @@ static RE::TESQuest* FindAutoWalkQuest() {
 
 static std::atomic_bool g_autoWalking{false};
 static std::wstring     g_autoWalkTarget;
-static RE::FormID       g_autoWalkTargetID{0};
-static float            g_autoWalkStopDist{100.0f};
-static RE::NiPoint3     g_autoWalkTargetPos{0, 0, 0};  // pour le mode coordonnées
 
 // --- Routing de quete : nouvelle methode location-based ---
 // true  = essayer d'abord le routing par hierarchie de locations (BGSLocation::specialRefs,
@@ -81,13 +78,12 @@ static RE::NiPoint3     g_autoWalkTargetPos{0, 0, 0};  // pour le mode coordonn�
 // jamais bloque, ce flag est juste un kill switch global au cas ou.
 static constexpr bool g_useLocationRouting = true;
 
-// Cooldown de sécurité : empêche de lancer l'autowalk pendant la fenêtre
-// fragile après un load ou un changement de cellule. Pendant cette fenêtre,
-// le skeleton/shader du joueur est en cours de reconstruction et un
-// SetAIDriven déclenche un null pointer dans le pipeline de rendu (crashs
-// observés : thread worker, instruction `and [rax+0xF4],...` avec rax=0,
-// stack = BSFadeNode "Skeleton.nif" + BSShaderAccumulator + NiCamera).
-// Stocke le timestamp (ms depuis epoch) jusqu'auquel l'autowalk est bloqué.
+// Cooldown de securite : empeche de lancer l'autowalk pendant la fenetre
+// fragile apres un load ou un changement de cellule. On garde ce cooldown
+// meme apres le refactor f4access-style (zero mutation C++) car le dispatch
+// Papyrus fait quand meme EvaluatePackage cote script, qui peut encore
+// poser probleme si le skeleton/shader est en cours de reconstruction.
+// Stocke le timestamp (ms depuis epoch) jusqu'auquel l'autowalk est bloque.
 static std::atomic<int64_t> g_autoWalkUnsafeUntilMs{0};
 
 static int64_t AutoWalkNowMs() {
@@ -331,10 +327,6 @@ static void StartAutoWalk(RE::FormID targetFormID, float stopDistance = 100.0f,
 
     auto* task = SKSE::GetTaskInterface();
     if (!task) return;
-
-    g_autoWalkTargetID = targetFormID;
-    g_autoWalkStopDist = stopDistance;
-    g_autoWalkTargetPos = {posX, posY, posZ};  // stocker pour le moniteur
 
     // Si FormID dynamique (FF*), passer en mode coordonnées
     bool useCoords = (posX != 0.f || posY != 0.f || posZ != 0.f);
