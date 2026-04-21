@@ -1338,7 +1338,45 @@ public:
                     LOG("GAMEPAD: LB+0x{:04X} — combo non reconnu", gpCode);
                 }
 
-                // Lock enemy (appui seul sans LB)
+                // R3 (RightThumb) sans LB, hors menu : le moteur Skyrim a R3
+                // mappe sur kPOVSwitch par defaut, ce qui change la vue mais sans
+                // annonce -> joueur aveugle ne sait pas qu'il a change de POV
+                // (bug signale sur v1.5).
+                //
+                // Solution style "F au clavier" : on fait le toggle POV nous-memes
+                // avec annonce, et on consomme l'event pour que le moteur ne
+                // re-toggle pas par-dessus.
+                //
+                // Si R3 est aussi mappe sur LockEnemy dans le MCM (cas par defaut),
+                // on lance aussi le lock. Ainsi R3 fait : lock enemy + annonce POV.
+                if (gpCode == RE::BSWin32GamepadDevice::Keys::kRightThumb &&
+                    btn->IsDown() && !g_lbHeld.load() && !IsAnyMenuOpen()) {
+                    // Lock enemy si R3 est mappe dessus dans le MCM
+                    if (gpCode == keyLockEnemy) {
+                        LOG("GAMEPAD: R3 solo -> LockNearestEnemy");
+                        LockNearestEnemy();
+                    }
+                    // Toggle POV + annonce (remplace le comportement vanilla)
+                    auto* camera = RE::PlayerCamera::GetSingleton();
+                    if (camera) {
+                        if (camera->IsInFirstPerson()) {
+                            camera->ForceThirdPerson();
+                            Speak(L"Third person");
+                        } else {
+                            camera->ForceFirstPerson();
+                            Speak(L"First person");
+                        }
+                    }
+                    // Consommer l'event pour empecher le moteur de re-toggler.
+                    auto* mutableBtn = const_cast<RE::ButtonEvent*>(btn);
+                    mutableBtn->value = 0.0f;
+                    mutableBtn->heldDownSecs = 0.0f;
+                    LOG("GAMEPAD: R3 solo -> manual POV toggle + announce");
+                    continue;
+                }
+
+                // Lock enemy (appui seul sans LB) — si mappe sur un autre bouton
+                // que R3 (ex: D-pad comme dans le feedback joueur v1.5).
                 if (gpCode == keyLockEnemy && btn->IsDown() && !g_lbHeld.load()) {
                     if (!IsAnyMenuOpen()) {
                         LOG("GAMEPAD: LockEnemy → LockNearestEnemy");
