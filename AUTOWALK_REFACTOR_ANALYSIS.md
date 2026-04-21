@@ -9,25 +9,71 @@
 
 Le refactor f4access-style a été appliqué sur la branche Pyrhame. Résultat :
 
-- **Étapes complétées** : 1, 2, 3, 4, 5 (parties 1 et 2), 8, 9
-- **Étapes non faites** (reportées) : 6 (Scene.Start/Stop Papyrus), 7 (mode mounted réel)
+- **Étapes complétées** : 1, 2, 3, 4, 5, 6, 8, 9 (toutes les étapes code pur)
+- **Étapes non faites** (reportées) : **7 (Scene.Start/Stop — requires Creation Kit)**, 10 (mode mounted réel — feature future)
 - **autowalk.h** : passé de **2531 à ~1555 lignes** (-39%)
 - **Zéro mutation d'acteur C++** : plus aucun `SetAIDriven`, `EvaluatePackage`, création de ref, delete de ref
 - **Zéro thread de polling** : le monitor jthread et le crash-diag jthread sont supprimés
 - **Cancel input event-driven** via `AutoWalkInputUpdate()` dans `InputListener::ProcessEvent` (style f4access)
 - **Arrivée détectée côté Papyrus** via ModEvent `SkyrimNVDA_AutoWalkArrived`, orientation via `Actor.SetLookAt` natif
 - **Tests** : objet jeté au sol fonctionne, autowalk général stable, pas de régression observée
-- **Crash BSShaderAccumulator** : éliminé par construction (la classe de bug causée par mutation d'acteur pendant render pass n'est plus possible)
+- **Crash BSShaderAccumulator** : mitigé par construction (la classe de bug causée par mutation d'acteur pendant render pass n'est plus possible). Pas encore formellement "corrigé" faute d'heures de jeu cumulées.
 
 **Commits principaux** :
 - `0608a3b` — refactor principal (étapes 1-3, 5, 9)
 - `b8a7597` — étape 4 (suppression CreateTempMarkerAt)
+- `dca48e0` — cleanup variables mortes et commentaires obsolètes
 
 **Éléments C++ restants qui touchent à l'acteur** (conservés volontairement) :
 - `kTryStep` / `kCanJump` sur le char controller (flags physiques Havok, pas de l'AI — pas d'API Papyrus équivalente et pas impliqué dans la classe de crash)
 - `SetActorValue(kSpeedMult, base)` en pre-start (corrige un bug de vitesse lente post-load)
 
-Si l'étape 6 (Scene) est un jour faite, la pureté C++-messager sera parfaite. L'étape 7 (mounted) est une feature distincte, pas un refactor.
+---
+
+## PROCHAINE ÉTAPE ACTIONABLE : Étape 7 (Scene.Start/Stop) via Creation Kit
+
+Cette étape **nécessite l'ouverture de `SkyrimTTS_AutoWalk.esp` dans Creation Kit ou un MCP équivalent**. Elle est décrite en détail plus bas dans la section "Étape 7 — Add un vrai Scene.Start / Scene.Stop lifecycle". Résumé pour passage de contexte à un autre agent :
+
+### Ce qui existe déjà dans l'ESP
+- Quest `SkyrimTTS_AutoWalkQuest` avec aliases `DstMarker`, `Traveler`, et une **property Scene `WalkScene`** déclarée dans le .psc (ligne 6) **mais jamais démarrée à ce jour**.
+- Un Travel package est attaché à l'alias `Traveler` qui lit l'alias `DstMarker` comme destination.
+
+### Ce qu'il faut ajouter dans Creation Kit
+1. Sur la quest `SkyrimTTS_AutoWalkQuest`, créer (ou configurer, si elle existe déjà en forme vide) la Scene `WalkScene`.
+2. Dans la Scene, ajouter **une Phase** contenant :
+   - **Une Action** : Type = `Package`, Alias = `Traveler`, Package = le Travel package existant qui lit `DstMarker`.
+   - **End condition** : Package completed (le package s'arrête quand le joueur arrive à `DstMarker`).
+3. Sauvegarder l'ESP.
+
+### Ce qu'il faut changer dans `autowalk/SkyrimTTS_AutoWalk.psc`
+
+Dans `StartWalkToRef` (fonction existante) :
+- **Avant** : `Game.SetPlayerAIDriven(true)` + `PlayerRef.EvaluatePackage()`
+- **Après** : `Game.SetPlayerAIDriven(true)` + `WalkScene.Start()`
+- Garder `DstMarker.ForceRefTo(target)` avant le start (la Scene Travel phase lit l'alias).
+
+Dans `StopWalkingInternal` (fonction existante) :
+- **Avant** : `Game.SetPlayerAIDriven(false)` + `PlayerRef.EvaluatePackage()`
+- **Après** : `WalkScene.Stop()` + `Game.SetPlayerAIDriven(false)` + `PlayerRef.EvaluatePackage()` (belt-and-braces)
+- Ordre f4access : `CancelTimer → WalkScene.Stop() → SetPlayerAIDriven(false) → EvaluatePackage → DstMarker.Clear → reset state`
+
+Note Skyrim-specific : même avec un Scene, on garde `SetPlayerAIDriven(false)` comme belt-and-braces car le système Scene de Skyrim peut ne pas *toujours* release AIDriven (différence quirk-Papyrus vs Fallout 4).
+
+### Ce qu'il NE faut PAS changer côté C++
+Rien. Le C++ n'est pas impacté par cette étape. Toutes les modifs sont dans l'ESP et le .psc.
+
+### Comment valider après modification
+1. Recompiler le .psc → .pex (via Creation Kit ou Caprica)
+2. Tester :
+   - Autowalk vers un objet jeté au sol (valide le flux complet)
+   - Autowalk deux fois de suite rapidement (re-entry : doit stopper la première Scene puis relancer)
+   - Autowalk annulé par input joueur pendant le mouvement (Scene doit s'arrêter proprement)
+3. Vérifier dans Papyrus.log les traces `WalkScene.Start()` et `WalkScene.Stop()` — pas d'erreurs rouges.
+
+### Pourquoi cette étape vaut la peine d'être tentée
+- Standard Bethesda : API prévue pour orchestrer des packages AI temporaires.
+- Lifecycle start/stop bien défini vs notre méthode actuelle qui se repose sur `EvaluatePackage` pour abandonner le package.
+- **Pas un bugfix** : notre méthode actuelle marche. C'est une amélioration architecturale vers la pureté du pattern f4access.
 
 ---
 
