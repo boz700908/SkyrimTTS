@@ -65,27 +65,16 @@ static RE::TESQuest* FindAutoWalkQuest() {
     return nullptr;
 }
 
-// =============================================================================
-// DEBUG FLAGS - Tests de rollback anti-crash BSShaderAccumulator (2026-04-20)
-// =============================================================================
-// Pour identifier laquelle de ces 3 differences v1.3 -> v1.5 declenche le crash,
-// on desactive chacune independamment. Remettre a true quand le coupable est
-// identifie pour restaurer le comportement normal.
-//
-// Pour reactiver : changer chaque flag a 'true' et rebuild.
-// Cote Papyrus (autowalk/SkyrimTTS_AutoWalk.psc) : des lignes 'ROLLBACK test'
-// commentent StopCombat/StopCombatAlarm et le Disable/Delete du XMarker. Pour
-// restaurer, decommenter ces blocs dans le .psc et recompiler.
-// =============================================================================
-static constexpr bool g_autoWalkEnableStuckRecovery = true;   // v1.5: true. rollback: pas de SetAIDriven toggle toutes les 4s
-static constexpr bool g_autoWalkEnableXMarkerDelete = true;   // v1.5: true. rollback: pas de Disable+Delete du temp marker C++
+// Debug flag : conserve le temp marker XMarkerHeading cree pour le mode coords.
+// A garder a true en prod. Mettre a false uniquement pour tester si le marker
+// est impliquer dans un crash.
+static constexpr bool g_autoWalkEnableXMarkerDelete = true;
 
 static std::atomic_bool g_autoWalking{false};
 static std::wstring     g_autoWalkTarget;
 static RE::FormID       g_autoWalkTargetID{0};
 static float            g_autoWalkStopDist{100.0f};
 static RE::NiPoint3     g_autoWalkTargetPos{0, 0, 0};  // pour le mode coordonnées
-static std::jthread     g_autoWalkMonitor;
 
 // --- Routing de quete : nouvelle methode location-based ---
 // true  = essayer d'abord le routing par hierarchie de locations (BGSLocation::specialRefs,
@@ -127,20 +116,67 @@ static void AutoWalkArmSafetyCooldown(int64_t durationMs, const char* reason) {
         durationMs, reason, effectiveMs);
 }
 
-// Détection de blocage
-static RE::NiPoint3     g_autoWalkLastPos{0, 0, 0};
-static float            g_autoWalkStuckTimer{0.0f};
-static bool             g_autoWalkHasRepathed{false};
+// Forward declaration : definie plus bas apres StopAutoWalk.
+// Permet a AutoWalkInputUpdate d'etre defini avant DispatchPapyrusStop.
+static void DispatchPapyrusStop();
 
-// Vérifier si le joueur appuie sur une touche de mouvement
-static bool IsMovementInputActive() {
-    // Clavier : WASD, Escape, Space
-    if ((GetAsyncKeyState(0x57) & 0x8000) ||  // W
-        (GetAsyncKeyState(0x41) & 0x8000) ||  // A
-        (GetAsyncKeyState(0x53) & 0x8000) ||  // S
-        (GetAsyncKeyState(0x44) & 0x8000) ||  // D
-        (GetAsyncKeyState(0x1B) & 0x8000) ||  // Escape
-        (GetAsyncKeyState(0x20) & 0x8000)) {  // Space
+// =============================================================================
+// Annule l'autowalk si le joueur fait un input de mouvement.
+// Appele depuis InputListener::ProcessEvent (plugin.cpp) — style f4access :
+// pas de polling thread separe, on reagit a chaque event d'input reel.
+//
+// Clavier : WASD, Space, Escape, fleches
+// Gamepad : stick gauche deplace (seuil 0.3), A/B/Start/Back, D-pad
+//
+// Retourne true si on a annule l'autowalk, false sinon.
+// =============================================================================
+static bool AutoWalkInputUpdate(RE::InputEvent* const* a_event) {
+    if (!g_autoWalking.load()) return false;
+    if (!a_event || !*a_event) return false;
+
+    bool shouldCancel = false;
+
+    for (auto e = *a_event; e && !shouldCancel; e = e->next) {
+        auto type = e->GetEventType();
+
+        if (type == RE::INPUT_EVENT_TYPE::kButton) {
+            auto* btn = e->AsButtonEvent();
+            if (!btn || !btn->IsPressed()) continue;
+            const auto code = btn->GetIDCode();
+
+            if (btn->GetDevice() == RE::INPUT_DEVICE::kKeyboard) {
+                using K = RE::BSKeyboardDevice::Keys;
+                if (code == K::kW || code == K::kA || code == K::kS || code == K::kD ||
+                    code == K::kSpacebar || code == K::kEscape ||
+                    code == K::kUp || code == K::kDown || code == K::kLeft || code == K::kRight) {
+                    shouldCancel = true;
+                }
+            } else if (btn->GetDevice() == RE::INPUT_DEVICE::kGamepad) {
+                using G = RE::BSWin32GamepadDevice::Keys;
+                if (code == G::kA || code == G::kB || code == G::kStart || code == G::kBack ||
+                    code == G::kUp || code == G::kDown || code == G::kLeft || code == G::kRight) {
+                    shouldCancel = true;
+                }
+            }
+        } else if (type == RE::INPUT_EVENT_TYPE::kThumbstick) {
+            auto* stick = static_cast<RE::ThumbstickEvent*>(e);
+            // Seuil 0.3 : evite les faux positifs du stick au repos (drift).
+            // On ne reagit qu'au stick gauche (mouvement), pas au droit (camera).
+            if (stick && stick->IsLeft()) {
+                const float mag = std::sqrt(stick->xValue * stick->xValue +
+                                            stick->yValue * stick->yValue);
+                if (mag > 0.3f) {
+                    shouldCancel = true;
+                }
+            }
+        }
+    }
+
+    if (shouldCancel) {
+        Speak(L"Stopping");
+        g_autoWalking.store(false);
+        LOG("AutoWalk: cancelled by user input (event-driven)");
+        DispatchPapyrusStop();
         return true;
     }
     return false;
@@ -152,52 +188,23 @@ static void StopAutoWalk();
 // Temp marker C++ (mode boussole/fallback) — déclaré ici pour que StopAutoWalk puisse le cleanup
 static RE::FormID g_autoWalkTempMarker{0};
 
-// Sécurité : nettoyage COMPLET d'un autowalk potentiellement gravé dans la save
+// Sécurité : nettoyage d'un autowalk potentiellement gravé dans la save
 // (cas où le jeu a crashé pendant un autowalk → au reload la save contient
-// AIDriven=true, DstMarker set, IsWalking=true, Travel package actif → si on toggle
-// un nouvel autowalk, on superpose sur cet état bancal → crash immédiat).
+// AIDriven=true, DstMarker set, IsWalking=true, Travel package actif → si on
+// lance un nouvel autowalk, on superpose sur cet état bancal → crash immédiat).
 //
-// Stratégie en deux temps :
-//   1. IMMÉDIAT (safe, pas d'engine-side AI) : reset C++ rapide (SetAIDriven false,
-//      SpeedMult reset). Ces appels ne touchent pas au pathfinding ni au Travel
-//      package, donc safe même pendant la fenêtre fragile post-load.
-//   2. DIFFÉRÉ DE 3 SECONDES : dispatch OnLoadGameReset côté Papyrus. Le dispatch
-//      appelle EvaluatePackage qui, lui, fait tourner le pathfinding interne. Si
-//      on le fait à kPostLoadGame (T=0s), le skeleton/shader du joueur est encore
-//      en reconstruction et EvaluatePackage peut crasher (BSShaderAccumulator).
-//      En attendant 3s, on laisse la fenêtre fragile se refermer avant de toucher
-//      à l'AI. Le cooldown de 10s armé à kPostLoadGame bloque de toute façon tout
-//      nouvel autowalk pendant cette attente.
+// Style f4access : aucune mutation C++. On dispatche simplement OnLoadGameReset
+// au Papyrus, qui fera tout le cleanup (DstMarker.Clear, Traveler.ForceRefTo,
+// Game.SetPlayerAIDriven(false), EvaluatePackage). Le dispatch est DIFFÉRÉ DE
+// 3 SECONDES pour laisser le skeleton/shader finir sa reconstruction post-load.
+// Le cooldown de 10s armé à kPostLoadGame bloque tout nouvel autowalk pendant
+// cette attente.
 static void AutoWalkSafetyReset() {
-    auto* task = SKSE::GetTaskInterface();
-    if (!task) return;
-
-    // Étape 1 : reset C++ immédiat (safe — ne touche pas à l'AI/pathfinding)
-    task->AddTask([]() {
-        auto* player = RE::PlayerCharacter::GetSingleton();
-        if (player && !g_autoWalking.load()) {
-            player->SetAIDriven(false);
-            auto* avo = player->AsActorValueOwner();
-            if (avo) {
-                float base = avo->GetBaseActorValue(RE::ActorValue::kSpeedMult);
-                float current = avo->GetActorValue(RE::ActorValue::kSpeedMult);
-                if (base > 0 && current != base) {
-                    avo->SetActorValue(RE::ActorValue::kSpeedMult, base);
-                    LOG("AutoWalk: safety reset SpeedMult {} -> {}", current, base);
-                }
-            }
-            LOG("AutoWalk: safety reset on load — AIDriven=false (Papyrus cleanup delayed 3s)");
-        }
-    });
-
-    // Étape 2 : dispatch OnLoadGameReset après 3 secondes, le temps que le
-    // skeleton/shader du joueur finisse sa reconstruction. On utilise un
-    // std::thread détaché qui sleep puis poste la dispatch sur le thread principal.
     std::thread([]() {
         std::this_thread::sleep_for(std::chrono::seconds(3));
-        auto* task2 = SKSE::GetTaskInterface();
-        if (!task2) return;
-        task2->AddTask([]() {
+        auto* task = SKSE::GetTaskInterface();
+        if (!task) return;
+        task->AddTask([]() {
             auto* quest = FindAutoWalkQuest();
             if (!quest) {
                 LOG("AutoWalk: delayed safety reset — quest not found, skipping Papyrus cleanup");
@@ -223,667 +230,83 @@ static void AutoWalkSafetyReset() {
     }).detach();
 }
 
-// Polling C++ : vérifie la distance et annonce l'arrivée
-static void StartAutoWalkMonitor() {
-    // Arrêter le précédent si existant
-    if (g_autoWalkMonitor.joinable()) {
-        g_autoWalkMonitor.request_stop();
-        g_autoWalkMonitor.join();
-    }
-
-    g_autoWalkStuckTimer = 0.0f;
-    g_autoWalkHasRepathed = false;
-
-    // État du monitoring (statics pour persister entre les ticks AddTask)
-    static int s_recoveryAttempt = 0;
-    static bool s_diagLogged = false;
-    static float s_lastDistMounted = -1.0f;
-    s_recoveryAttempt = 0;
-    s_diagLogged = false;
-    s_lastDistMounted = -1.0f;
-
-    // Le jthread ne fait que le timing + input check.
-    // TOUTES les lectures de données du jeu (position, refs, cellules) sont
-    // faites sur le thread principal via AddTask pour éviter les race conditions
-    // qui causaient des crashes (null pointer sur refs déchargées).
-    g_autoWalkMonitor = std::jthread([](std::stop_token stoken) {
-        while (!stoken.stop_requested()) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(250));
-            if (!g_autoWalking.load()) break;
-
-            // Annuler si le joueur appuie sur une touche de mouvement ou manette
-            if (IsMovementInputActive()) {
-                Speak(L"Stopping");
-                g_autoWalking.store(false);
-                LOG("AutoWalk: cancelled by user input");
-                auto* taskIf = SKSE::GetTaskInterface();
-                if (taskIf) {
-                    taskIf->AddTask([]() {
-                        auto* p = RE::PlayerCharacter::GetSingleton();
-                        if (!p) return;
-                        p->SetAIDriven(false);
-                        auto* avo = p->AsActorValueOwner();
-                        if (avo) {
-                            float base = avo->GetBaseActorValue(RE::ActorValue::kSpeedMult);
-                            avo->SetActorValue(RE::ActorValue::kSpeedMult, base);
-                        }
-                        p->EvaluatePackage();
-                    });
-                }
-                break;
-            }
-
-            // Dispatcher le tick de monitoring sur le thread principal du jeu
-            auto* taskIf = SKSE::GetTaskInterface();
-            if (!taskIf) continue;
-            taskIf->AddTask([]() {
-                if (!g_autoWalking.load()) return;
-
-                auto* player = RE::PlayerCharacter::GetSingleton();
-                if (!player) return;
-
-                // Pendant un écran de chargement, un fondu, OU n'importe quel menu qui
-                // met le jeu en pause (Inventaire, Journal, Carte, Stats, MessageBox,
-                // Main Menu, etc.), on met le moniteur en PAUSE TOTALE.
-                //
-                // Deux raisons :
-                //   1. LoadingMenu/FaderMenu : le skeleton/shader du joueur est en cours
-                //      de reconstruction — toute intervention (stuck recovery,
-                //      EvaluatePackage, SetAIDriven) peut déclencher le crash
-                //      BSShaderAccumulator.
-                //   2. Menus pausants (Inventaire/Journal/Carte/...) : le joueur ne bouge
-                //      pas physiquement pendant qu'il lit son inventaire. Le stuck timer
-                //      atteindrait 4s rapidement et déclencherait la recovery AIDriven
-                //      toggle. Or le moteur est dans un état gelé pendant le pause →
-                //      EvaluatePackage sur un monde gelé peut désynchroniser l'AI.
-                //
-                // On remet le stuck timer et la last pos à zéro pour ne pas déclencher
-                // la recovery juste après la fermeture du menu.
-                auto* ui = RE::UI::GetSingleton();
-                if (ui && (ui->IsMenuOpen(RE::LoadingMenu::MENU_NAME) ||
-                           ui->IsMenuOpen("Fader Menu") ||
-                           ui->GameIsPaused())) {
-                    g_autoWalkStuckTimer = 0.0f;
-                    g_autoWalkLastPos = player->GetPosition();
-                    return;
-                }
-
-                const bool isMounted = player->IsOnMount();
-                auto playerPos = player->GetPosition();
-                float dist = 0.0f;
-
-                // Mode coordonnées (marqueur personnalisé, objets dynamiques)
-                if (g_autoWalkTargetPos.x != 0 || g_autoWalkTargetPos.y != 0) {
-                    float dx = playerPos.x - g_autoWalkTargetPos.x;
-                    float dy = playerPos.y - g_autoWalkTargetPos.y;
-                    dist = std::sqrt(dx * dx + dy * dy);
-                } else {
-                    // Mode FormID classique
-                    auto* targetForm = RE::TESForm::LookupByID(g_autoWalkTargetID);
-                    if (!targetForm) {
-                        Speak(L"Target lost");
-                        g_autoWalking.store(false);
-                        auto* p = RE::PlayerCharacter::GetSingleton();
-                        if (p) { p->SetAIDriven(false); p->EvaluatePackage(); }
-                        return;
-                    }
-                    auto* targetRef = targetForm->AsReference();
-                    if (!targetRef) return;
-                    auto diff = playerPos - targetRef->GetPosition();
-                    dist = diff.Length();
-                }
-
-                // Arrivée
-                if (dist <= g_autoWalkStopDist + 50.0f) {
-                    Speak(L"Arrived at " + g_autoWalkTarget);
-                    g_autoWalking.store(false);
-                    LOG("AutoWalk: arrived, distance {}", dist);
-
-                    player->SetAIDriven(false);
-                    auto* avo = player->AsActorValueOwner();
-                    if (avo) {
-                        float base = avo->GetBaseActorValue(RE::ActorValue::kSpeedMult);
-                        avo->SetActorValue(RE::ActorValue::kSpeedMult, base);
-                    }
-                    player->EvaluatePackage();
-
-                    RE::FormID targetID = g_autoWalkTargetID;
-                    if (targetID != 0) {
-                        auto* targetForm = RE::TESForm::LookupByID(targetID);
-                        if (targetForm) {
-                            auto* targetRef = targetForm->AsReference();
-                            if (targetRef) {
-                                auto targetPos = targetRef->GetPosition();
-                                float dx = targetPos.x - playerPos.x;
-                                float dy = targetPos.y - playerPos.y;
-                                float dz = targetPos.z - playerPos.z;
-                                float yaw = std::atan2(dx, dy);
-                                if (yaw < 0) yaw += 2.0f * 3.14159265f;
-                                player->data.angle.z = yaw;
-                                float hDist = std::sqrt(dx * dx + dy * dy);
-                                if (hDist > 1.0f) {
-                                    float pitch = -std::atan2(dz, hDist);
-                                    player->data.angle.x = pitch;
-                                }
-                                LOG("AutoWalk: oriented toward target yaw={:.2f} pitch={:.2f}", yaw, player->data.angle.x);
-                            }
-                        }
-                    }
-                    return;
-                }
-
-                // Détection de blocage — deux stratégies selon le mode
-                if (isMounted) {
-                    if (s_lastDistMounted < 0.0f) {
-                        s_lastDistMounted = dist;
-                    } else if (dist < s_lastDistMounted - 5.0f) {
-                        g_autoWalkStuckTimer = 0.0f;
-                        s_lastDistMounted = dist;
-                        s_diagLogged = false;
-                    } else {
-                        g_autoWalkStuckTimer += 0.25f;
-                    }
-                } else {
-                    auto movedDiff = playerPos - g_autoWalkLastPos;
-                    float movedDist = movedDiff.Length();
-                    if (movedDist < 5.0f) {
-                        g_autoWalkStuckTimer += 0.25f;
-                    } else {
-                        g_autoWalkStuckTimer = 0.0f;
-                        g_autoWalkLastPos = playerPos;
-                        s_recoveryAttempt = 0;
-                        s_diagLogged = false;
-                    }
-                }
-
-                // Diagnostic de blocage (se déclenche une seule fois à 4s)
-                if (g_autoWalkStuckTimer > 4.0f && !s_diagLogged) {
-                    s_diagLogged = true;
-                    LOG("=== AutoWalk STUCK DIAGNOSTIC ===");
-                    LOG("  Player pos: ({:.0f}, {:.0f}, {:.0f})", playerPos.x, playerPos.y, playerPos.z);
-
-                    if (g_autoWalkTargetPos.x != 0 || g_autoWalkTargetPos.y != 0) {
-                        LOG("  Target (coords): ({:.0f}, {:.0f}, {:.0f}) dist={:.0f}",
-                            g_autoWalkTargetPos.x, g_autoWalkTargetPos.y, g_autoWalkTargetPos.z, dist);
-                    } else {
-                        auto* tf = RE::TESForm::LookupByID(g_autoWalkTargetID);
-                        if (tf) {
-                            auto* tr = tf->AsReference();
-                            if (tr) {
-                                auto tp = tr->GetPosition();
-                                auto* tc = tr->GetParentCell();
-                                LOG("  Target (formID=0x{:08X}): ({:.0f}, {:.0f}, {:.0f}) cell='{}' dist={:.0f}",
-                                    g_autoWalkTargetID, tp.x, tp.y, tp.z,
-                                    tc && tc->GetName() ? tc->GetName() : "?", dist);
-                            }
-                        }
-                    }
-
-                    // Diagnostic IA/physique (déjà sur le thread principal)
-                    auto* process = player->GetActorRuntimeData().currentProcess;
-                    if (process) {
-                        auto* pkg = process->GetRunningPackage();
-                        if (pkg) {
-                            LOG("  Running package: formID=0x{:08X} type={}",
-                                pkg->GetFormID(),
-                                static_cast<int>(pkg->packData.packType.underlying()));
-                        } else {
-                            LOG("  Running package: NONE (IA may have abandoned)");
-                        }
-                        auto* hpd = process->high;
-                        if (hpd) {
-                            auto& desiredSpeed = hpd->pathingDesiredMovementSpeed;
-                            auto& currentSpeed = hpd->pathingCurrentMovementSpeed;
-                            float dMag = std::sqrt(desiredSpeed.x * desiredSpeed.x +
-                                                   desiredSpeed.y * desiredSpeed.y +
-                                                   desiredSpeed.z * desiredSpeed.z);
-                            float cMag = std::sqrt(currentSpeed.x * currentSpeed.x +
-                                                   currentSpeed.y * currentSpeed.y +
-                                                   currentSpeed.z * currentSpeed.z);
-                            LOG("  Path speed: desired={:.1f} current={:.1f}", dMag, cMag);
-                        }
-                    }
-                    auto ctrlPtr = player->GetCharController();
-                    if (ctrlPtr) {
-                        const char* stateStr = "?";
-                        switch (ctrlPtr->context.currentState) {
-                            case RE::hkpCharacterStateType::kOnGround: stateStr = "OnGround"; break;
-                            case RE::hkpCharacterStateType::kJumping:  stateStr = "Jumping"; break;
-                            case RE::hkpCharacterStateType::kInAir:    stateStr = "InAir"; break;
-                            case RE::hkpCharacterStateType::kClimbing: stateStr = "Climbing"; break;
-                            case RE::hkpCharacterStateType::kSwimming: stateStr = "Swimming"; break;
-                            default: break;
-                        }
-                        LOG("  Character state: {}", stateStr);
-                    }
-                    auto* cell = player->GetParentCell();
-                    if (cell) {
-                        LOG("  Player cell: '{}' (interior={})",
-                            cell->GetName() ? cell->GetName() : "?", cell->IsInteriorCell());
-                    }
-                    LOG("=== END STUCK DIAGNOSTIC ===");
-                }
-
-                // Récupération progressive de blocage
-                if (isMounted) {
-                    if (g_autoWalkStuckTimer > 30.0f) {
-                        Speak(L"Horse stuck");
-                        g_autoWalking.store(false);
-                        LOG("AutoWalk: horse stuck for 30s, giving up");
-                        StopAutoWalk();
-                    }
-                } else {
-                    // Escalade graduelle pour minimiser les risques de crash :
-                    //   - 4s : tentative douce (réappliquer les flags + un simple
-                    //          EvaluatePackage). Suffit pour la majorité des blocages
-                    //          (escaliers, petits obstacles, IA qui a besoin de
-                    //          reconsidérer son chemin). Pas de toggle AIDriven donc
-                    //          pas de risque de désynchroniser le moteur.
-                    //   - 6s : si le doux n'a pas suffi, on passe au toggle complet
-                    //          SetAIDriven(false)/(true) + EvaluatePackage. Plus
-                    //          violent, peut provoquer des races avec la physique ou
-                    //          les animations, mais nécessaire pour les blocages
-                    //          coriaces.
-                    //   - 10s : on abandonne, l'autowalk est vraiment coincé.
-                    if (g_autoWalkEnableStuckRecovery && g_autoWalkStuckTimer > 4.0f && s_recoveryAttempt == 0) {
-                        LOG("AutoWalk: stuck for 4s, gentle recovery (re-apply flags + EvaluatePackage)");
-                        // Remettre les flags du char controller : au cas où ils auraient
-                        // été effacés par un ragdoll, une transition de cellule ou une
-                        // animation spéciale. Sans kTryStep, le joueur ne monte plus les
-                        // escaliers automatiquement → reste bloqué indéfiniment.
-                        auto* charCtrl = player->GetCharController();
-                        if (charCtrl) {
-                            charCtrl->flags.set(RE::CHARACTER_FLAGS::kTryStep);
-                            charCtrl->flags.set(RE::CHARACTER_FLAGS::kCanJump);
-                        }
-                        player->EvaluatePackage();
-                        s_recoveryAttempt = 1;
-                    } else if (g_autoWalkEnableStuckRecovery && g_autoWalkStuckTimer > 6.0f && s_recoveryAttempt == 1) {
-                        LOG("AutoWalk: still stuck at 6s, hard recovery (full AIDriven toggle)");
-                        // Toggle complet : dernier recours avant d'abandonner. Plus
-                        // risqué car peut perturber char controller / animations,
-                        // mais débloque les cas vraiment coincés.
-                        auto* charCtrl = player->GetCharController();
-                        if (charCtrl) {
-                            charCtrl->flags.set(RE::CHARACTER_FLAGS::kTryStep);
-                            charCtrl->flags.set(RE::CHARACTER_FLAGS::kCanJump);
-                        }
-                        player->SetAIDriven(false);
-                        player->EvaluatePackage();
-                        player->SetAIDriven(true);
-                        player->EvaluatePackage();
-                        s_recoveryAttempt = 2;
-                    } else if (g_autoWalkStuckTimer > 10.0f) {
-                        Speak(L"Can't reach target");
-                        g_autoWalking.store(false);
-                        LOG("AutoWalk: stuck for 10s, giving up");
-                        player->SetAIDriven(false);
-                        auto* avo = player->AsActorValueOwner();
-                        if (avo) {
-                            float base = avo->GetBaseActorValue(RE::ActorValue::kSpeedMult);
-                            avo->SetActorValue(RE::ActorValue::kSpeedMult, base);
-                        }
-                        player->EvaluatePackage();
-                    }
-                }
-            });  // fin AddTask
-        }
+// =============================================================================
+// Helper : dispatche OnStopWalking au Papyrus. Utilise par le listener ModEvent
+// d'arrivee, par AutoWalkInputUpdate (cancel input) et par le giveup.
+// Contrairement a StopAutoWalk(), ce helper ne touche pas au temp marker C++
+// et ne clear pas g_autoWalkTarget (c'est StopAutoWalk qui fait le cleanup
+// complet quand c'est demande explicitement depuis scanner.h).
+//
+// Style f4access : aucune mutation d'acteur cote C++, uniquement dispatch Papyrus.
+// =============================================================================
+static void DispatchPapyrusStop() {
+    auto* task = SKSE::GetTaskInterface();
+    if (!task) return;
+    task->AddTask([]() {
+        auto* quest = FindAutoWalkQuest();
+        if (!quest) return;
+        auto* vm = RE::BSScript::Internal::VirtualMachine::GetSingleton();
+        if (!vm) return;
+        auto* policy = vm->GetObjectHandlePolicy();
+        if (!policy) return;
+        auto handle = policy->GetHandleForObject(RE::FormType::Quest, quest);
+        if (handle == policy->EmptyHandle()) return;
+        auto* args = RE::MakeFunctionArguments();
+        RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback;
+        vm->DispatchMethodCall(
+            handle,
+            RE::BSFixedString("SkyrimTTS_AutoWalk"),
+            RE::BSFixedString("OnStopWalking"),
+            args,
+            callback
+        );
     });
 }
 
 // =============================================================================
-// DIAG-CRASH : dump de l'etat du joueur/scenegraph pour traquer le crash BSShaderAccumulator.
-// Appele juste avant le dispatch (tag="PRE-DISPATCH") puis en continu apres le dispatch
-// (tag="T+XXXms") par le CrashDiagPoll thread. Si un champ bascule entre deux appels,
-// on le verra dans les logs juste avant le crash.
-// IMPORTANT : doit tourner sur le main thread (AddTask), jamais sur un jthread.
+// ModEvent listener : écoute "SkyrimNVDA_AutoWalkArrived" envoyé par le script
+// Papyrus à l'arrivée du joueur. Annonce "Arrived at X" et stoppe le monitor.
+// Le cleanup (AIDriven/SpeedMult/EvaluatePackage) est fait côté Papyrus dans
+// StopWalkingInternal avant l'envoi de l'event.
+//
+// Papyrus est responsable de l'orientation du joueur via Actor.SetLookAt avant
+// d'envoyer l'event, comme dans f4access.
 // =============================================================================
-static void AutoWalkRunCrashDiag(RE::FormID targetFormID, bool useCoords,
-                                 float posX, float posY, float posZ, const char* tag) {
-    auto* p = RE::PlayerCharacter::GetSingleton();
-    if (!p) {
-        LOG("AutoWalk DIAG [{}]: Player singleton is NULL !!!", tag);
+class AutoWalkModEventListener : public RE::BSTEventSink<SKSE::ModCallbackEvent> {
+public:
+    static AutoWalkModEventListener* GetSingleton() {
+        static AutoWalkModEventListener s;
+        return &s;
+    }
+
+    RE::BSEventNotifyControl ProcessEvent(
+        const SKSE::ModCallbackEvent* a_event,
+        RE::BSTEventSource<SKSE::ModCallbackEvent>*) override
+    {
+        if (!a_event) return RE::BSEventNotifyControl::kContinue;
+
+        if (a_event->eventName == "SkyrimNVDA_AutoWalkArrived") {
+            if (!g_autoWalking.load()) {
+                LOG("AutoWalk: arrived event received but g_autoWalking=false, ignoring");
+                return RE::BSEventNotifyControl::kContinue;
+            }
+            LOG("AutoWalk: arrived event received from Papyrus");
+            Speak(L"Arrived at " + g_autoWalkTarget);
+            g_autoWalking.store(false);
+            // Pas de cleanup C++ ici : Papyrus StopWalkingInternal s'en charge.
+        }
+        return RE::BSEventNotifyControl::kContinue;
+    }
+};
+
+static void RegisterAutoWalkModEventListener() {
+    auto* src = SKSE::GetModCallbackEventSource();
+    if (!src) {
+        LOG("AutoWalk: GetModCallbackEventSource returned null, listener NOT registered");
         return;
     }
-
-    auto* body3D = p->Get3D();
-    auto* charCtrl = p->GetCharController();
-    auto* cell = p->GetParentCell();
-    auto pos = p->GetPosition();
-    bool posValid = !std::isnan(pos.x) && !std::isnan(pos.y) && !std::isnan(pos.z);
-    auto* process = p->GetActorRuntimeData().currentProcess;
-
-    auto* ui = RE::UI::GetSingleton();
-    bool loadingOpen = ui && ui->IsMenuOpen(RE::LoadingMenu::MENU_NAME);
-    bool faderOpen = ui && ui->IsMenuOpen("Fader Menu");
-    bool anyMenuOpen = ui && ui->GameIsPaused();
-
-    LOG("=== AutoWalk DIAG [{}] ===", tag);
-    LOG("  [Player core]");
-    LOG("    Singleton:          OK");
-    LOG("    3D model:           {}", body3D ? "OK" : "NULL !!!");
-    LOG("    Char controller:    {}", charCtrl ? "OK" : "NULL !!!");
-    LOG("    Position:           ({:.1f},{:.1f},{:.1f}) valid={}",
-        pos.x, pos.y, pos.z, posValid);
-    LOG("    currentProcess:     {}", process ? "OK" : "NULL !!!");
-    LOG("    Race:               {}",
-        p->GetRace() && p->GetRace()->GetName() ? p->GetRace()->GetName() : "?");
-
-    LOG("  [Player state]");
-    LOG("    IsDead:             {}", p->IsDead());
-    LOG("    IsInCombat:         {}", p->IsInCombat());
-    LOG("    IsOnMount:          {}", p->IsOnMount());
-    LOG("    IsSneaking:         {}", p->IsSneaking());
-    LOG("    IsInKillMove:       {}", p->IsInKillMove());
-    LOG("    IsAIEnabled:        {}", p->IsAIEnabled());
-    if (auto* avo = p->AsActorValueOwner()) {
-        LOG("    Health:             {:.0f}/{:.0f}",
-            avo->GetActorValue(RE::ActorValue::kHealth),
-            avo->GetPermanentActorValue(RE::ActorValue::kHealth));
-        LOG("    SpeedMult:          current={:.0f} base={:.0f}",
-            avo->GetActorValue(RE::ActorValue::kSpeedMult),
-            avo->GetBaseActorValue(RE::ActorValue::kSpeedMult));
-    }
-
-    LOG("  [Cell / world]");
-    LOG("    Parent cell:        {} ({})",
-        cell ? "OK" : "NULL !!!",
-        cell && cell->GetName() ? cell->GetName() : "?");
-    LOG("    Cell attached:      {}",
-        cell ? (cell->IsAttached() ? "yes" : "no (loading?)") : "N/A");
-    LOG("    Cell interior:      {}",
-        cell ? (cell->IsInteriorCell() ? "yes" : "no (exterior)") : "N/A");
-    if (auto* worldspace = p->GetWorldspace()) {
-        LOG("    Worldspace:         {}",
-            worldspace->GetName() ? worldspace->GetName() : "?");
-    }
-
-    LOG("  [UI / context]");
-    LOG("    LoadingMenu open:   {}", loadingOpen);
-    LOG("    Fader Menu open:    {}", faderOpen);
-    LOG("    Game paused:        {}", anyMenuOpen);
-
-    LOG("  [Char controller state]");
-    if (charCtrl) {
-        const char* stateStr = "?";
-        switch (charCtrl->context.currentState) {
-            case RE::hkpCharacterStateType::kOnGround: stateStr = "OnGround"; break;
-            case RE::hkpCharacterStateType::kJumping:  stateStr = "Jumping"; break;
-            case RE::hkpCharacterStateType::kInAir:    stateStr = "InAir"; break;
-            case RE::hkpCharacterStateType::kClimbing: stateStr = "Climbing"; break;
-            case RE::hkpCharacterStateType::kSwimming: stateStr = "Swimming"; break;
-            default: break;
-        }
-        LOG("    State:              {} (raw={})",
-            stateStr, static_cast<int>(charCtrl->context.currentState));
-        LOG("    wantState:          {}", static_cast<int>(charCtrl->wantState));
-    }
-
-    LOG("  [AI / package]");
-    if (process) {
-        if (auto* pkg = process->GetRunningPackage()) {
-            LOG("    Running package:    formID=0x{:08X} type={}",
-                pkg->GetFormID(),
-                static_cast<int>(pkg->packData.packType.underlying()));
-        } else {
-            LOG("    Running package:    NONE");
-        }
-    } else {
-        LOG("    Running package:    N/A (no process)");
-    }
-
-    LOG("  [Target]");
-    if (targetFormID != 0) {
-        auto* tform = RE::TESForm::LookupByID(targetFormID);
-        if (!tform) {
-            LOG("    FormID:             0x{:08X} (NOT FOUND !!!)", targetFormID);
-        } else {
-            auto* tref = tform->AsReference();
-            LOG("    FormID:             0x{:08X} type={}",
-                targetFormID, static_cast<int>(tform->GetFormType()));
-            LOG("    IsReference:        {}", tref ? "yes" : "no");
-            if (tref) {
-                auto tp = tref->GetPosition();
-                auto* tcell = tref->GetParentCell();
-                LOG("    Target position:    ({:.1f},{:.1f},{:.1f})", tp.x, tp.y, tp.z);
-                LOG("    Target cell:        {} ({})",
-                    tcell ? "OK" : "NULL",
-                    tcell && tcell->GetName() ? tcell->GetName() : "?");
-                LOG("    Target 3D:          {}",
-                    tref->Get3D() ? "OK" : "NULL (not loaded)");
-                auto diff = pos - tp;
-                LOG("    Distance:           {:.1f}", diff.Length());
-            }
-        }
-    } else if (useCoords) {
-        LOG("    Coords mode:        pos=({:.1f},{:.1f},{:.1f})", posX, posY, posZ);
-    } else {
-        LOG("    No target specified");
-    }
-
-    // ============ DIAG ENRICHI POUR TRAQUER LE CRASH BSShaderAccumulator ============
-    // Instruction qui crashe = and dword ptr [rax+0xF4] avec rax=0.
-    // Offset 0xF4 = NiAVObject::flags. Donc le moteur tente de modifier
-    // les flags d'un node 3D null pendant une passe de rendu/culling.
-    // On logue tous les etats critiques liees au 3D/fade/render.
-    LOG("  [DIAG-CRASH]");
-    try {
-        // --- Skeleton BSFadeNode du joueur : fade en cours ? ---
-        if (body3D) {
-            auto* fadeNode = body3D->AsFadeNode();
-            if (fadeNode) {
-                auto& rt = fadeNode->GetRuntimeData();
-                LOG("    fadeNode.currentFade={:.3f} u128={:.3f} u140={:.3f}",
-                    rt.currentFade, rt.unk128, rt.unk140);
-                LOG("    fadeNode.flags152/153/154/155={:02X}/{:02X}/{:02X}/{:02X}",
-                    (int)rt.unk152, (int)rt.unk153, (int)rt.unk154, (int)rt.unk155);
-            }
-            // --- Scan des enfants du skeleton : y a-t-il des nullptr ou flags aberrants ? ---
-            auto* node = body3D->AsNode();
-            if (node) {
-                auto& children = node->GetChildren();
-                int nullCount = 0;
-                int totalCount = static_cast<int>(children.size());
-                for (std::uint32_t i = 0; i < children.size(); ++i) {
-                    if (!children[i]) nullCount++;
-                }
-                LOG("    skeleton.children total={} null={} selfFlags={:08X}",
-                    totalCount, nullCount, body3D->GetFlags().underlying());
-
-                // --- Dump recursif des enfants du skeleton : nom + type + flags + pointeur. ---
-                // Si un enfant devient null d'un tick au suivant, on le verra. On se limite au
-                // premier niveau (pas recursif profond) pour ne pas noyer le log.
-                for (std::uint32_t i = 0; i < children.size() && i < 32; ++i) {
-                    auto& ch = children[i];
-                    if (!ch) {
-                        LOG("      child[{}]=NULL", i);
-                    } else {
-                        const char* cname = ch->name.empty() ? "?" : ch->name.c_str();
-                        LOG("      child[{}] name='{}' flags={:08X} ptr={:p}",
-                            i, cname, ch->GetFlags().underlying(), static_cast<void*>(ch.get()));
-                    }
-                }
-            }
-        } else {
-            LOG("    skeleton.3D=NULL (player has no 3D model)");
-        }
-    } catch (...) { LOG("    [diag skeleton] exception"); }
-
-    try {
-        // --- Actor flags internes (delayUpdateScenegraph, resetAI, etc.) ---
-        auto& rt = p->GetActorRuntimeData();
-        LOG("    actor.boolBits={:08X} boolFlags={:08X} criticalStage={}",
-            rt.boolBits.underlying(), rt.boolFlags.underlying(),
-            static_cast<int>(rt.criticalStage.underlying()));
-    } catch (...) { LOG("    [diag actor flags] exception"); }
-
-    try {
-        // --- Char controller detail (state, want state, fall time, havok) ---
-        if (charCtrl) {
-            LOG("    cc.flags={:08X} fallTime={:.2f} speedPct={:.3f} scale={:.2f}",
-                charCtrl->flags.underlying(), charCtrl->fallTime,
-                charCtrl->speedPct, charCtrl->scale);
-        }
-    } catch (...) { LOG("    [diag cc detail] exception"); }
-
-    try {
-        // --- Camera state (transition, zoom) ---
-        auto* cam = RE::PlayerCamera::GetSingleton();
-        if (cam) {
-            int camStateId = cam->currentState ? static_cast<int>(cam->currentState->id) : -1;
-            LOG("    cam.state={} idleTimer={:.2f} yaw={:.3f} bowZoom={} weapSheath={}",
-                camStateId, cam->idleTimer, cam->yaw,
-                cam->bowZoomedIn, cam->isWeapSheathed);
-        }
-    } catch (...) { LOG("    [diag camera] exception"); }
-
-    try {
-        // --- Process + package detail ---
-        if (process) {
-            auto& pkg = process->currentPackage;
-            LOG("    pkg.cur={:08X} target={:08X} procIdx={} startT={:.2f}",
-                pkg.package ? pkg.package->GetFormID() : 0,
-                pkg.target.native_handle(),
-                pkg.currentProcedureIndex, pkg.packageStartTime);
-            LOG("    pkg.modFlags={:08X} modIntFlag={:04X} actorPkgFlags={:02X}",
-                pkg.modifiedPackageFlag, pkg.modifiedInterruptFlag,
-                pkg.actorPackageFlags.underlying());
-
-            // MiddleHigh (update 3D pending, killmove, furniture...)
-            if (auto* mh = process->middleHigh) {
-                LOG("    mh.update3D={:02X} alphaMult={:.2f} killMoveT={:.2f} forceNextUpdate={}",
-                    mh->update3DModel.underlying(), mh->alphaMult,
-                    mh->killMoveTimer, mh->forceNextUpdate);
-                LOG("    mh.cc={} weapBone={} headNode={} furnID={} occupiedFurn={:08X}",
-                    mh->charController.get() ? "ok" : "null",
-                    mh->weaponBone ? "ok" : "null",
-                    mh->headNode ? "ok" : "null",
-                    mh->currentFurnitureMarkerID,
-                    mh->occupiedFurniture.native_handle());
-            }
-            // High (fade, voice, door approach)
-            if (auto* h = process->high) {
-                LOG("    hi.fadeState={} fadeTrigger={:08X} maxAlpha={:.2f} approachDoor={}",
-                    static_cast<int>(h->fadeState.underlying()),
-                    h->fadeTrigger ? h->fadeTrigger->GetFormID() : 0,
-                    h->maxAlpha, h->approachingAutoTeleportDoor);
-                LOG("    hi.voiceState={} voiceT={:.2f} greetingPC={} talkingToPC={}",
-                    static_cast<int>(h->voiceState.underlying()),
-                    h->voiceTimer, h->greetingPlayer, h->talkingToPC);
-            }
-        }
-    } catch (...) { LOG("    [diag process] exception"); }
-
-    try {
-        // --- Cell detail (state, detached, flags) ---
-        if (cell) {
-            LOG("    cell.state={} detached={} flags={:04X}",
-                static_cast<int>(cell->cellState.underlying()),
-                cell->cellDetached,
-                cell->cellFlags.underlying());
-        }
-    } catch (...) { LOG("    [diag cell detail] exception"); }
-
-    try {
-        // --- Main state (freeze, onIdle, reload) ---
-        auto* main = RE::Main::GetSingleton();
-        if (main) {
-            LOG("    main.gameActive={} onIdle={} freezeTime={} freezeNext={} reloadContent={} resetGame={} quitGame={}",
-                main->gameActive, main->onIdle,
-                main->freezeTime, main->freezeNextFrame,
-                main->reloadContent, main->resetGame, main->quitGame);
-        }
-    } catch (...) { LOG("    [diag main] exception"); }
-
-    try {
-        // --- UI stack (menus en cours) ---
-        auto* ui2 = RE::UI::GetSingleton();
-        if (ui2) {
-            LOG("    ui.stack={} pauses={} itemMenus={} modal={} closingAll={} visible={}",
-                ui2->menuStack.size(),
-                ui2->numPausesGame, ui2->numItemMenus,
-                static_cast<int>(ui2->modal),
-                static_cast<int>(ui2->closingAllMenus),
-                static_cast<int>(ui2->menuSystemVisible));
-        }
-    } catch (...) { LOG("    [diag ui] exception"); }
-
-    try {
-        // --- ProcessLists (charge NPC, queues de tâches) ---
-        auto* pl = RE::ProcessLists::GetSingleton();
-        if (pl) {
-            LOG("    pl.actors high={} mh={} ml={} low={}",
-                pl->highActorHandles.size(),
-                pl->middleHighActorHandles.size(),
-                pl->middleLowActorHandles.size(),
-                pl->lowActorHandles.size());
-            LOG("    pl.runSched={} runMov={} runAnim={} magicEff={}",
-                pl->runSchedules, pl->runMovement, pl->runAnimations,
-                pl->magicEffects.size());
-        }
-    } catch (...) { LOG("    [diag processlists] exception"); }
-
-    try {
-        // --- Time / calendar (pour correler avec autres events) ---
-        auto* cal = RE::Calendar::GetSingleton();
-        if (cal) {
-            LOG("    time.hour={:.3f} days={:.3f} scale={:.1f}",
-                cal->GetHour(), cal->rawDaysPassed, cal->GetTimescale());
-        }
-    } catch (...) { LOG("    [diag time] exception"); }
-
-    LOG("=== END AutoWalk DIAG [{}] ===", tag);
-}
-
-// =============================================================================
-// CRASH DIAG POLL : thread dedie qui loggue l'etat du joueur en continu apres le
-// dispatch pour capturer le moment exact ou un champ bascule et cause le crash.
-//
-// Cadence :
-//   - Premieres 3s : toutes les 100ms (capture fine)
-//   - Apres 3s     : toutes les 500ms (moins fin, ne sature pas le log)
-//   - Arret        : quand g_autoWalking devient false OU apres 60s max
-// =============================================================================
-static std::jthread g_autoWalkCrashDiag;
-
-static void StartAutoWalkCrashDiagPoll(RE::FormID targetFormID, bool useCoords,
-                                       float posX, float posY, float posZ) {
-    // Arreter un eventuel poll precedent (safety)
-    if (g_autoWalkCrashDiag.joinable()) {
-        g_autoWalkCrashDiag.request_stop();
-        g_autoWalkCrashDiag.join();
-    }
-
-    g_autoWalkCrashDiag = std::jthread([targetFormID, useCoords, posX, posY, posZ](std::stop_token stoken) {
-        auto start = std::chrono::steady_clock::now();
-        int tickCount = 0;
-        while (!stoken.stop_requested()) {
-            auto now = std::chrono::steady_clock::now();
-            auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - start).count();
-
-            // Stop conditions
-            if (!g_autoWalking.load()) break;
-            if (elapsedMs > 60000) break;  // 60s max
-
-            // Log en fonction de l'age
-            int sleepMs = (elapsedMs < 3000) ? 100 : 500;
-            std::this_thread::sleep_for(std::chrono::milliseconds(sleepMs));
-            if (stoken.stop_requested()) break;
-
-            // Dispatcher le dump sur le main thread
-            auto* taskIf = SKSE::GetTaskInterface();
-            if (!taskIf) continue;
-            long elapsedCapture = static_cast<long>(elapsedMs);
-            taskIf->AddTask([targetFormID, useCoords, posX, posY, posZ, elapsedCapture]() {
-                if (!g_autoWalking.load()) return;
-                char tag[32];
-                std::snprintf(tag, sizeof(tag), "T+%ldms", elapsedCapture);
-                AutoWalkRunCrashDiag(targetFormID, useCoords, posX, posY, posZ, tag);
-            });
-            tickCount++;
-        }
-        LOG("AutoWalk CrashDiagPoll: stopped after {} ticks", tickCount);
-    });
+    src->AddEventSink(AutoWalkModEventListener::GetSingleton());
+    LOG("AutoWalk: ModEvent listener registered (SkyrimNVDA_AutoWalkArrived)");
 }
 
 // =============================================================================
@@ -938,11 +361,12 @@ static void StartAutoWalk(RE::FormID targetFormID, float stopDistance = 100.0f,
                     LOG("AutoWalk: pre-start SpeedMult fix {} -> {}", current, base);
                 }
             }
-            // S'assurer que l'IA est bien désactivée avant de la réactiver
-            player->SetAIDriven(false);
-            player->EvaluatePackage();
+            // Pas de SetAIDriven/EvaluatePackage C++ : le Papyrus fait son clean slate
+            // lui-même en appelant StopWalkingInternal au début de StartWalkToRef
+            // si IsWalking était déjà true. Style f4access : zéro mutation acteur C++.
 
-            // Activer kTryStep pour monter les escaliers automatiquement
+            // Activer kTryStep pour monter les escaliers automatiquement.
+            // Ce sont des flags physiques du char controller, pas de l'AI — safe.
             auto* charCtrl = player->GetCharController();
             if (charCtrl) {
                 charCtrl->flags.set(RE::CHARACTER_FLAGS::kTryStep);
@@ -995,295 +419,6 @@ static void StartAutoWalk(RE::FormID targetFormID, float stopDistance = 100.0f,
         LOG("AutoWalk: quest running={}, formID={:08X}, handle={:X}",
             quest->IsRunning(), quest->GetFormID(), handle);
 
-        // === DIAGNOSTIC PRE-DISPATCH ===
-        // Factorise dans AutoWalkRunCrashDiag() pour pouvoir etre re-appele par
-        // le CrashDiagPoll thread apres le dispatch (toutes les 100ms les 3 premieres
-        // secondes, puis 500ms). Si un champ bascule entre deux ticks, on le voit
-        // juste avant le crash.
-        AutoWalkRunCrashDiag(targetFormID, useCoords, posX, posY, posZ, "PRE-DISPATCH");
-#if 0
-        {
-            auto* p = RE::PlayerCharacter::GetSingleton();
-            if (!p) {
-                LOG("AutoWalk PRE-DISPATCH DIAG: Player singleton is NULL !!!");
-            } else {
-                auto* body3D = p->Get3D();
-                auto* charCtrl = p->GetCharController();
-                auto* cell = p->GetParentCell();
-                auto pos = p->GetPosition();
-                bool posValid = !std::isnan(pos.x) && !std::isnan(pos.y) && !std::isnan(pos.z);
-                auto* process = p->GetActorRuntimeData().currentProcess;
-
-                auto* ui = RE::UI::GetSingleton();
-                bool loadingOpen = ui && ui->IsMenuOpen(RE::LoadingMenu::MENU_NAME);
-                bool faderOpen = ui && ui->IsMenuOpen("Fader Menu");
-                bool anyMenuOpen = ui && ui->GameIsPaused();
-
-                LOG("=== AutoWalk PRE-DISPATCH DIAG ===");
-                LOG("  [Player core]");
-                LOG("    Singleton:          OK");
-                LOG("    3D model:           {}", body3D ? "OK" : "NULL !!!");
-                LOG("    Char controller:    {}", charCtrl ? "OK" : "NULL !!!");
-                LOG("    Position:           ({:.1f},{:.1f},{:.1f}) valid={}",
-                    pos.x, pos.y, pos.z, posValid);
-                LOG("    currentProcess:     {}", process ? "OK" : "NULL !!!");
-                LOG("    Race:               {}",
-                    p->GetRace() && p->GetRace()->GetName() ? p->GetRace()->GetName() : "?");
-
-                LOG("  [Player state]");
-                LOG("    IsDead:             {}", p->IsDead());
-                LOG("    IsInCombat:         {}", p->IsInCombat());
-                LOG("    IsOnMount:          {}", p->IsOnMount());
-                LOG("    IsSneaking:         {}", p->IsSneaking());
-                LOG("    IsInKillMove:       {}", p->IsInKillMove());
-                LOG("    IsAIEnabled:        {}", p->IsAIEnabled());
-                if (auto* avo = p->AsActorValueOwner()) {
-                    LOG("    Health:             {:.0f}/{:.0f}",
-                        avo->GetActorValue(RE::ActorValue::kHealth),
-                        avo->GetPermanentActorValue(RE::ActorValue::kHealth));
-                    LOG("    SpeedMult:          current={:.0f} base={:.0f}",
-                        avo->GetActorValue(RE::ActorValue::kSpeedMult),
-                        avo->GetBaseActorValue(RE::ActorValue::kSpeedMult));
-                }
-
-                LOG("  [Cell / world]");
-                LOG("    Parent cell:        {} ({})",
-                    cell ? "OK" : "NULL !!!",
-                    cell && cell->GetName() ? cell->GetName() : "?");
-                LOG("    Cell attached:      {}",
-                    cell ? (cell->IsAttached() ? "yes" : "no (loading?)") : "N/A");
-                LOG("    Cell interior:      {}",
-                    cell ? (cell->IsInteriorCell() ? "yes" : "no (exterior)") : "N/A");
-                if (auto* worldspace = p->GetWorldspace()) {
-                    LOG("    Worldspace:         {}",
-                        worldspace->GetName() ? worldspace->GetName() : "?");
-                }
-
-                LOG("  [UI / context]");
-                LOG("    LoadingMenu open:   {}", loadingOpen);
-                LOG("    Fader Menu open:    {}", faderOpen);
-                LOG("    Game paused:        {}", anyMenuOpen);
-
-                LOG("  [Char controller state]");
-                if (charCtrl) {
-                    const char* stateStr = "?";
-                    switch (charCtrl->context.currentState) {
-                        case RE::hkpCharacterStateType::kOnGround: stateStr = "OnGround"; break;
-                        case RE::hkpCharacterStateType::kJumping:  stateStr = "Jumping"; break;
-                        case RE::hkpCharacterStateType::kInAir:    stateStr = "InAir"; break;
-                        case RE::hkpCharacterStateType::kClimbing: stateStr = "Climbing"; break;
-                        case RE::hkpCharacterStateType::kSwimming: stateStr = "Swimming"; break;
-                        default: break;
-                    }
-                    LOG("    State:              {} (raw={})",
-                        stateStr, static_cast<int>(charCtrl->context.currentState));
-                    LOG("    wantState:          {}", static_cast<int>(charCtrl->wantState));
-                }
-
-                LOG("  [AI / package]");
-                if (process) {
-                    if (auto* pkg = process->GetRunningPackage()) {
-                        LOG("    Running package:    formID=0x{:08X} type={}",
-                            pkg->GetFormID(),
-                            static_cast<int>(pkg->packData.packType.underlying()));
-                    } else {
-                        LOG("    Running package:    NONE");
-                    }
-                } else {
-                    LOG("    Running package:    N/A (no process)");
-                }
-
-                LOG("  [Target]");
-                if (targetFormID != 0) {
-                    auto* tform = RE::TESForm::LookupByID(targetFormID);
-                    if (!tform) {
-                        LOG("    FormID:             0x{:08X} (NOT FOUND !!!)", targetFormID);
-                    } else {
-                        auto* tref = tform->AsReference();
-                        LOG("    FormID:             0x{:08X} type={}",
-                            targetFormID, static_cast<int>(tform->GetFormType()));
-                        LOG("    IsReference:        {}", tref ? "yes" : "no");
-                        if (tref) {
-                            auto tp = tref->GetPosition();
-                            auto* tcell = tref->GetParentCell();
-                            LOG("    Target position:    ({:.1f},{:.1f},{:.1f})", tp.x, tp.y, tp.z);
-                            LOG("    Target cell:        {} ({})",
-                                tcell ? "OK" : "NULL",
-                                tcell && tcell->GetName() ? tcell->GetName() : "?");
-                            LOG("    Target 3D:          {}",
-                                tref->Get3D() ? "OK" : "NULL (not loaded)");
-                            auto diff = pos - tp;
-                            LOG("    Distance:           {:.1f}", diff.Length());
-                        }
-                    }
-                } else if (useCoords) {
-                    LOG("    Coords mode:        pos=({:.1f},{:.1f},{:.1f})", posX, posY, posZ);
-                } else {
-                    LOG("    No target specified");
-                }
-
-                // ============ DIAG ENRICHI POUR TRAQUER LE CRASH BSShaderAccumulator ============
-                // Instruction qui crashe = and dword ptr [rax+0xF4] avec rax=0.
-                // Offset 0xF4 = NiAVObject::flags. Donc le moteur tente de modifier
-                // les flags d'un node 3D null pendant une passe de rendu/culling.
-                // On logue tous les etats critiques liees au 3D/fade/render.
-                LOG("  [DIAG-CRASH]");
-                try {
-                    // --- Skeleton BSFadeNode du joueur : fade en cours ? ---
-                    if (body3D) {
-                        auto* fadeNode = body3D->AsFadeNode();
-                        if (fadeNode) {
-                            auto& rt = fadeNode->GetRuntimeData();
-                            LOG("    fadeNode.currentFade={:.3f} u128={:.3f} u140={:.3f}",
-                                rt.currentFade, rt.unk128, rt.unk140);
-                            LOG("    fadeNode.flags152/153/154/155={:02X}/{:02X}/{:02X}/{:02X}",
-                                (int)rt.unk152, (int)rt.unk153, (int)rt.unk154, (int)rt.unk155);
-                        }
-                        // --- Scan des enfants du skeleton : y a-t-il des nullptr ou flags aberrants ? ---
-                        auto* node = body3D->AsNode();
-                        if (node) {
-                            auto& children = node->GetChildren();
-                            int nullCount = 0;
-                            int totalCount = static_cast<int>(children.size());
-                            for (std::uint32_t i = 0; i < children.size(); ++i) {
-                                if (!children[i]) nullCount++;
-                            }
-                            LOG("    skeleton.children total={} null={} selfFlags={:08X}",
-                                totalCount, nullCount, body3D->GetFlags().underlying());
-                        }
-                    } else {
-                        LOG("    skeleton.3D=NULL (player has no 3D model)");
-                    }
-                } catch (...) { LOG("    [diag skeleton] exception"); }
-
-                try {
-                    // --- Actor flags internes (delayUpdateScenegraph, resetAI, etc.) ---
-                    auto& rt = p->GetActorRuntimeData();
-                    LOG("    actor.boolBits={:08X} boolFlags={:08X} criticalStage={}",
-                        rt.boolBits.underlying(), rt.boolFlags.underlying(),
-                        static_cast<int>(rt.criticalStage.underlying()));
-                } catch (...) { LOG("    [diag actor flags] exception"); }
-
-                try {
-                    // --- Char controller detail (state, want state, fall time, havok) ---
-                    if (charCtrl) {
-                        LOG("    cc.flags={:08X} fallTime={:.2f} speedPct={:.3f} scale={:.2f}",
-                            charCtrl->flags.underlying(), charCtrl->fallTime,
-                            charCtrl->speedPct, charCtrl->scale);
-                    }
-                } catch (...) { LOG("    [diag cc detail] exception"); }
-
-                try {
-                    // --- Camera state (transition, zoom) ---
-                    auto* cam = RE::PlayerCamera::GetSingleton();
-                    if (cam) {
-                        int camStateId = cam->currentState ? static_cast<int>(cam->currentState->id) : -1;
-                        LOG("    cam.state={} idleTimer={:.2f} yaw={:.3f} bowZoom={} weapSheath={}",
-                            camStateId, cam->idleTimer, cam->yaw,
-                            cam->bowZoomedIn, cam->isWeapSheathed);
-                    }
-                } catch (...) { LOG("    [diag camera] exception"); }
-
-                try {
-                    // --- Process + package detail ---
-                    if (process) {
-                        auto& pkg = process->currentPackage;
-                        LOG("    pkg.cur={:08X} target={:08X} procIdx={} startT={:.2f}",
-                            pkg.package ? pkg.package->GetFormID() : 0,
-                            pkg.target.native_handle(),
-                            pkg.currentProcedureIndex, pkg.packageStartTime);
-                        LOG("    pkg.modFlags={:08X} modIntFlag={:04X} actorPkgFlags={:02X}",
-                            pkg.modifiedPackageFlag, pkg.modifiedInterruptFlag,
-                            pkg.actorPackageFlags.underlying());
-
-                        // MiddleHigh (update 3D pending, killmove, furniture...)
-                        if (auto* mh = process->middleHigh) {
-                            LOG("    mh.update3D={:02X} alphaMult={:.2f} killMoveT={:.2f} forceNextUpdate={}",
-                                mh->update3DModel.underlying(), mh->alphaMult,
-                                mh->killMoveTimer, mh->forceNextUpdate);
-                            LOG("    mh.cc={} weapBone={} headNode={} furnID={} occupiedFurn={:08X}",
-                                mh->charController.get() ? "ok" : "null",
-                                mh->weaponBone ? "ok" : "null",
-                                mh->headNode ? "ok" : "null",
-                                mh->currentFurnitureMarkerID,
-                                mh->occupiedFurniture.native_handle());
-                        }
-                        // High (fade, voice, door approach)
-                        if (auto* h = process->high) {
-                            LOG("    hi.fadeState={} fadeTrigger={:08X} maxAlpha={:.2f} approachDoor={}",
-                                static_cast<int>(h->fadeState.underlying()),
-                                h->fadeTrigger ? h->fadeTrigger->GetFormID() : 0,
-                                h->maxAlpha, h->approachingAutoTeleportDoor);
-                            LOG("    hi.voiceState={} voiceT={:.2f} greetingPC={} talkingToPC={}",
-                                static_cast<int>(h->voiceState.underlying()),
-                                h->voiceTimer, h->greetingPlayer, h->talkingToPC);
-                        }
-                    }
-                } catch (...) { LOG("    [diag process] exception"); }
-
-                try {
-                    // --- Cell detail (state, detached, flags) ---
-                    if (cell) {
-                        LOG("    cell.state={} detached={} flags={:04X}",
-                            static_cast<int>(cell->cellState.underlying()),
-                            cell->cellDetached,
-                            cell->cellFlags.underlying());
-                    }
-                } catch (...) { LOG("    [diag cell detail] exception"); }
-
-                try {
-                    // --- Main state (freeze, onIdle, reload) ---
-                    auto* main = RE::Main::GetSingleton();
-                    if (main) {
-                        LOG("    main.gameActive={} onIdle={} freezeTime={} freezeNext={} reloadContent={} resetGame={} quitGame={}",
-                            main->gameActive, main->onIdle,
-                            main->freezeTime, main->freezeNextFrame,
-                            main->reloadContent, main->resetGame, main->quitGame);
-                    }
-                } catch (...) { LOG("    [diag main] exception"); }
-
-                try {
-                    // --- UI stack (menus en cours) ---
-                    auto* ui2 = RE::UI::GetSingleton();
-                    if (ui2) {
-                        LOG("    ui.stack={} pauses={} itemMenus={} modal={} closingAll={} visible={}",
-                            ui2->menuStack.size(),
-                            ui2->numPausesGame, ui2->numItemMenus,
-                            static_cast<int>(ui2->modal),
-                            static_cast<int>(ui2->closingAllMenus),
-                            static_cast<int>(ui2->menuSystemVisible));
-                    }
-                } catch (...) { LOG("    [diag ui] exception"); }
-
-                try {
-                    // --- ProcessLists (charge NPC, queues de tâches) ---
-                    auto* pl = RE::ProcessLists::GetSingleton();
-                    if (pl) {
-                        LOG("    pl.actors high={} mh={} ml={} low={}",
-                            pl->highActorHandles.size(),
-                            pl->middleHighActorHandles.size(),
-                            pl->middleLowActorHandles.size(),
-                            pl->lowActorHandles.size());
-                        LOG("    pl.runSched={} runMov={} runAnim={} magicEff={}",
-                            pl->runSchedules, pl->runMovement, pl->runAnimations,
-                            pl->magicEffects.size());
-                    }
-                } catch (...) { LOG("    [diag processlists] exception"); }
-
-                try {
-                    // --- Time / calendar (pour correler avec autres events) ---
-                    auto* cal = RE::Calendar::GetSingleton();
-                    if (cal) {
-                        LOG("    time.hour={:.3f} days={:.3f} scale={:.1f}",
-                            cal->GetHour(), cal->rawDaysPassed, cal->GetTimescale());
-                    }
-                } catch (...) { LOG("    [diag time] exception"); }
-
-                LOG("=== END PRE-DISPATCH DIAG ===");
-            }
-        }
-#endif
-
         RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback;
         bool ok = vm->DispatchMethodCall(
             handle,
@@ -1297,12 +432,10 @@ static void StartAutoWalk(RE::FormID targetFormID, float stopDistance = 100.0f,
 
         if (ok) {
             g_autoWalking.store(true);
-            auto* p = RE::PlayerCharacter::GetSingleton();
-            if (p) g_autoWalkLastPos = p->GetPosition();
             LOG("AutoWalk: started toward FormID {:08X}, distance {}", targetFormID, stopDistance);
-            StartAutoWalkMonitor();
-            // Lance le poll de crash diag (se arrete auto quand g_autoWalking=false ou apres 60s)
-            StartAutoWalkCrashDiagPoll(targetFormID, useCoords, posX, posY, posZ);
+            // Pas de monitor C++ : le cancel input est detecte par AutoWalkInputUpdate()
+            // appele depuis InputListener::ProcessEvent (style f4access).
+            // L'arrivee est detectee cote Papyrus (OnUpdate + ModEvent).
         } else {
             LOG("AutoWalk: DispatchMethodCall failed");
             Speak(L"AutoWalk error");
@@ -1314,35 +447,13 @@ static void StartAutoWalk(RE::FormID targetFormID, float stopDistance = 100.0f,
 static void StopAutoWalk() {
     g_autoWalking.store(false);
 
-    // Arrêter le monitor et attendre qu'il se termine
-    if (g_autoWalkMonitor.joinable()) {
-        g_autoWalkMonitor.request_stop();
-        g_autoWalkMonitor.join();
-    }
-
-    // Arreter le poll de crash diag
-    if (g_autoWalkCrashDiag.joinable()) {
-        g_autoWalkCrashDiag.request_stop();
-        g_autoWalkCrashDiag.join();
-    }
-
     auto* task = SKSE::GetTaskInterface();
     if (!task) return;
 
     task->AddTask([]() {
-        auto* player = RE::PlayerCharacter::GetSingleton();
-        if (player) {
-            player->SetAIDriven(false);
-            auto* avo = player->AsActorValueOwner();
-            if (avo) {
-                float base = avo->GetBaseActorValue(RE::ActorValue::kSpeedMult);
-                avo->SetActorValue(RE::ActorValue::kSpeedMult, base);
-                LOG("AutoWalk: restored SpeedMult to base={}", base);
-            }
-            LOG("AutoWalk: C++ safety reset AIDriven=false");
-            player->EvaluatePackage();
-        }
-
+        // Pas de SetAIDriven/SpeedMult/EvaluatePackage C++ ici : c'est Papyrus
+        // StopWalkingInternal qui s'en charge via Game.SetPlayerAIDriven(false).
+        // Style f4access : le C++ ne mute JAMAIS l'acteur, il dispatche au script.
         auto* quest = FindAutoWalkQuest();
         if (!quest) return;
 

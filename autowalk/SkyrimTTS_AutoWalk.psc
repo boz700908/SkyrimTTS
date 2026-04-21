@@ -198,7 +198,17 @@ Function CheckArrival()
     Debug.Trace("SkyrimTTS:AutoWalk - Check: dist=" + dist)
     if dist <= fStopDistance + 20.0
         Debug.Trace("SkyrimTTS:AutoWalk - Arrived, distance: " + dist)
+        ; Orienter le joueur face a la cible (equivalent f4access PlayerRef.SetLookAt)
+        ; Actor.SetLookAt est natif Skyrim (verifie dans Actor.psc ligne 604).
+        if CurrentTarget != None
+            PlayerRef.SetLookAt(CurrentTarget, true)
+        endIf
         StopWalkingInternal(false)
+        ; Signaler l'arrivee au plugin C++ qui annoncera "Arrived at X".
+        ; Le cleanup AIDriven/EvaluatePackage est deja fait par StopWalkingInternal
+        ; ci-dessus ; le C++ ne mute plus l'acteur (style f4access).
+        ; SendModEvent est natif sur Form (Form.psc ligne 214).
+        SendModEvent("SkyrimNVDA_AutoWalkArrived")
     else
         RegisterForSingleUpdate(CheckInterval)
     endIf

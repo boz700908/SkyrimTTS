@@ -834,6 +834,12 @@ public:
     RE::BSEventNotifyControl ProcessEvent(RE::InputEvent* const* a_event, RE::BSTEventSource<RE::InputEvent*>*) {
         if (!a_event || !*a_event) return RE::BSEventNotifyControl::kContinue;
 
+        // Autowalk cancel check : si le joueur fait un input de mouvement
+        // (WASD, Space, Escape, fleches, stick gauche, A/B/Start...) pendant
+        // un autowalk actif, on l'annule. Style f4access : pas de polling
+        // thread, on reagit aux events reels.
+        AutoWalkInputUpdate(a_event);
+
         // Remap gamepad demandé par le HUD hook (premières secondes après chargement)
         if (g_gamepadNeedsRemap.exchange(false)) {
             RemapGamepadControls();
@@ -2372,6 +2378,7 @@ SKSEPluginLoad(const SKSE::LoadInterface* skse) {
             RegisterDeathListener();
             RegisterHitListener();
             RegisterLootListeners();  // TESResetEvent + TESContainerChangedEvent
+            RegisterAutoWalkModEventListener();  // SkyrimNVDA_AutoWalkArrived (envoyé par Papyrus)
             // RegisterFurnitureListener();  // DÉSACTIVÉ POUR TEST
             InstallHUDAdvanceMovieHook();
             InstallConsoleAdvanceMovieHook();
