@@ -65,11 +65,6 @@ static RE::TESQuest* FindAutoWalkQuest() {
     return nullptr;
 }
 
-// Debug flag : conserve le temp marker XMarkerHeading cree pour le mode coords.
-// A garder a true en prod. Mettre a false uniquement pour tester si le marker
-// est impliquer dans un crash.
-static constexpr bool g_autoWalkEnableXMarkerDelete = true;
-
 static std::atomic_bool g_autoWalking{false};
 static std::wstring     g_autoWalkTarget;
 static RE::FormID       g_autoWalkTargetID{0};
@@ -185,9 +180,6 @@ static bool AutoWalkInputUpdate(RE::InputEvent* const* a_event) {
 // Forward declaration
 static void StopAutoWalk();
 
-// Temp marker C++ (mode boussole/fallback) — déclaré ici pour que StopAutoWalk puisse le cleanup
-static RE::FormID g_autoWalkTempMarker{0};
-
 // Sécurité : nettoyage d'un autowalk potentiellement gravé dans la save
 // (cas où le jeu a crashé pendant un autowalk → au reload la save contient
 // AIDriven=true, DstMarker set, IsWalking=true, Travel package actif → si on
@@ -232,10 +224,10 @@ static void AutoWalkSafetyReset() {
 
 // =============================================================================
 // Helper : dispatche OnStopWalking au Papyrus. Utilise par le listener ModEvent
-// d'arrivee, par AutoWalkInputUpdate (cancel input) et par le giveup.
-// Contrairement a StopAutoWalk(), ce helper ne touche pas au temp marker C++
-// et ne clear pas g_autoWalkTarget (c'est StopAutoWalk qui fait le cleanup
-// complet quand c'est demande explicitement depuis scanner.h).
+// d'arrivee et par AutoWalkInputUpdate (cancel input).
+// Contrairement a StopAutoWalk(), ce helper ne clear pas g_autoWalkTarget
+// (c'est StopAutoWalk qui fait le cleanup complet quand c'est demande
+// explicitement depuis scanner.h).
 //
 // Style f4access : aucune mutation d'acteur cote C++, uniquement dispatch Papyrus.
 // =============================================================================
@@ -477,77 +469,13 @@ static void StopAutoWalk() {
             callback
         );
 
-        // Supprimer le temp marker C++ s'il existe (mode boussole/fallback)
-        // ROLLBACK test : g_autoWalkEnableXMarkerDelete=false garde le marker en vie.
-        // Les markers s'accumulent mais c'est leger et on elimine un suspect du crash.
-        if (g_autoWalkEnableXMarkerDelete && g_autoWalkTempMarker != 0) {
-            auto* markerForm = RE::TESForm::LookupByID(g_autoWalkTempMarker);
-            auto* markerRef = markerForm ? markerForm->As<RE::TESObjectREFR>() : nullptr;
-            if (markerRef) {
-                markerRef->Disable();
-                markerRef->SetDelete(true);
-                LOG("AutoWalk: deleted C++ temp marker {:08X}", g_autoWalkTempMarker);
-            }
-            g_autoWalkTempMarker = 0;
-        } else if (g_autoWalkTempMarker != 0) {
-            LOG("AutoWalk: kept C++ temp marker {:08X} alive (rollback test)", g_autoWalkTempMarker);
-            g_autoWalkTempMarker = 0;
-        }
+        // Pas de cleanup XMarker C++ ici : Papyrus StopWalkingInternal s'en charge
+        // (detecte les XMarkers 0x10 crees par PlaceAtMe et fait Disable + Delete).
+        // Style f4access : zero manipulation de ref cote C++.
 
         g_autoWalkTarget.clear();
         LOG("AutoWalk: stop requested");
     });
-}
-
-// Toggle autowalk vers l'objet sélectionné dans le scanner
-// Créer un XMarker temporaire à une position donnée pour l'autowalk
-// Retourne le FormID du marqueur créé, ou 0 en cas d'échec
-// NOTE: g_autoWalkTempMarker est déclaré plus haut (avant StopAutoWalk) pour le cleanup
-
-static RE::FormID CreateTempMarkerAt(const RE::NiPoint3& pos) {
-    auto* player = RE::PlayerCharacter::GetSingleton();
-    if (!player) return 0;
-
-    // XMarkerHeading FormID = 0x10
-    auto* xmarkerBase = RE::TESForm::LookupByID(0x10);
-    if (!xmarkerBase) {
-        LOG("AutoWalk: XMarkerHeading (0x10) not found");
-        return 0;
-    }
-
-    auto* factory = RE::IFormFactory::GetConcreteFormFactoryByType<RE::TESObjectREFR>();
-    if (!factory) {
-        LOG("AutoWalk: no form factory for TESObjectREFR");
-        return 0;
-    }
-
-    auto* marker = factory->Create();
-    if (!marker) {
-        LOG("AutoWalk: failed to create marker");
-        return 0;
-    }
-
-    marker->SetObjectReference(static_cast<RE::TESBoundObject*>(xmarkerBase));
-    marker->data.location = pos;
-
-    // Placer dans la cellule du joueur via MoveTo (attache le ref a la cellule
-    // et enregistre dans la grille), puis deplacer via SetPosition qui fait un
-    // update complet (contrairement a l'ecriture directe de data.location qui
-    // peut ne pas notifier le systeme de navmesh).
-    auto* cell = player->GetParentCell();
-    if (cell) {
-        marker->MoveTo(player);
-        marker->SetPosition(pos);
-        // Forcer le chargement du 3D : sans ca le package Travel refuse de
-        // pathfinder vers la ref et le joueur reste stuck (desired speed=0).
-        marker->Load3D(false);
-    }
-
-    LOG("AutoWalk: created temp marker FormID={:08X} at ({:.0f}, {:.0f}, {:.0f}) 3D={}",
-        marker->GetFormID(), pos.x, pos.y, pos.z,
-        marker->Is3DLoaded() ? "loaded" : "not loaded");
-
-    return marker->GetFormID();
 }
 
 // Forward declaration — le corps est plus bas, défini après le wrapper.
@@ -1274,29 +1202,23 @@ static void ToggleAutoWalkImpl() {
                 bestDoor->GetDisplayFullName() ? bestDoor->GetDisplayFullName() : "?",
                 targetID, bestHeadingDiff * 180.0f / 3.14159265f);
         } else {
-            LOG("AutoWalk: no matching door found, using XMarker fallback");
-            // Fallback : créer un XMarker dans la direction de la boussole
+            // Fallback coords-only : pas de porte matching, on utilise la derniere
+            // position connue de l'objet scanne. Papyrus creera son propre XMarker
+            // via PlaceAtMe (cf OnWalkToTarget branche "Dynamic object").
             if (g_scanIndex >= 0 && g_scanIndex < static_cast<int>(g_scannedFiltered.size())) {
                 auto& obj = *g_scannedFiltered[g_scanIndex];
                 if (obj.lastKnownPos.x != 0 || obj.lastKnownPos.y != 0) {
                     RE::NiPoint3 targetPos = obj.lastKnownPos;
                     targetPos.z = playerPos.z;
-                    RE::FormID markerID = CreateTempMarkerAt(targetPos);
-                    if (markerID != 0) {
-                        g_autoWalkTempMarker = markerID;
-                        targetID = markerID;
-                    } else {
-                        Speak(L"Cannot walk to this target");
-                        return;
-                    }
-                } else {
-                    Speak(L"Cannot walk to this target");
+                    LOG("AutoWalk: no matching door, dispatching coords-only ({:.0f},{:.0f},{:.0f})",
+                        targetPos.x, targetPos.y, targetPos.z);
+                    Speak(L"Walking to " + targetName);
+                    StartAutoWalk(0, 100.0f, targetPos.x, targetPos.y, targetPos.z);
                     return;
                 }
-            } else {
-                Speak(L"Cannot walk to this target");
-                return;
             }
+            Speak(L"Cannot walk to this target");
+            return;
         }
     }
 
@@ -1574,19 +1496,12 @@ static void ToggleAutoWalkImpl() {
                 hopPos.y = playerPos.y + std::cos(rad) * kHopDistance;
                 hopPos.z = playerPos.z;
 
-                RE::FormID markerID = CreateTempMarkerAt(hopPos);
-                if (markerID != 0) {
-                    g_autoWalkTempMarker = markerID;
-                    LOG("AutoWalk case 3b: compass hop marker FormID={:08X} heading={:.1f} deg at ({:.0f},{:.0f},{:.0f})",
-                        markerID, compassHeading, hopPos.x, hopPos.y, hopPos.z);
-                    // Dispatch en coord mode (pos x/y/z != 0) pour que le package
-                    // Papyrus utilise SetPosition du marker plutot que ForceRefTo,
-                    // ce qui contourne le probleme du Travel package qui echoue
-                    // silencieusement sur un XMarker runtime FF*.
-                    StartAutoWalk(markerID, 150.0f, hopPos.x, hopPos.y, hopPos.z);
-                    return;
-                }
-                LOG("AutoWalk case 3b: compass heading={:.1f} deg but CreateTempMarkerAt failed", compassHeading);
+                LOG("AutoWalk case 3b: compass hop heading={:.1f} deg at ({:.0f},{:.0f},{:.0f}) — coords-only dispatch",
+                    compassHeading, hopPos.x, hopPos.y, hopPos.z);
+                // Dispatch coords-only (aiFormID=0) : Papyrus cree son propre XMarker
+                // via PlaceAtMe + SetPosition, pas de marker C++ intermediaire.
+                StartAutoWalk(0, 150.0f, hopPos.x, hopPos.y, hopPos.z);
+                return;
             } else {
                 LOG("AutoWalk case 3b: no compass quest marker available");
             }
