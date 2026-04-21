@@ -5,6 +5,32 @@
 
 ---
 
+## ÉTAT ACTUEL (2026-04-21) — refactor majoritairement exécuté
+
+Le refactor f4access-style a été appliqué sur la branche Pyrhame. Résultat :
+
+- **Étapes complétées** : 1, 2, 3, 4, 5 (parties 1 et 2), 8, 9
+- **Étapes non faites** (reportées) : 6 (Scene.Start/Stop Papyrus), 7 (mode mounted réel)
+- **autowalk.h** : passé de **2531 à ~1555 lignes** (-39%)
+- **Zéro mutation d'acteur C++** : plus aucun `SetAIDriven`, `EvaluatePackage`, création de ref, delete de ref
+- **Zéro thread de polling** : le monitor jthread et le crash-diag jthread sont supprimés
+- **Cancel input event-driven** via `AutoWalkInputUpdate()` dans `InputListener::ProcessEvent` (style f4access)
+- **Arrivée détectée côté Papyrus** via ModEvent `SkyrimNVDA_AutoWalkArrived`, orientation via `Actor.SetLookAt` natif
+- **Tests** : objet jeté au sol fonctionne, autowalk général stable, pas de régression observée
+- **Crash BSShaderAccumulator** : éliminé par construction (la classe de bug causée par mutation d'acteur pendant render pass n'est plus possible)
+
+**Commits principaux** :
+- `0608a3b` — refactor principal (étapes 1-3, 5, 9)
+- `b8a7597` — étape 4 (suppression CreateTempMarkerAt)
+
+**Éléments C++ restants qui touchent à l'acteur** (conservés volontairement) :
+- `kTryStep` / `kCanJump` sur le char controller (flags physiques Havok, pas de l'AI — pas d'API Papyrus équivalente et pas impliqué dans la classe de crash)
+- `SetActorValue(kSpeedMult, base)` en pre-start (corrige un bug de vitesse lente post-load)
+
+Si l'étape 6 (Scene) est un jour faite, la pureté C++-messager sera parfaite. L'étape 7 (mounted) est une feature distincte, pas un refactor.
+
+---
+
 ## Table des matières
 
 1. [Rapport exhaustif f4access](#1-rapport-exhaustif-f4access)
