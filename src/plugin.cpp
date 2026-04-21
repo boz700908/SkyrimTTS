@@ -1855,10 +1855,12 @@ public:
             }
 
             // H = stats contextuelles (en jeu: vitals, en inventaire: or/poids)
-            // Ctrl+H = effets actifs (poison, maladies, buffs)
+            // Maj+H = effets actifs (poison, maladies, buffs)
+            // Note : on evite Ctrl+H car ça conflit avec le raccourci vanilla
+            // stand/accroupi (Crouch) qui peut etre remappe sur ctrl par le joueur.
             if (code == RE::BSKeyboardDevice::Keys::kH) {
-                const bool ctrl = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
-                if (ctrl) {
+                const bool shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+                if (shift) {
                     AnnounceActiveEffects();
                 } else if (g_invOpen.load(std::memory_order_relaxed)) {
                     AnnounceInventoryStats();

@@ -347,7 +347,7 @@ static void AnnouncePlayerVitals() {
     });
 }
 
-// Ctrl+H : annonce les effets actifs sur le joueur (poison, maladies, buffs)
+// Maj+H : annonce les effets actifs sur le joueur (poison, maladies, buffs)
 // Lit player->AsMagicTarget()->GetActiveEffectList() et formate :
 // "3 active effects: Poison 5 damage 12 seconds, Rockjoint, Fortify Health 50"
 static void AnnounceActiveEffects() {
