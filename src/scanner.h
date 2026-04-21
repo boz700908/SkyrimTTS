@@ -284,7 +284,7 @@ static ScanCategory CategorizeRef(RE::TESObjectREFR& ref) {
 
 // --- Sous-catégories : quelles catégories en ont ---
 static bool HasSubcategories(ScanCategory cat) {
-    return cat == kCatActivators || cat == kCatContainers ||
+    return cat == kCatAll || cat == kCatActivators || cat == kCatContainers ||
            cat == kCatDoors || cat == kCatCorpses || cat == kCatItems;
 }
 
@@ -313,7 +313,10 @@ static const std::vector<ScanSubcategory>& GetSubcategoriesFor(ScanCategory cat)
         ScanSubcategory::ItemSoulGems,
         ScanSubcategory::ItemMisc
     };
-    if (cat == kCatItems) return items;
+    // kCatAll et kCatItems partagent les memes sous-filtres items.
+    // Difference : dans kCatAll le sous-filtre "All" affiche TOUT (pas juste items),
+    // alors que dans kCatItems il n'y a que des items de toute facon.
+    if (cat == kCatItems || cat == kCatAll) return items;
     if (cat == kCatActivators) return activatorTypes;
     if (cat == kCatContainers || cat == kCatDoors || cat == kCatCorpses)
         return twoTypes;
@@ -351,7 +354,10 @@ static const wchar_t* GetSubcategoryName(ScanSubcategory sub) {
             case ScanSubcategory::ActivatorDestructible: return L"Destructible";
             default: return L"?";
         }
-    } else if (g_scanCategory == kCatItems) {
+    } else if (g_scanCategory == kCatItems || g_scanCategory == kCatAll) {
+        // kCatAll partage les memes sous-filtres items que kCatItems.
+        // Dans kCatAll, "All" affiche tous les objets (pas juste items).
+        // Dans kCatItems, "All" n'affiche que les items.
         switch (sub) {
             case ScanSubcategory::All:             return L"All";
             case ScanSubcategory::ItemWeapons:     return L"Weapons";
@@ -393,10 +399,13 @@ static bool MatchesSubcategory(const ScannedObject& obj) {
         if (g_scanSubcategory == ScanSubcategory::TypeA) return obj.isFurniture;
         if (g_scanSubcategory == ScanSubcategory::TypeB) return !obj.isFurniture;
         if (g_scanSubcategory == ScanSubcategory::ActivatorDestructible) return obj.isDestructible;
-    } else if (g_scanCategory == kCatItems) {
-        // AlchemyItem couvre potions ET nourriture — on distingue via la structure interne :
-        // on traite tout AlchemyItem comme Potions par défaut, sauf si c'est explicitement Food.
-        // Pour simplicité : Potions = AlchemyItem hors food, Food = test isFood plus bas.
+    } else if (g_scanCategory == kCatItems || g_scanCategory == kCatAll) {
+        // Sous-filtres items communs a kCatItems et kCatAll.
+        // Dans kCatAll + sous-filtre item : seuls les items correspondants sont
+        // retenus (les PNJ/portes/conteneurs/etc. sont filtres out). Le cas
+        // "ScanSubcategory::All" est deja renvoye true tout en haut de la fonction,
+        // donc en mode kCatAll "All" on voit bien tous les types.
+        // AlchemyItem couvre potions ET nourriture — on distingue via IsFood().
         switch (g_scanSubcategory) {
             case ScanSubcategory::ItemWeapons:     return obj.formType == RE::FormType::Weapon || obj.formType == RE::FormType::Ammo;
             case ScanSubcategory::ItemArmor:       return obj.formType == RE::FormType::Armor;
@@ -451,7 +460,11 @@ static void ApplyCategoryFilter() {
         // mais on les garde car le joueur s'attend a voir les lieux dans All.
         if (g_scanCategory == kCatAll && obj.category == kCatQuests) continue;
         if (g_scanCategory == kCatAll || obj.category == g_scanCategory) {
-            if (g_scanCategory == kCatAll || MatchesSubcategory(obj)) {
+            // Toujours appeler MatchesSubcategory (meme en kCatAll) pour que les
+            // sous-filtres items (Weapons, Armor, etc.) s'appliquent aussi en All.
+            // Quand g_scanSubcategory == All, MatchesSubcategory retourne true
+            // immediatement (short-circuit en tete), donc kCatAll + All affiche tout.
+            if (MatchesSubcategory(obj)) {
                 g_scannedFiltered.push_back(&obj);
             }
         }
@@ -549,6 +562,15 @@ static std::wstring GetObjectDirection(const ScannedObject& obj) {
     if (angle >= 202.5f && angle < 247.5f)  return L"southwest";
     if (angle >= 247.5f && angle < 292.5f)  return L"west";
     return L"northwest";
+}
+
+// Helper : renvoie ", above" / ", below" / "" selon l'ecart vertical entre deux
+// positions. Seuil 256 unites (~1 etage Skyrim), meme valeur que dans
+// FormatObjectAnnounce. Utilise par la visee auto et l'annonce des ennemis.
+static std::wstring FormatElevationSuffix(float zDiff) {
+    if (zDiff > 256.0f) return L", above";
+    if (zDiff < -256.0f) return L", below";
+    return L"";
 }
 
 // --- Formater l'annonce d'un objet ---
@@ -735,6 +757,31 @@ static int ReadDestructibleHealthPercent(RE::TESObjectREFR& ref, RE::TESBoundObj
     return static_cast<int>(ratio * 100.0f + 0.5f);
 }
 
+// =============================================================================
+// GetStablePosition : renvoie une position stable pour un ref, utilisable pour
+// un calcul de distance fiable.
+//
+// Probleme : ref->GetPosition() renvoie le centre de masse Havok, qui bouge a
+// chaque frame pour les objets physiques (epees jetees qui rebondissent, roulent,
+// s'enfoncent dans le sol). La distance affichee peut sauter de 500 a 3000 sans
+// que le joueur bouge.
+//
+// Solution : si le ref a son 3D charge et un worldBound valide, on utilise le
+// centre du bounding box visuel (node->worldBound.center) — stable car aligne
+// sur le mesh affiche, pas sur le centre de masse Havok. Sinon fallback sur
+// GetPosition() (objets non charges, acteurs sans mesh, etc).
+//
+// Style f4access : position stable = distance stable.
+// =============================================================================
+static RE::NiPoint3 GetStablePosition(RE::TESObjectREFR* ref) {
+    if (!ref) return {0, 0, 0};
+    auto* node = ref->Get3D();
+    if (node && node->worldBound.radius > 0.1f) {
+        return node->worldBound.center;
+    }
+    return ref->GetPosition();
+}
+
 // --- Scanner une cellule et ajouter ses références ---
 static void ScanCell(RE::TESObjectCELL* cell, RE::PlayerCharacter* player, const RE::NiPoint3& playerPos) {
     if (!cell) return;
@@ -764,8 +811,10 @@ static void ScanCell(RE::TESObjectCELL* cell, RE::PlayerCharacter* player, const
                 }
             }
 
-            // Distance
-            auto refPos = ref.GetPosition();
+            // Distance : on utilise GetStablePosition pour eviter les sauts
+            // causes par GetPosition() qui renvoie le centre de masse Havok (bouge
+            // a chaque frame pour les objets physiques jetes/rebondissants).
+            auto refPos = GetStablePosition(&ref);
             auto diff = playerPos - refPos;
             float dist = diff.Length();
 
@@ -1201,7 +1250,7 @@ static void DoScanInternal() {
                         targetRef->GetFormID());
                 }
 
-                auto refPos = targetRef->GetPosition();
+                auto refPos = GetStablePosition(targetRef);
                 const char* refName = targetRef->GetDisplayFullName();
                 auto* refCell = targetRef->GetParentCell();
                 LOG("Scanner: target ref='{}' FormID={:08X} pos=({:.0f},{:.0f},{:.0f}) cell='{}' dist={:.0f}",
@@ -1214,6 +1263,7 @@ static void DoScanInternal() {
                 // chercher la porte à prendre via la boussole (comme l'autowalk)
                 RE::NiPoint3 actualPos = refPos;
                 RE::FormID actualFormID = targetRef->GetFormID();
+                bool compassFallbackUsed = false;  // pour distinguer orientation/distance apres fallback
 
                 if (refCell && refCell != playerCell) {
                     LOG("Scanner: quest target in different cell ('{}' vs '{}'), searching entrance",
@@ -1354,16 +1404,22 @@ static void DoScanInternal() {
                             actualPos.x = playerPos.x + std::sin(compassRad) * 50000.0f;
                             actualPos.y = playerPos.y + std::cos(compassRad) * 50000.0f;
                             actualPos.z = playerPos.z;
+                            compassFallbackUsed = true;
                             LOG("Scanner: quest compass fallback heading={:.1f}°", compassHeading);
                         }
                     }
                 }
 
-                // Distance 2D (comme la carte) pour les quêtes — cohérent avec les lieux
-                float dx = playerPos.x - actualPos.x;
-                float dy = playerPos.y - actualPos.y;
-                float dist = std::sqrt(dx * dx + dy * dy);
-                float zDiff = actualPos.z - playerPos.z;
+                // Distance : en cas de fallback compass, actualPos est une position
+                // fictive a 50000u dans la direction de la boussole (pour l'orientation
+                // camera). On utilise alors refPos (vraie position de la cible) pour
+                // la distance, sinon le joueur verrait "25000 unites" au scan puis
+                // "4500 unites" au refresh quand le RefreshFilteredList recalcule avec
+                // GetStablePosition. Plus de saut.
+                auto distPos = compassFallbackUsed ? refPos : actualPos;
+                auto diff = distPos - playerPos;
+                float dist = diff.Length();
+                float zDiff = distPos.z - playerPos.z;
 
                 // Nom : texte de l'objectif (résoudre les <Alias=XXX>)
                 std::string objText;
@@ -1380,7 +1436,11 @@ static void DoScanInternal() {
                 obj.name = Utf8ToWString(objText.c_str());
                 obj.distance = dist;
                 obj.zDiff = zDiff;
-                obj.lastKnownPos = actualPos;
+                // Stocker la vraie position (refPos) plutot que la position fictive
+                // du compass, pour que RefreshFilteredList utilise la bonne distance
+                // au lieu de recalculer 25000u. L'orientation camera (si necessaire)
+                // est recalculee live via le HUD compass dans ScannerAnnounceCurrent.
+                obj.lastKnownPos = compassFallbackUsed ? refPos : actualPos;
                 obj.category = kCatQuests;
                 obj.locked = false;
                 obj.empty = false;
@@ -1440,9 +1500,9 @@ static void DoScanInternal() {
 
     // --- Marqueur personnalisé de la carte (touche P) ---
     if (g_customMarkerActive && (g_customMarkerPos.x != 0 || g_customMarkerPos.y != 0)) {
-        float dx = g_customMarkerPos.x - playerPos.x;
-        float dy = g_customMarkerPos.y - playerPos.y;
-        float dist = std::sqrt(dx * dx + dy * dy);
+        // Distance 3D complete (style f4access), coherente avec le scanner principal.
+        auto diff = g_customMarkerPos - playerPos;
+        float dist = diff.Length();
 
         ScannedObject obj;
         obj.formID = g_customMarkerFormID;  // FormID réel du marqueur de carte
@@ -1489,10 +1549,10 @@ static void DoScanInternal() {
                         const char* rawName = mapData->locationName.GetFullName();
                         if (!rawName || !*rawName) continue;
 
-                        auto refPos = ref->GetPosition();
-                        float dx = refPos.x - playerPos.x;
-                        float dy = refPos.y - playerPos.y;
-                        float dist = std::sqrt(dx * dx + dy * dy);
+                        auto refPos = GetStablePosition(ref);
+                        // Distance 3D complete (style f4access), coherente avec le scanner principal.
+                        auto diff = refPos - playerPos;
+                        float dist = diff.Length();
 
                         // Seulement dans un rayon de ~15000 unités (comme la boussole étendue)
                         if (dist > 15000.0f) continue;
@@ -1634,24 +1694,24 @@ static void RefreshFilteredList() {
     auto playerPos = player ? player->GetPosition() : RE::NiPoint3{0, 0, 0};
 
     // Parcourir g_scannedAll et mettre à jour l'état live
+    // Style f4access : les objets non charges sont RETIRES de la liste, pas affiches
+    // avec une position en cache (qui peut etre obsolete de plusieurs minutes).
+    // Exception : les quetes gardent leur lastKnownPos car la cible cross-cell est
+    // souvent dans une cellule non chargee (intention : "entree du lieu" via worldLocMarker).
     for (auto& obj : g_scannedAll) {
         auto* form = RE::TESForm::LookupByID(obj.formID);
         if (!form) {
-            // Objet inaccessible (FF* dynamique, cellule déchargée)
-            // Recalculer la distance depuis la position en cache
-            if (player && (obj.lastKnownPos.x != 0 || obj.lastKnownPos.y != 0)) {
-                auto diff = playerPos - obj.lastKnownPos;
-                obj.distance = diff.Length();
-                obj.zDiff = obj.lastKnownPos.z - playerPos.z;
-            }
+            // FormID invalide (FF* runtime supprime par le moteur, ou ref deleted)
+            // On retire de la liste plutot que d'afficher un fantome.
+            obj.category = kCatAll;
+            obj.formID = 0;
             continue;
         }
         auto* ref = form->AsReference();
         if (!ref) continue;
 
         // Objet ramassé, supprimé ou désactivé → retirer de la liste
-        // Exception : les quêtes ne sont jamais invalidées ici (leur cible peut être
-        // dans une cellule non chargée, désactivée, ou pas encore créée)
+        // Exception : les quêtes gardent leur cache (cross-cell intentionnel)
         if (obj.category != kCatQuests) {
             if (ref->IsDisabled() || ref->IsDeleted() || !ref->Is3DLoaded()) {
                 obj.category = kCatAll;
@@ -1669,7 +1729,9 @@ static void RefreshFilteredList() {
                 obj.distance = diff.Length();
                 obj.zDiff = obj.lastKnownPos.z - playerPos.z;
             } else {
-                auto refPos = ref->GetPosition();
+                // GetStablePosition evite les sauts causes par Havok pour les
+                // objets jetes/rebondissants (centre de masse vs centre visuel).
+                auto refPos = GetStablePosition(ref);
                 auto diff = playerPos - refPos;
                 obj.distance = diff.Length();
                 obj.zDiff = refPos.z - playerPos.z;
@@ -1813,9 +1875,10 @@ static void ScannerNextObjectImpl() {
         auto* refForm = RE::TESForm::LookupByID(nextObj.formID);
         auto* ref = refForm ? refForm->AsReference() : nullptr;
         if (ref && ref->Is3DLoaded()) {
-            auto diff = p->GetPosition() - ref->GetPosition();
+            auto refPos = GetStablePosition(ref);
+            auto diff = p->GetPosition() - refPos;
             nextObj.distance = diff.Length();
-            nextObj.zDiff = ref->GetPosition().z - p->GetPosition().z;
+            nextObj.zDiff = refPos.z - p->GetPosition().z;
         } else if (nextObj.lastKnownPos.x != 0 || nextObj.lastKnownPos.y != 0) {
             auto diff = p->GetPosition() - nextObj.lastKnownPos;
             nextObj.distance = diff.Length();
@@ -1859,9 +1922,10 @@ static void ScannerPrevObjectImpl() {
         auto* refForm = RE::TESForm::LookupByID(prevObj.formID);
         auto* ref = refForm ? refForm->AsReference() : nullptr;
         if (ref && ref->Is3DLoaded()) {
-            auto diff = p->GetPosition() - ref->GetPosition();
+            auto refPos = GetStablePosition(ref);
+            auto diff = p->GetPosition() - refPos;
             prevObj.distance = diff.Length();
-            prevObj.zDiff = ref->GetPosition().z - p->GetPosition().z;
+            prevObj.zDiff = refPos.z - p->GetPosition().z;
         } else if (prevObj.lastKnownPos.x != 0 || prevObj.lastKnownPos.y != 0) {
             auto diff = p->GetPosition() - prevObj.lastKnownPos;
             prevObj.distance = diff.Length();
@@ -1987,7 +2051,7 @@ static void RefreshQuestTarget(ScannedObject& obj) {
             }
 
             // === Résolution de la position : même logique que le scanner principal ===
-            auto refPos = targetRef->GetPosition();
+            auto refPos = GetStablePosition(targetRef);
             auto* refCell = targetRef->GetParentCell();
             RE::NiPoint3 actualPos = refPos;
 
@@ -2081,17 +2145,17 @@ static void RefreshQuestTarget(ScannedObject& obj) {
                 // Sinon (refCell extérieure différente du joueur) : actualPos = refPos direct (cas normal)
             }
 
-            // Distance 2D (X/Y), cohérent avec la carte et le scan principal
-            float dx = playerPos.x - actualPos.x;
-            float dy = playerPos.y - actualPos.y;
-            float dist2D = std::sqrt(dx * dx + dy * dy);
+            // Distance 3D complete (style f4access), coherente avec le scan initial
+            // et le reste du scanner. Evite les sauts 2D/3D dans les refresh.
+            auto diff = actualPos - playerPos;
+            float dist3D = diff.Length();
 
             obj.formID = targetRef->GetFormID();
             obj.lastKnownPos = actualPos;
-            obj.distance = dist2D;
+            obj.distance = dist3D;
             obj.zDiff = actualPos.z - playerPos.z;
-            LOG("Scanner: quest target refreshed to FormID={:08X} dist={:.0f} (2D, actualPos=({:.0f},{:.0f},{:.0f})){}",
-                obj.formID, dist2D, actualPos.x, actualPos.y, actualPos.z,
+            LOG("Scanner: quest target refreshed to FormID={:08X} dist={:.0f} (3D, actualPos=({:.0f},{:.0f},{:.0f})){}",
+                obj.formID, dist3D, actualPos.x, actualPos.y, actualPos.z,
                 ignoreCTDA ? " [PASS 1 — CTDA ignored]" : "");
             refreshed = true;
             break;  // sort de la boucle des targets
@@ -2323,9 +2387,10 @@ static void ScannerAnnounceCurrent() {
             }
         }
 
-        // Distance calculée depuis GetPosition() (base de l'objet, cohérent avec le scan)
-        // targetPos (centre 3D) est utilisé uniquement pour l'orientation caméra
-        auto basePos = ref->GetPosition();
+        // Distance calculee via GetStablePosition (centre visuel du mesh si dispo,
+        // sinon GetPosition). Coherent avec le scan principal. Pour les objets
+        // physiques qui rebondissent, evite les sauts de distance 3000->500.
+        auto basePos = GetStablePosition(ref);
         auto diff = playerPos - basePos;
         obj.distance = diff.Length();
         obj.zDiff = basePos.z - playerPos.z;
@@ -2955,7 +3020,7 @@ static bool GetActiveQuestNavTarget(RE::PlayerCharacter* player, RE::NiPoint3& o
                 if (!target->conditions.IsTrue(player, targetRef)) continue;
             }
 
-            auto refPos = targetRef->GetPosition();
+            auto refPos = GetStablePosition(targetRef);
             auto* refCell = targetRef->GetParentCell();
             RE::NiPoint3 actualPos = refPos;
 
@@ -3032,7 +3097,7 @@ static bool FindNearestQuestTarget(RE::PlayerCharacter* player, RE::NiPoint3& ou
             auto* targetCell = targetRef->GetParentCell();
             if (!targetCell || targetCell != playerCell) continue;
 
-            auto refPos = targetRef->GetPosition();
+            auto refPos = GetStablePosition(targetRef);
             float dist = (playerPos - refPos).Length();
 
             if (dist < bestDist) {
@@ -3079,7 +3144,8 @@ static void LockNearestEnemy() {
                 questPos.x, questPos.y, questPos.z,
                 playerPos.x, playerPos.y, playerPos.z, questDist);
             AimAtPosition(player, questPos);
-            std::wstring msg = questName + L", " + std::to_wstring(static_cast<int>(questDist)) + L" units";
+            float zDiff = questPos.z - playerPos.z;
+            std::wstring msg = questName + L", " + std::to_wstring(static_cast<int>(questDist)) + L" units" + FormatElevationSuffix(zDiff);
             Speak(msg);
             return;
         }
@@ -3093,10 +3159,11 @@ static void LockNearestEnemy() {
     auto targetCenter = GetActorCenter(nearest);
     AimAtPosition(player, targetCenter);
 
-    // Annoncer le nom et la distance
+    // Annoncer le nom, la distance et l'elevation (coherent avec le scanner)
     const char* rawName = nearest->GetDisplayFullName();
     std::wstring name = rawName ? Utf8ToWString(rawName) : L"Enemy";
-    std::wstring msg = name + L", " + std::to_wstring(static_cast<int>(dist)) + L" units";
+    float zDiff = targetCenter.z - player->GetPosition().z;
+    std::wstring msg = name + L", " + std::to_wstring(static_cast<int>(dist)) + L" units" + FormatElevationSuffix(zDiff);
     Speak(msg);
 
     LOG("AutoAim: locked {} at distance {}", rawName ? rawName : "?", dist);
