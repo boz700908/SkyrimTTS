@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.6 (unreleased)
+## v1.5.1 (2026-04-22)
 
 ### New features
 - Scanner: containers and corpses the player has already opened are now announced with a `looted` flag, independently of whether they still contain items. Useful to avoid re-visiting a container or corpse you already checked. The flag persists across saves (stored in the SKSE cosave). When the game engine respawns a reference (e.g. dungeon chests refill after ~30 days), the `looted` flag is automatically cleared for that reference, so the scanner correctly announces the re-filled chest as unlooted. A safety fallback also clears any entry older than 30 in-game days in case the engine reset event was missed
@@ -13,6 +13,7 @@
 - Scanner distance calculation rewritten for stability — announced distances could jump wildly (e.g. 3000 units then 500 without the player moving) for items dropped on the ground, because the engine returned the physics center of mass which bounces frame by frame. The scanner now reads the visible mesh position, which is stable. Quest distances are now computed the same way as the rest of the scanner (3D euclidean) instead of switching between 2D and 3D depending on context. Items no longer show a "ghost" distance once they leave your loaded area — they disappear from the list until they come back in range
 - `Lock nearest enemy` (X key) and the quest-target fallback now announce `above` or `below` when the target is on a different floor, consistent with the rest of the scanner
 - Autowalk rewritten to match the proven Fallout 4 accessibility (f4access) architecture — all player mutations (AI-driven flag, package evaluation) now happen exclusively on the Papyrus side, never from C++. Input cancellation is event-driven instead of polled on a background thread. The old stuck-recovery and crash-diagnostic systems have been removed. This should eliminate the `BSShaderAccumulator` crash some players hit during long autowalks. No behavior change for players — everything still works the same, just more stable
+- Autowalk quest routing simplified drastically — the plugin no longer tries to guess which door to take when following a quest objective in a dungeon or city. It now passes the final target reference directly to Skyrim's native Travel Package, which pathfinds through load doors automatically (even across worldspaces, interior to interior). This removes ~950 lines of custom routing heuristics that were picking the wrong door in some complex locations (e.g. Dragonsreach sometimes routed to the porch instead of the main gate). As a trade-off, long-distance objectives now trigger a continuous walk toward the final target — if you want to fast-travel part of the way, just stop the autowalk, fast-travel, then restart it closer to the goal
 
 ## v1.5 (2026-04-19)
 
