@@ -1157,11 +1157,7 @@ static void DoScanInternal() {
             SKSE::RUNTIME_SSE_1_6_629, player, 0x580, 0x588);
         LOG("Scanner: checking {} quest objectives", objectives.size());
         for (auto& instObj : objectives) {
-            if (!instObj.Objective) {
-                LOG("Scanner: quest obj - skipped (null Objective)");
-                continue;
-            }
-            LOG("Scanner: quest obj index={} state={}", instObj.Objective->index, static_cast<int>(instObj.InstanceState));
+            if (!instObj.Objective) continue;
             if (instObj.InstanceState != RE::QUEST_OBJECTIVE_STATE::kDisplayed) continue;
 
             auto* questObj = instObj.Objective;
@@ -1179,6 +1175,34 @@ static void DoScanInternal() {
 
             // Filtrer : ne garder que les quêtes actives (cochées dans le journal)
             if (!isActive) continue;
+
+            // Pre-scan : detecter si l'objectif contient au moins un target nomme
+            // (ref avec DisplayFullName). Exemple : quete "Adressez-vous aux
+            // Grises-barbes" a 3 targets — target[0]=Arngeir (nomme), target[1] et
+            // target[2]=markers exterieurs anonymes. Sans pre-scan, on creait 3
+            // entrees dans le scanner pour la meme cible logique.
+            // Regle : si au moins un target est nomme, les targets anonymes sont
+            // consideres comme des fallbacks (markers de location) et ignores.
+            // Si aucun target n'est nomme, on garde le comportement original (on
+            // ajoute tous les targets, meme anonymes, pour ne pas perdre la quete).
+            // On compte les targets nommes (pas juste detection booleenne) : si 2+
+            // targets ont un nom, on suffixera pour distinguer les entrees dans le
+            // scanner (ex: Irileth + tour de guet). Si 0 ou 1 target nomme, pas de
+            // suffixe necessaire car l'entree est unique.
+            int namedTargetCount = 0;
+            for (uint32_t t = 0; t < questObj->numTargets; t++) {
+                auto* target = questObj->targets[t];
+                if (!target) continue;
+                RE::ObjectRefHandle probeHandle;
+                quest->CreateRefHandleByAliasID(probeHandle, target->alias);
+                if (!probeHandle) continue;
+                auto probePtr = probeHandle.get();
+                if (!probePtr) continue;
+                auto* probeRef = probePtr.get();
+                const char* probeName = probeRef ? probeRef->GetDisplayFullName() : nullptr;
+                if (probeName && *probeName) namedTargetCount++;
+            }
+            const bool hasNamedTarget = (namedTargetCount > 0);
 
             // Parcourir les cibles de l'objectif pour trouver la référence.
             // Système en 2 passes (inchangé pour le cas normal) :
@@ -1208,16 +1232,6 @@ static void DoScanInternal() {
 
                 // Résoudre l'alias pour obtenir la référence
                 uint32_t aliasIdx = target->alias;
-                // Le log des aliases est verbeux — on ne le fait qu'au PASS 0 pour éviter les doublons
-                if (!ignoreCTDA) {
-                    LOG("Scanner: target[{}] alias field={} (quest has {} aliases)", t, aliasIdx, quest->aliases.size());
-                    for (uint32_t a = 0; a < quest->aliases.size(); a++) {
-                        auto* dbgAlias = quest->aliases[a];
-                        if (dbgAlias) {
-                            LOG("Scanner:   aliases[{}] name='{}' id={}", a, dbgAlias->aliasName.c_str(), dbgAlias->aliasID);
-                        }
-                    }
-                }
 
                 // Résoudre l'alias via CreateRefHandleByAliasID (méthode du moteur)
                 // Plus fiable que BGSRefAlias::GetReference() pour les refs distantes
@@ -1235,6 +1249,20 @@ static void DoScanInternal() {
                     continue;
                 }
                 auto* targetRef = refSmartPtr.get();
+
+                // Skip les targets anonymes si l'objectif contient au moins un
+                // target nomme (les anonymes sont alors des markers fallback).
+                // Evite de polluer le scanner avec 3 entrees pour la meme cible.
+                if (hasNamedTarget) {
+                    const char* probeName = targetRef->GetDisplayFullName();
+                    if (!probeName || !*probeName) {
+                        if (!ignoreCTDA) {
+                            LOG("Scanner: target[{}] FormID={:08X} skipped (anonymous fallback, named target exists)",
+                                t, targetRef->GetFormID());
+                        }
+                        continue;
+                    }
+                }
 
                 // PASS 0 : vérifier les CTDA (comportement historique).
                 // PASS 1 : on saute cette vérification pour accepter n'importe quel alias résolu.
@@ -1446,11 +1474,13 @@ static void DoScanInternal() {
                 obj.empty = false;
                 obj.dead = false;
 
-                // Suffixe desambiguisant quand un objectif a plusieurs targets
-                // (ex: "Rejoignez Irileth a la tour de guet" peut avoir target[0]=Irileth
-                // et target[1]=la tour de guet). On suffixe avec le nom de chaque cible
-                // pour que le joueur distingue les deux entrees dans le scanner.
-                if (questObj->numTargets > 1) {
+                // Suffixe desambiguisant seulement si l'objectif a AU MOINS 2 targets
+                // nommes (ex: "Rejoignez Irileth a la tour de guet" : Irileth + tour).
+                // Les targets anonymes sont deja filtres par hasNamedTarget en amont,
+                // donc si namedTargetCount == 1, on a une seule entree dans le scanner
+                // et le suffixe serait juste bruyant. Cas "Arngeir" : 1 nomme + 2 anonymes
+                // filtres → namedTargetCount=1 → pas de suffixe "(Arngeir)".
+                if (namedTargetCount >= 2) {
                     std::wstring suffix;
                     // Priorite : nom de la ref, sinon nom de l'alias
                     const char* refName = targetRef->GetDisplayFullName();
