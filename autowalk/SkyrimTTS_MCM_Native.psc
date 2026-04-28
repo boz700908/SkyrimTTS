@@ -24,6 +24,7 @@ Function SetGpScanPrev(int idx) Global Native
 Function SetGpScanAnnounce(int idx) Global Native
 Function SetGpMapSetRef(int idx) Global Native
 Function SetGpPrimary(int idx) Global Native
+Function SetGpRemoteActivate(int idx) Global Native
 Function SetGpTeleport(int idx) Global Native
 Function SetGpVitals(int idx) Global Native
 Function SetGpSneak(int idx) Global Native

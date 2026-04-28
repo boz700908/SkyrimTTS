@@ -12,6 +12,10 @@ static std::wstring     g_lastContainerItemName;
 static int              g_lastContainerItemCount{0};
 static bool             g_containerQuantityOpen{false};
 static int              g_lastContainerQuantity{0};
+// Pointeur RE::ItemList::Item* de l'entree selectionnee — permet de detecter
+// un changement de selection entre deux items homonymes (ex: gemmes vide/
+// pleine). Cf. commentaire equivalent dans menu_inventory.h.
+static const void*      g_lastContainerItemPtr = nullptr;
 
 struct ContainerSnapshot {
     std::wstring itemText;
@@ -25,6 +29,8 @@ struct ContainerSnapshot {
     std::wstring soulLevelText;
     bool         isContainerSide{true};
     bool         atDivider{false};
+    bool         stolen{false};     // item appartenant a un PNJ/faction (pas au joueur)
+    const void*  itemPtr{nullptr};  // cf. g_lastContainerItemPtr
 };
 
 static bool ReadContainerSnapshot(ContainerSnapshot& snap) {
@@ -107,12 +113,31 @@ static bool ReadContainerSnapshot(ContainerSnapshot& snap) {
     snap.weaponDamageText = StripMarkupForSpeech(snap.weaponDamageText);
     snap.apparelArmorText = StripMarkupForSpeech(snap.apparelArmorText);
 
+    // Pointeur Item* de la selection courante — permet de detecter un
+    // changement entre deux items homonymes (gemmes vide/pleine, etc.).
+    // Lecture du flag stolen via IsItemStolen (cf. common.h).
+    {
+        auto* contMenu = static_cast<RE::ContainerMenu*>(menu.get());
+        if (contMenu) {
+            auto& rd = contMenu->GetRuntimeData();
+            if (rd.itemList) {
+                auto* sel = rd.itemList->GetSelectedItem();
+                snap.itemPtr = sel;
+                if (sel && sel->data.objDesc) {
+                    snap.stolen = IsItemStolen(sel->data.objDesc);
+                }
+            }
+        }
+    }
+
     return !snap.itemText.empty() || !snap.catText.empty();
 }
 
 static std::wstring BuildContainerItemAnnouncement(const ContainerSnapshot& snap) {
     if (snap.itemText.empty()) return L"";
     std::wstring msg = snap.itemText;
+    if (snap.stolen)
+        msg += L", stolen";
     if (snap.count > 1)
         msg += L", " + std::to_wstring(snap.count);
     const std::wstring eq = FormatEquipState(snap.equipState);
@@ -198,13 +223,18 @@ static void AnnounceContainerChangeImpl() {
             rawDiv, rawCatIdx, snap.isContainerSide, sideChanged, catChanged);
     }
     const std::wstring announce = BuildContainerItemAnnouncement(snap);
-    const bool itemChanged = !announce.empty() && announce != g_lastContainerItemAnnounce;
+    // Changement detecte soit par le texte, soit par le pointeur d'item
+    // selectionne (cas de deux items homonymes adjacents).
+    const bool ptrChanged = snap.itemPtr != nullptr && g_lastContainerItemPtr != nullptr &&
+                            snap.itemPtr != g_lastContainerItemPtr;
+    const bool itemChanged = !announce.empty() && (announce != g_lastContainerItemAnnounce || ptrChanged);
 
     // Si on est dans les catégories (pas d'item), reset pour forcer la relecture au retour
     if (snap.itemText.empty() && !g_lastContainerItemAnnounce.empty()) {
         g_lastContainerItemAnnounce.clear();
         g_lastContainerItemName.clear();
         g_lastContainerItemCount = 0;
+        g_lastContainerItemPtr = nullptr;
         g_lastContainerCat.clear();  // relire la catégorie quand on revient avec flèche gauche
     }
 
@@ -221,8 +251,13 @@ static void AnnounceContainerChangeImpl() {
         g_lastContainerSide = side;
     }
     if (itemChanged) {
-        // Si même objet mais seul le count a changé → dire juste le nombre restant
-        if (!firstRead && !snap.itemText.empty() && snap.itemText == g_lastContainerItemName && snap.count != g_lastContainerItemCount) {
+        // Si MEME item (meme pointeur) mais seul le count a changé → dire juste
+        // le nombre restant. On exige le meme pointeur pour ne PAS tomber dans
+        // cette branche quand on navigue vers un item homonyme avec count
+        // different (ex: Grand Soul Gem vide 1 -> pleine 3).
+        const bool sameItemPtr = snap.itemPtr != nullptr && snap.itemPtr == g_lastContainerItemPtr;
+        if (!firstRead && sameItemPtr &&
+            !snap.itemText.empty() && snap.itemText == g_lastContainerItemName && snap.count != g_lastContainerItemCount) {
             if (snap.count > 1)
                 Speak(std::to_wstring(snap.count));
             else
@@ -233,6 +268,7 @@ static void AnnounceContainerChangeImpl() {
         g_lastContainerItemAnnounce = announce;
         g_lastContainerItemName = snap.itemText;
         g_lastContainerItemCount = snap.count;
+        g_lastContainerItemPtr = snap.itemPtr;
     }
 }
 

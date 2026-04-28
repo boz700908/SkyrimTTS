@@ -16,6 +16,8 @@ static std::wstring     g_lastGiftItemName;
 static bool             g_giftQuantityOpen{false};
 static int              g_lastGiftQuantity{0};
 static int              g_lastGiftItemCount{0};
+// Pointeur Item* de la selection — cf. menu_inventory.h pour l'explication.
+static const void*      g_lastGiftItemPtr = nullptr;
 
 struct GiftSnapshot {
     std::wstring itemText;
@@ -27,6 +29,8 @@ struct GiftSnapshot {
     std::wstring apparelArmorText;
     std::wstring catText;
     std::wstring soulLevelText;
+    bool         stolen{false};     // item appartenant a un PNJ/faction (pas au joueur)
+    const void*  itemPtr{nullptr};
 };
 
 static bool ReadGiftSnapshot(GiftSnapshot& snap) {
@@ -87,12 +91,30 @@ static bool ReadGiftSnapshot(GiftSnapshot& snap) {
     snap.weaponDamageText = StripMarkupForSpeech(snap.weaponDamageText);
     snap.apparelArmorText = StripMarkupForSpeech(snap.apparelArmorText);
 
+    // Pointeur Item* de la selection — cf. menu_inventory.h.
+    // Lecture du flag stolen via IsItemStolen (cf. common.h).
+    {
+        auto* giftMenu = static_cast<RE::GiftMenu*>(menu.get());
+        if (giftMenu) {
+            auto& rd = giftMenu->GetRuntimeData();
+            if (rd.itemList) {
+                auto* sel = rd.itemList->GetSelectedItem();
+                snap.itemPtr = sel;
+                if (sel && sel->data.objDesc) {
+                    snap.stolen = IsItemStolen(sel->data.objDesc);
+                }
+            }
+        }
+    }
+
     return !snap.itemText.empty() || !snap.catText.empty();
 }
 
 static std::wstring BuildGiftItemAnnouncement(const GiftSnapshot& snap) {
     if (snap.itemText.empty()) return L"";
     std::wstring msg = snap.itemText;
+    if (snap.stolen)
+        msg += L", stolen";
     if (snap.count > 1)
         msg += L", " + std::to_wstring(snap.count);
     const std::wstring eq = FormatEquipState(snap.equipState);
@@ -157,13 +179,17 @@ static void AnnounceGiftChangeImpl() {
 
     const bool catChanged  = !snap.catText.empty() && snap.catText != g_lastGiftCat;
     const std::wstring announce = BuildGiftItemAnnouncement(snap);
-    const bool itemChanged = !announce.empty() && announce != g_lastGiftItemAnnounce;
+    // Changement detecte soit par le texte, soit par le pointeur Item*.
+    const bool ptrChanged = snap.itemPtr != nullptr && g_lastGiftItemPtr != nullptr &&
+                            snap.itemPtr != g_lastGiftItemPtr;
+    const bool itemChanged = !announce.empty() && (announce != g_lastGiftItemAnnounce || ptrChanged);
 
     // Si on est dans les catégories (pas d'item), reset pour forcer la relecture au retour
     if (snap.itemText.empty() && !g_lastGiftItemAnnounce.empty()) {
         g_lastGiftItemAnnounce.clear();
         g_lastGiftItemName.clear();
         g_lastGiftItemCount = 0;
+        g_lastGiftItemPtr = nullptr;
         g_lastGiftCat.clear();  // relire la catégorie quand on revient avec flèche gauche
     }
 
@@ -173,7 +199,11 @@ static void AnnounceGiftChangeImpl() {
         g_lastGiftCat = snap.catText;
     }
     if (itemChanged) {
-        if (!firstRead && !snap.itemText.empty() && snap.itemText == g_lastGiftItemName && snap.count != g_lastGiftItemCount) {
+        // Si MEME item (meme pointeur) mais seul le count a changé → dire juste
+        // le nombre. Sinon relire tout (cas homonyme avec count different).
+        const bool sameItemPtr = snap.itemPtr != nullptr && snap.itemPtr == g_lastGiftItemPtr;
+        if (!firstRead && sameItemPtr &&
+            !snap.itemText.empty() && snap.itemText == g_lastGiftItemName && snap.count != g_lastGiftItemCount) {
             if (snap.count > 1)
                 Speak(std::to_wstring(snap.count));
             else
@@ -184,6 +214,7 @@ static void AnnounceGiftChangeImpl() {
         g_lastGiftItemAnnounce = announce;
         g_lastGiftItemName = snap.itemText;
         g_lastGiftItemCount = snap.count;
+        g_lastGiftItemPtr = snap.itemPtr;
     }
 }
 

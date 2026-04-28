@@ -16,6 +16,13 @@ static int              g_lastInvItemCount{0};
 static int              g_lastInvFavorite{-1};  // -1=inconnu, 0=non, 1=oui
 static bool             g_invQuantityOpen{false};
 static int              g_lastInvQuantity{0};
+// Pointeur de l'Item* selectionne dans la liste GFx (RE::ItemList::Item*).
+// Permet de detecter un changement de selection meme quand le nom est
+// identique a l'item precedent (ex: gemme spirituelle vide a cote d'une
+// gemme pleine avec le meme nom affiche). Stocke en tant que void* : on
+// ne dereference pas, on compare juste les adresses — le jeu recycle les
+// memes Item* tant que la liste n'est pas reconstruite.
+static const void*      g_lastInvItemPtr = nullptr;
 
 // --- Inventory snapshot data ---
 struct InventorySnapshot {
@@ -30,6 +37,8 @@ struct InventorySnapshot {
     std::wstring descText;
     std::wstring soulLevelText;
     bool         favorite{false};
+    bool         stolen{false};     // item appartenant a un PNJ/faction (pas au joueur)
+    const void*  itemPtr{nullptr};  // RE::ItemList::Item* du ref selectionne — cf. g_lastInvItemPtr
 };
 
 // --- Lecture GFx ---
@@ -74,6 +83,25 @@ static bool ReadInventorySnapshot(InventorySnapshot& snap) {
     }
     if (GetGFxString(movie, catPath, tmp) && !tmp.empty())
         snap.catText = ResolveUIString(movie, tmp);
+
+    // Identifiant de l'item selectionne (pointeur Item* dans la liste GFx).
+    // Plus fiable que le texte pour detecter un changement de selection
+    // entre deux items homonymes (gemmes vide/pleine, etc.).
+    // On en profite pour lire le flag "stolen" via IsItemStolen (cf. common.h) :
+    // iteration sur les ExtraDataList pour trouver un ExtraOwnership !=  player.
+    {
+        auto* invMenu = static_cast<RE::InventoryMenu*>(menu.get());
+        if (invMenu) {
+            auto& rd = invMenu->GetRuntimeData();
+            if (rd.itemList) {
+                auto* sel = rd.itemList->GetSelectedItem();
+                snap.itemPtr = sel;
+                if (sel && sel->data.objDesc) {
+                    snap.stolen = IsItemStolen(sel->data.objDesc);
+                }
+            }
+        }
+    }
 
     // Read description/effects from ItemCard::infoText (C++ side, more reliable than GFx)
     {
@@ -192,6 +220,8 @@ static std::wstring FormatEquipState(int state) {
 static std::wstring BuildItemAnnouncement(const InventorySnapshot& snap) {
     if (snap.itemText.empty()) return L"";
     std::wstring msg = snap.itemText;
+    if (snap.stolen)
+        msg += L", stolen";
     if (snap.count > 1)
         msg += L", " + std::to_wstring(snap.count);
     const std::wstring eq = FormatEquipState(snap.equipState);
@@ -265,7 +295,15 @@ static void AnnounceInventoryChangeImpl() {
 
     const bool catChanged = !snap.catText.empty() && snap.catText != g_lastInvCat;
     const std::wstring announce = BuildItemAnnouncement(snap);
-    const bool itemChanged = !announce.empty() && announce != g_lastInvItemAnnounce;
+    // Detecte un changement soit par le texte d'annonce, soit par le pointeur
+    // d'item selectionne dans la liste GFx. Le pointeur evite de manquer la
+    // lecture quand deux items adjacents ont le meme nom affiche (ex: gemme
+    // spirituelle vide vs pleine). On n'exige le changement de pointeur que
+    // si on en avait deja un et qu'il est non-null des deux cotes (evite les
+    // faux positifs au premier read ou lors d'un refresh sans selection).
+    const bool ptrChanged = snap.itemPtr != nullptr && g_lastInvItemPtr != nullptr &&
+                            snap.itemPtr != g_lastInvItemPtr;
+    const bool itemChanged = !announce.empty() && (announce != g_lastInvItemAnnounce || ptrChanged);
     const bool sameItem    = !itemChanged && !snap.itemText.empty() && snap.itemText == g_lastInvItemName;
     const int  favInt      = snap.favorite ? 1 : 0;
     const bool favChanged  = sameItem && g_lastInvFavorite >= 0 && favInt != g_lastInvFavorite;
@@ -275,6 +313,7 @@ static void AnnounceInventoryChangeImpl() {
         g_lastInvItemAnnounce.clear();
         g_lastInvItemName.clear();
         g_lastInvItemCount = 0;
+        g_lastInvItemPtr = nullptr;
         g_lastInvCat.clear();  // relire la catégorie quand on revient avec flèche gauche
     }
 
@@ -284,6 +323,7 @@ static void AnnounceInventoryChangeImpl() {
         // Après un tri : forcer la relecture du premier item, en SpeakQueue pour ne pas couper l'annonce du tri
         g_lastInvItemAnnounce.clear();
         g_lastInvItemName.clear();
+        g_lastInvItemPtr = nullptr;  // reset pour eviter un ptrChanged spurieux post-tri
     }
     if (catChanged) {
         if (firstRead || afterSort) SpeakQueue(snap.catText); else Speak(snap.catText);
@@ -291,8 +331,14 @@ static void AnnounceInventoryChangeImpl() {
     }
     const bool itemChangedAfterSort = afterSort && !announce.empty();
     if (itemChanged || itemChangedAfterSort) {
-        // Si même objet mais seul le count a changé → dire juste le nombre restant
-        if (!firstRead && !afterSort && !snap.itemText.empty() && snap.itemText == g_lastInvItemName && snap.count != g_lastInvItemCount) {
+        // Si MEME item (meme pointeur) mais seul le count a changé (joueur
+        // vient d'utiliser/dropper un item de la pile) → dire juste le nombre
+        // restant. On exige que le pointeur soit identique pour ne PAS tomber
+        // dans cette branche quand on navigue vers un item homonyme avec un
+        // count different (ex: Grand Soul Gem vide 1 -> Grand Soul Gem pleine 3).
+        const bool sameItemPtr = snap.itemPtr != nullptr && snap.itemPtr == g_lastInvItemPtr;
+        if (!firstRead && !afterSort && sameItemPtr &&
+            !snap.itemText.empty() && snap.itemText == g_lastInvItemName && snap.count != g_lastInvItemCount) {
             if (snap.count > 1)
                 Speak(std::to_wstring(snap.count));
             else
@@ -304,6 +350,7 @@ static void AnnounceInventoryChangeImpl() {
         g_lastInvItemName = snap.itemText;
         g_lastInvItemCount = snap.count;
         g_lastInvFavorite = favInt;
+        g_lastInvItemPtr = snap.itemPtr;
         g_lastInvDesc.clear();
     } else if (favChanged) {
         Speak(snap.favorite ? L"added to favorites" : L"removed from favorites");

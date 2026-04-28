@@ -73,6 +73,10 @@ static RE::TESQuest* FindAutoWalkQuest() {
 static std::atomic_bool g_autoWalking{false};
 static std::wstring     g_autoWalkTarget;
 
+// Timestamp du dernier dispatch (ms). Utilise par l'anti-rebond 500ms dans
+// StartAutoWalk pour eviter les rafales de dispatches rapproches.
+static std::atomic<int64_t> g_autoWalkLastDispatchMs{0};
+
 // Cooldown de securite : empeche de lancer l'autowalk pendant la fenetre
 // fragile apres un load ou un changement de cellule. On garde ce cooldown
 // meme apres le refactor f4access-style (zero mutation C++) car le dispatch
@@ -107,18 +111,35 @@ static void AutoWalkArmSafetyCooldown(int64_t durationMs, const char* reason) {
 static void DispatchPapyrusStop();
 
 // =============================================================================
-// Annule l'autowalk si le joueur fait un input de mouvement.
+// Annule l'autowalk si le joueur fait un input de mouvement reel.
 // Appele depuis InputListener::ProcessEvent (plugin.cpp) — style f4access :
 // pas de polling thread separe, on reagit a chaque event d'input reel.
 //
-// Clavier : WASD, Space, Escape, fleches
-// Gamepad : stick gauche deplace (seuil 0.3), A/B/Start/Back, D-pad
+// Regle importante : si le joueur est en train d'utiliser un combo modifieur
+// (LB maintenu au gamepad, Ctrl ou Shift maintenu au clavier), AUCUN cancel
+// n'est declenche. Raison : ces combos servent a naviguer dans le scanner
+// pendant l'autowalk (LB+fleches pour cycler, Ctrl+X pour lock, etc.) et
+// il ne faut pas que ca arrete la marche.
+//
+// Cancel declenche par :
+//   Clavier (sans Ctrl/Shift) : WASD (mouvement reel), Space (saut), Escape (menu)
+//   Gamepad (sans LB) : stick gauche bouge (seuil 0.3) — vrai mouvement joueur
+//
+// Le bouton A qui lance l'autowalk (LB+A) n'annule PAS parce que LB est
+// maintenu a ce moment-la. Pareil pour les D-pad et fleches en combos.
 //
 // Retourne true si on a annule l'autowalk, false sinon.
 // =============================================================================
 static bool AutoWalkInputUpdate(RE::InputEvent* const* a_event) {
     if (!g_autoWalking.load()) return false;
     if (!a_event || !*a_event) return false;
+
+    // Si un modifieur est maintenu, le joueur utilise un combo (scanner,
+    // lock enemy, annonce distance, etc.) — ne rien cancel.
+    if (g_lbHeld.load()) return false;
+    const bool ctrlHeld  = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+    const bool shiftHeld = (GetAsyncKeyState(VK_SHIFT)   & 0x8000) != 0;
+    if (ctrlHeld || shiftHeld) return false;
 
     bool shouldCancel = false;
 
@@ -132,18 +153,19 @@ static bool AutoWalkInputUpdate(RE::InputEvent* const* a_event) {
 
             if (btn->GetDevice() == RE::INPUT_DEVICE::kKeyboard) {
                 using K = RE::BSKeyboardDevice::Keys;
+                // Seulement les vraies touches de mouvement / sortie de jeu.
+                // Pas les fleches (utilisees dans des combos Ctrl+fleche) ni les
+                // touches de fonction du scanner (Home, End, PageUp/Down).
                 if (code == K::kW || code == K::kA || code == K::kS || code == K::kD ||
-                    code == K::kSpacebar || code == K::kEscape ||
-                    code == K::kUp || code == K::kDown || code == K::kLeft || code == K::kRight) {
-                    shouldCancel = true;
-                }
-            } else if (btn->GetDevice() == RE::INPUT_DEVICE::kGamepad) {
-                using G = RE::BSWin32GamepadDevice::Keys;
-                if (code == G::kA || code == G::kB || code == G::kStart || code == G::kBack ||
-                    code == G::kUp || code == G::kDown || code == G::kLeft || code == G::kRight) {
+                    code == K::kSpacebar || code == K::kEscape) {
                     shouldCancel = true;
                 }
             }
+            // Gamepad : plus aucun bouton ne cancel. Le A qui a declenche
+            // l'autowalk est protege par le check g_lbHeld en haut. Le stick
+            // gauche (mouvement reel) est gere en kThumbstick plus bas. Les
+            // autres boutons (B, Start, Back, D-pad) sont utilises dans des
+            // combos LB+X ou ne represente pas un mouvement joueur.
         } else if (type == RE::INPUT_EVENT_TYPE::kThumbstick) {
             auto* stick = static_cast<RE::ThumbstickEvent*>(e);
             // Seuil 0.3 : evite les faux positifs du stick au repos (drift).
@@ -298,8 +320,9 @@ static void RegisterAutoWalkModEventListener() {
 // observee dans certains crash logs (20 dispatches en 20s) augmente nettement les
 // chances de crash, probablement en empilant des EvaluatePackage mal finalises.
 // Fenetre minimale : 500ms entre deux dispatches.
+// g_autoWalkLastDispatchMs est declare plus haut (utilise aussi pour la grace
+// period dans AutoWalkInputUpdate).
 // =============================================================================
-static std::atomic<int64_t> g_autoWalkLastDispatchMs{0};
 static constexpr int64_t kAutoWalkMinDispatchGapMs = 500;
 
 // Appelle OnWalkToTarget sur le script Papyrus de la quete AutoWalk
@@ -328,6 +351,25 @@ static void StartAutoWalk(RE::FormID targetFormID, float stopDistance = 100.0f,
 
     task->AddTask([targetFormID, stopDistance, posX, posY, posZ, useCoords]() {
         auto* player = RE::PlayerCharacter::GetSingleton();
+
+        // Detection mounted : si le joueur est sur un cheval, on dispatche vers
+        // OnWalkToTargetMounted (6 args : ajoute le mount FormID) au lieu de
+        // OnWalkToTarget. Le Papyrus fait alors SetPlayerAIDriven(true) +
+        // EvaluatePackage cote cheval pour que l'IA prenne le couple en charge.
+        // Reproduit le comportement v1.4 qui fonctionnait, sans mutation C++.
+        RE::FormID mountFormID = 0;
+        bool mounted = false;
+        if (player && player->IsOnMount()) {
+            RE::NiPointer<RE::Actor> mount;
+            if (player->GetMount(mount) && mount) {
+                mountFormID = mount->GetFormID();
+                mounted = true;
+                LOG("AutoWalk: mounted detected, mount FormID={:08X}", mountFormID);
+            } else {
+                LOG("AutoWalk: IsOnMount=true but GetMount failed -> falling back to foot mode");
+            }
+        }
+
         if (player) {
             // Forcer l'initialisation du mouvement avant de lancer l'IA
             // (corrige le bug de vitesse lente si autowalk lancé sans marcher après un chargement)
@@ -379,29 +421,53 @@ static void StartAutoWalk(RE::FormID targetFormID, float stopDistance = 100.0f,
             return;
         }
 
-        // 5 paramètres : aiFormID, afStopDistance, afX, afY, afZ
-        // Mode coordonnées : formID=0 + position x,y,z
-        // Mode normal : formID valide + 0,0,0
-        auto* args = RE::MakeFunctionArguments(
-            static_cast<std::int32_t>(useCoords ? 0 : static_cast<std::int32_t>(targetFormID)),
-            static_cast<float>(stopDistance),
-            static_cast<float>(posX),
-            static_cast<float>(posY),
-            static_cast<float>(posZ)
-        );
-
+        // Mode a pied : 5 args (aiFormID, afStopDistance, afX, afY, afZ).
+        // Mode mounted : 6 args (les memes + aiMountFormID).
+        // Mode coordonnees : formID=0 + position x,y,z.
+        // Mode normal : formID valide + 0,0,0.
         RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback;
-        bool ok = vm->DispatchMethodCall(
-            handle,
-            RE::BSFixedString("SkyrimTTS_AutoWalk"),
-            RE::BSFixedString("OnWalkToTarget"),
-            args,
-            callback
-        );
+        bool ok = false;
+        if (mounted) {
+            LOG("AutoWalk: dispatching OnWalkToTargetMounted (target={:08X} mount={:08X} stopDist={} useCoords={})",
+                targetFormID, mountFormID, stopDistance, useCoords);
+            auto* args = RE::MakeFunctionArguments(
+                static_cast<std::int32_t>(useCoords ? 0 : static_cast<std::int32_t>(targetFormID)),
+                static_cast<float>(stopDistance),
+                static_cast<float>(posX),
+                static_cast<float>(posY),
+                static_cast<float>(posZ),
+                static_cast<std::int32_t>(mountFormID)
+            );
+            ok = vm->DispatchMethodCall(
+                handle,
+                RE::BSFixedString("SkyrimTTS_AutoWalk"),
+                RE::BSFixedString("OnWalkToTargetMounted"),
+                args,
+                callback
+            );
+        } else {
+            auto* args = RE::MakeFunctionArguments(
+                static_cast<std::int32_t>(useCoords ? 0 : static_cast<std::int32_t>(targetFormID)),
+                static_cast<float>(stopDistance),
+                static_cast<float>(posX),
+                static_cast<float>(posY),
+                static_cast<float>(posZ)
+            );
+            ok = vm->DispatchMethodCall(
+                handle,
+                RE::BSFixedString("SkyrimTTS_AutoWalk"),
+                RE::BSFixedString("OnWalkToTarget"),
+                args,
+                callback
+            );
+        }
 
         if (ok) {
             g_autoWalking.store(true);
-            if (useCoords) {
+            if (mounted) {
+                LOG("AutoWalk: started MOUNTED mode FormID={:08X} mountFormID={:08X} stopDist={}",
+                    targetFormID, mountFormID, stopDistance);
+            } else if (useCoords) {
                 LOG("AutoWalk: started coords mode FormID={:08X} pos=({:.0f},{:.0f},{:.0f}) stopDist={}",
                     targetFormID, posX, posY, posZ, stopDistance);
             } else {
@@ -411,7 +477,7 @@ static void StartAutoWalk(RE::FormID targetFormID, float stopDistance = 100.0f,
             // appele depuis InputListener::ProcessEvent (style f4access).
             // L'arrivee est detectee cote Papyrus (OnUpdate + ModEvent).
         } else {
-            LOG("AutoWalk: DispatchMethodCall failed");
+            LOG("AutoWalk: DispatchMethodCall failed (mounted={})", mounted);
             Speak(L"AutoWalk error");
         }
     });
@@ -457,6 +523,223 @@ static void StopAutoWalk() {
 
         g_autoWalkTarget.clear();
         LOG("AutoWalk: stop requested");
+    });
+}
+
+// =============================================================================
+// REMOTE ACTIVATE — Activer/ramasser l'objet courant du scanner a distance.
+// Touche G : appelle Activate(player) sur la ref ciblee comme si on avait
+// presse E a cote. Marche pour items (ramassage), conteneurs (ouverture),
+// portes de cellule (teleportation a travers la porte), activateurs scriptes
+// (leviers, piedestaux, etc.). Limite de 2000 unites enforced cote C++ avant
+// dispatch Papyrus pour eviter d'activer un truc trop loin par accident.
+// =============================================================================
+static constexpr float kRemoteActivateMaxDistance = 2000.0f;
+
+// Dispatch Papyrus OnRemoteActivate(formID). Appel avec FormID deja valide
+// (lookup + distance check faits par l'appelant).
+static void StartRemoteActivate(RE::FormID targetFormID) {
+    auto* task = SKSE::GetTaskInterface();
+    if (!task) {
+        LOG("RemoteActivate: SKSE TaskInterface null, cannot dispatch");
+        return;
+    }
+
+    task->AddTask([targetFormID]() {
+        auto* quest = FindAutoWalkQuest();
+        if (!quest) {
+            LOG("RemoteActivate: AutoWalk quest not found");
+            Speak(L"Activate failed: quest not found");
+            return;
+        }
+
+        auto* vm = RE::BSScript::Internal::VirtualMachine::GetSingleton();
+        if (!vm) {
+            LOG("RemoteActivate: VM not available");
+            return;
+        }
+
+        auto* policy = vm->GetObjectHandlePolicy();
+        if (!policy) {
+            LOG("RemoteActivate: no handle policy");
+            return;
+        }
+
+        auto handle = policy->GetHandleForObject(RE::FormType::Quest, quest);
+        if (handle == policy->EmptyHandle()) {
+            LOG("RemoteActivate: could not get quest handle");
+            return;
+        }
+
+        auto* args = RE::MakeFunctionArguments(static_cast<std::int32_t>(targetFormID));
+        RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback;
+        bool ok = vm->DispatchMethodCall(
+            handle,
+            RE::BSFixedString("SkyrimTTS_AutoWalk"),
+            RE::BSFixedString("OnRemoteActivate"),
+            args,
+            callback
+        );
+
+        if (ok) {
+            LOG("RemoteActivate: dispatched OnRemoteActivate FormID={:08X}", targetFormID);
+        } else {
+            LOG("RemoteActivate: DispatchMethodCall failed for FormID={:08X}", targetFormID);
+            Speak(L"Activate failed");
+        }
+    });
+}
+
+// Touche G hors menus : prend l'objet courant du scanner et l'active a distance.
+// Verifications : objet selectionne, lookup ref valide, ref pas supprimee,
+// distance <= 2000 unites. Logs verbeux pour diagnostiquer les echecs.
+//
+// Invalidation post-pickup : pour les items ramassables (kCatItems), on schedule
+// un check differe 800ms apres dispatch qui re-verifie l'etat de la ref. Si elle
+// est deleted/disabled/!Is3DLoaded (le moteur a fini le pickup), on met
+// formID=0 pour la sortir definitivement de la liste — sinon le scanner garde
+// l'objet visible meme apres ramassage car RefreshFilteredList pouvait passer
+// pile entre Activate() et le cleanup engine. Pour les autres categories
+// (conteneurs, portes, activateurs), on ne touche a rien : un coffre activable
+// a distance reste dans la cellule, une porte aussi, et c'est correct qu'ils
+// restent dans la liste.
+static void ScannerActivateCurrent() {
+    LOG("InputDiag: ScannerActivateCurrent ENTRY");
+
+    if (g_scannedFiltered.empty() || g_scanIndex < 0 ||
+        g_scanIndex >= static_cast<int>(g_scannedFiltered.size())) {
+        LOG("RemoteActivate: no current target (empty={}, idx={})",
+            g_scannedFiltered.empty(), g_scanIndex);
+        Speak(L"No target selected. Scan first.");
+        return;
+    }
+
+    auto& obj = *g_scannedFiltered[g_scanIndex];
+    RE::FormID targetID = obj.formID;
+    std::wstring targetName = obj.name;
+    ScanCategory targetCategory = obj.category;
+
+    if (targetID == 0) {
+        LOG("RemoteActivate: target FormID is 0");
+        Speak(L"No valid target");
+        return;
+    }
+
+    auto* task = SKSE::GetTaskInterface();
+    if (!task) {
+        LOG("RemoteActivate: SKSE TaskInterface null");
+        return;
+    }
+
+    task->AddTask([targetID, targetName, targetCategory]() {
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        if (!player) {
+            LOG("RemoteActivate: player singleton null");
+            return;
+        }
+
+        auto* form = RE::TESForm::LookupByID(targetID);
+        auto* targetRef = form ? form->AsReference() : nullptr;
+        if (!targetRef) {
+            LOG("RemoteActivate: FormID {:08X} not found (despawned?)", targetID);
+            Speak(L"Target not found");
+            return;
+        }
+
+        if (targetRef->IsDeleted()) {
+            LOG("RemoteActivate: FormID {:08X} is deleted", targetID);
+            Speak(L"Target no longer exists");
+            return;
+        }
+
+        if (targetRef->IsDisabled()) {
+            LOG("RemoteActivate: FormID {:08X} is disabled", targetID);
+            Speak(L"Target not available");
+            return;
+        }
+
+        // Distance check : on lit la position 3D si chargee, sinon GetPosition.
+        auto playerPos = player->GetPosition();
+        auto targetPos = targetRef->GetPosition();
+        float dist = (playerPos - targetPos).Length();
+        if (dist > kRemoteActivateMaxDistance) {
+            LOG("RemoteActivate: blocked - distance {:.0f} > {:.0f} for FormID={:08X}",
+                dist, kRemoteActivateMaxDistance, targetID);
+            Speak(L"Target is too far");
+            return;
+        }
+
+        LOG("RemoteActivate: activating '{}' FormID={:08X} dist={:.0f} cat={}",
+            WStringToUtf8(targetName), targetID, dist, static_cast<int>(targetCategory));
+        StartRemoteActivate(targetID);
+
+        // Invalidation differee pour les items ramassables uniquement.
+        // 800ms : laisse le temps au moteur de faire Disable() + Delete() apres
+        // le Activate() Papyrus. Marche aussi pour les ingredients ramasses
+        // depuis une plante (la ref est consumed apres pickup).
+        if (targetCategory == kCatItems) {
+            std::thread([targetID]() {
+                std::this_thread::sleep_for(std::chrono::milliseconds(800));
+                auto* taskLater = SKSE::GetTaskInterface();
+                if (!taskLater) return;
+                taskLater->AddTask([targetID]() {
+                    auto* form2 = RE::TESForm::LookupByID(targetID);
+                    auto* ref2 = form2 ? form2->AsReference() : nullptr;
+                    bool gone = !ref2 ||
+                                ref2->IsDeleted() ||
+                                ref2->IsDisabled() ||
+                                !ref2->Is3DLoaded() ||
+                                !ref2->GetParentCell();
+                    if (gone) {
+                        // Capturer le formID du voisin (objet PRECEDENT dans la liste
+                        // filtree) AVANT invalidation : permet de restaurer la position
+                        // du scanner apres rebuild. Sinon ApplyCategoryFilter perd la
+                        // position courante (le formID courant devient 0 -> il retombe
+                        // a l'index 0 = retour en haut de la liste, tres frustrant
+                        // quand on ramasse en serie).
+                        // On vise PRECEDENT pour que le prochain Right donne l'objet
+                        // juste apres l'objet ramasse (continuite de navigation).
+                        RE::FormID neighborFormID = 0;
+                        if (g_scanIndex > 0 && g_scanIndex < static_cast<int>(g_scannedFiltered.size())) {
+                            // L'item a l'index courant est celui qu'on vient de ramasser
+                            // (formID == targetID). On prend l'index-1 comme ancre.
+                            if (g_scannedFiltered[g_scanIndex]->formID == targetID) {
+                                neighborFormID = g_scannedFiltered[g_scanIndex - 1]->formID;
+                            }
+                        }
+
+                        // Invalider dans g_scannedAll : la prochaine ApplyCategoryFilter
+                        // sautera l'entree (formID == 0 -> continue).
+                        bool invalidated = false;
+                        for (auto& o : g_scannedAll) {
+                            if (o.formID == targetID) {
+                                LOG("RemoteActivate: post-pickup invalidate FormID={:08X}", targetID);
+                                o.formID = 0;
+                                o.category = kCatAll;
+                                invalidated = true;
+                            }
+                        }
+
+                        // Rebuild la liste filtree + restaurer la position sur le voisin.
+                        if (invalidated) {
+                            ApplyCategoryFilter();
+                            if (neighborFormID != 0) {
+                                for (int i = 0; i < static_cast<int>(g_scannedFiltered.size()); i++) {
+                                    if (g_scannedFiltered[i]->formID == neighborFormID) {
+                                        g_scanIndex = i;
+                                        LOG("RemoteActivate: scanner cursor restored to neighbor idx={} formID={:08X}",
+                                            i, neighborFormID);
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        LOG("RemoteActivate: post-pickup check FormID={:08X} still present (activate refused?)", targetID);
+                    }
+                });
+            }).detach();
+        }
     });
 }
 

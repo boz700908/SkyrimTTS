@@ -8,7 +8,7 @@ float property AimVolume = 0.2 auto
 float property KillVolume = 0.4 auto
 float property DragonHitVolume = 1.0 auto
 float property ScanRange = 0.0 auto    ; 0 = unlimited
-float property TeleportRange = 3000.0 auto
+float property TeleportRange = 5000.0 auto
 
 ; Touches (DirectX scancodes)
 int property KeyScan = 76 auto          ; Numpad 5
@@ -24,7 +24,8 @@ int property GpIdxScanNext = 1 auto      ; D-pad Down (objet plus loin)
 int property GpIdxScanPrev = 0 auto      ; D-pad Up (objet plus proche)
 int property GpIdxScanAnnounce = 2 auto  ; D-pad Left
 int property GpIdxMapSetRef = 3 auto     ; D-pad Right
-int property GpIdxPrimary = 4 auto       ; A
+int property GpIdxPrimary = 6 auto       ; X (autowalk / fast travel)
+int property GpIdxRemoteActivate = 4 auto ; A (remote activate, equivalent G key)
 int property GpIdxTeleport = 5 auto      ; B
 int property GpIdxVitals = 7 auto        ; Y
 int property GpIdxSneak = 8 auto         ; LS click
@@ -54,6 +55,7 @@ int oidGpScanPrev
 int oidGpScanAnnounce
 int oidGpMapSetRef
 int oidGpPrimary
+int oidGpRemoteActivate
 int oidGpTeleport
 int oidGpVitals
 int oidGpSneak
@@ -72,7 +74,7 @@ endEvent
 
 ; === Version — incrémenter à chaque changement de structure du MCM ===
 int function GetVersion()
-    return 6
+    return 7
 endFunction
 
 event OnVersionUpdate(int a_version)
@@ -83,7 +85,7 @@ event OnVersionUpdate(int a_version)
         Pages[2] = "Controls"
     endIf
     if a_version >= 3
-        TeleportRange = 3000.0
+        TeleportRange = 5000.0
     endIf
     if a_version >= 4
         AutoAimEnabled = true
@@ -110,6 +112,11 @@ event OnVersionUpdate(int a_version)
         ; D-pad Down = objet suivant (plus loin), D-pad Up = précédent (plus proche)
         GpIdxScanNext = 1
         GpIdxScanPrev = 0
+    endIf
+    if a_version >= 7
+        ; Remap autowalk vers X (LB+X), libère A (LB+A) pour Remote Activate.
+        GpIdxPrimary = 6
+        GpIdxRemoteActivate = 4
     endIf
 endEvent
 
@@ -211,6 +218,7 @@ event OnPageReset(string page)
         oidGpScanPrev = AddMenuOption("Previous object / marker", GetGpButtonName(GpIdxScanPrev))
         oidGpScanAnnounce = AddMenuOption("Announce current", GetGpButtonName(GpIdxScanAnnounce))
         oidGpPrimary = AddMenuOption("Autowalk / Fast travel", GetGpButtonName(GpIdxPrimary))
+        oidGpRemoteActivate = AddMenuOption("Remote activate (G)", GetGpButtonName(GpIdxRemoteActivate))
         oidGpTeleport = AddMenuOption("Teleport (gameplay)", GetGpButtonName(GpIdxTeleport))
         oidGpVitals = AddMenuOption("Vitals (gameplay)", GetGpButtonName(GpIdxVitals))
         oidGpMapSetRef = AddMenuOption("Set reference (map)", GetGpButtonName(GpIdxMapSetRef))
@@ -253,7 +261,7 @@ event OnOptionSelect(int option)
             KillVolume = 0.4
             DragonHitVolume = 1.0
             ScanRange = 0.0
-            TeleportRange = 3000.0
+            TeleportRange = 5000.0
             KeyScan = 76
             KeyNextObject = 209
             KeyPrevObject = 201
@@ -264,7 +272,8 @@ event OnOptionSelect(int option)
             GpIdxScanPrev = 0
             GpIdxScanAnnounce = 2
             GpIdxMapSetRef = 3
-            GpIdxPrimary = 4
+            GpIdxPrimary = 6
+            GpIdxRemoteActivate = 4
             GpIdxTeleport = 5
             GpIdxVitals = 7
             GpIdxSneak = 8
@@ -304,8 +313,8 @@ event OnOptionSliderOpen(int option)
 
     elseIf option == oidTeleportRange
         SetSliderDialogStartValue(TeleportRange)
-        SetSliderDialogDefaultValue(3000.0)
-        SetSliderDialogRange(500.0, 3000.0)
+        SetSliderDialogDefaultValue(5000.0)
+        SetSliderDialogRange(500.0, 5000.0)
         SetSliderDialogInterval(500.0)
     endIf
 endEvent
@@ -352,6 +361,8 @@ event OnOptionMenuOpen(int option)
         currentIdx = GpIdxMapSetRef
     elseIf option == oidGpPrimary
         currentIdx = GpIdxPrimary
+    elseIf option == oidGpRemoteActivate
+        currentIdx = GpIdxRemoteActivate
     elseIf option == oidGpTeleport
         currentIdx = GpIdxTeleport
     elseIf option == oidGpVitals
@@ -393,6 +404,10 @@ event OnOptionMenuAccept(int option, int index)
         GpIdxPrimary = index
         SetMenuOptionValue(option, GetGpButtonName(index))
         SkyrimTTS_MCM_Native.SetGpPrimary(index)
+    elseIf option == oidGpRemoteActivate
+        GpIdxRemoteActivate = index
+        SetMenuOptionValue(option, GetGpButtonName(index))
+        SkyrimTTS_MCM_Native.SetGpRemoteActivate(index)
     elseIf option == oidGpTeleport
         GpIdxTeleport = index
         SetMenuOptionValue(option, GetGpButtonName(index))
@@ -492,6 +507,8 @@ event OnOptionHighlight(int option)
         SetInfoText("Button pressed with LB on the map to set a reference point for distance calculation.")
     elseIf option == oidGpPrimary
         SetInfoText("Button pressed with LB to start autowalk (in game) or fast travel (on the map).")
+    elseIf option == oidGpRemoteActivate
+        SetInfoText("Button pressed with LB to remotely activate the current scanner target (G key equivalent).")
     elseIf option == oidGpTeleport
         SetInfoText("Button pressed with LB to teleport to the current scanner target.")
     elseIf option == oidGpVitals
@@ -528,6 +545,7 @@ function SyncAllToNative()
     SkyrimTTS_MCM_Native.SetGpScanAnnounce(GpIdxScanAnnounce)
     SkyrimTTS_MCM_Native.SetGpMapSetRef(GpIdxMapSetRef)
     SkyrimTTS_MCM_Native.SetGpPrimary(GpIdxPrimary)
+    SkyrimTTS_MCM_Native.SetGpRemoteActivate(GpIdxRemoteActivate)
     SkyrimTTS_MCM_Native.SetGpTeleport(GpIdxTeleport)
     SkyrimTTS_MCM_Native.SetGpVitals(GpIdxVitals)
     SkyrimTTS_MCM_Native.SetGpSneak(GpIdxSneak)

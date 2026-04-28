@@ -907,6 +907,12 @@ static std::wstring DXScanCodeToName(int code) {
 static std::atomic_bool g_skyuiMode{false};
 static std::atomic_bool g_skyuiDetectionDone{false};
 
+// Etat LB gamepad : true quand LB est maintenu (mode "modificateur scanner").
+// Declare ici pour etre accessible depuis autowalk.h (qui est inclus avant
+// les variables gamepad de plugin.cpp) : permet a AutoWalkInputUpdate de ne
+// pas annuler l'autowalk quand le joueur utilise un combo LB+touche.
+static std::atomic_bool g_lbHeld{false};
+
 static void DetectSkyUIFromPlugin() {
     auto* dataHandler = RE::TESDataHandler::GetSingleton();
     if (!dataHandler) return;
@@ -931,6 +937,28 @@ static bool isZero(const std::wstring& s) {
         if (c != L'0' && c != L'.' && c != L',') return false;
     }
     return true;
+}
+
+// Detecte si un item d'inventaire est marque comme vole (stolen).
+// Iteration sur les ExtraDataList du InventoryEntryData : un item est vole
+// si UN AU MOINS de ses extraLists a un ExtraOwnership pointant vers un
+// owner non-null ET different du joueur. Un item du joueur (ramasse
+// legitimement) n'a pas d'ExtraOwnership ; quand on ramasse un item appartenant
+// a un PNJ/Faction sans permission, le moteur copie l'ExtraOwnership dans
+// l'extraDataList qui voyage avec l'item dans l'inventaire — c'est ce qui
+// declenche le marquage rouge "STOLEN" dans le UI vanilla et SkyUI.
+static bool IsItemStolen(RE::InventoryEntryData* entry) {
+    if (!entry || !entry->extraLists) return false;
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    if (!player) return false;
+    for (auto* xList : *entry->extraLists) {
+        if (!xList) continue;
+        auto* owner = xList->GetOwner();
+        if (owner && owner != player) {
+            return true;
+        }
+    }
+    return false;
 }
 
 // Formats a weight value with one decimal, comma as separator
@@ -981,7 +1009,8 @@ static std::atomic<int> g_gpIdxScanNext{1};       // D-pad Down (plus loin)
 static std::atomic<int> g_gpIdxScanPrev{0};       // D-pad Up (plus proche)
 static std::atomic<int> g_gpIdxScanAnnounce{2};   // D-pad Left
 static std::atomic<int> g_gpIdxMapSetRef{3};      // D-pad Right
-static std::atomic<int> g_gpIdxPrimary{4};        // A (autowalk / fast travel)
+static std::atomic<int> g_gpIdxPrimary{6};        // X (autowalk / fast travel)
+static std::atomic<int> g_gpIdxRemoteActivate{4}; // A (remote activate, equivalent to G key)
 static std::atomic<int> g_gpIdxTeleport{5};       // B
 static std::atomic<int> g_gpIdxVitals{7};         // Y
 static std::atomic<int> g_gpIdxSneak{8};          // LS click
@@ -1002,7 +1031,7 @@ static std::atomic<uint32_t> g_keyAnnounce{199};      // Home
 static std::atomic<uint32_t> g_keySubcategory{207};   // End
 static std::atomic<uint32_t> g_keyTeleport{199};      // Home (+ Alt)
 static std::atomic<float> g_mcmScanRange{0.0f};       // 0 = illimité
-static std::atomic<float> g_mcmTeleportRange{3000.0f}; // distance max de téléportation
+static std::atomic<float> g_mcmTeleportRange{5000.0f}; // distance max de téléportation
 
 // ---------------- INI settings ----------------
 

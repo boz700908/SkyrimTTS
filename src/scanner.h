@@ -782,6 +782,42 @@ static RE::NiPoint3 GetStablePosition(RE::TESObjectREFR* ref) {
     return ref->GetPosition();
 }
 
+// =============================================================================
+// IsRefContainerEmpty
+// =============================================================================
+// Détecte si un conteneur ou cadavre est vide DU POINT DE VUE DU JOUEUR
+// (= "Take All" ne donnerait rien).
+//
+// Approche miroir de vanilla ContainerMenu::TakeAllItems :
+// - GetInventory() retourne la map complète (base TESContainer + countDelta
+//   appliqué). Pour chaque entrée, on filtre :
+//   - count <= 0 → ignoré (item retiré ou entry sans items)
+//   - IsQuestObject() → ignoré (le joueur ne peut pas le prendre)
+//
+// Si après filtrage il ne reste rien → vide.
+//
+// Cf. f4access/ObjectScanner.cpp::IsContainerEmpty (équivalent Fallout 4
+// avec BGSInventoryList).
+// =============================================================================
+static bool IsRefContainerEmpty(RE::TESObjectREFR* ref) {
+    if (!ref) return true;
+    auto inv = ref->GetInventory();
+    for (auto& [obj, data] : inv) {
+        auto& [count, entry] = data;
+        if (count <= 0) continue;
+        if (!obj) continue;
+        // Filtrer les quest items (le joueur ne peut pas les prendre)
+        if (entry && entry->IsQuestObject()) continue;
+        // Filtrer les LeveledItem non résolus (apparaissent dans le base
+        // form mais ne sont pas de vrais items tant que le conteneur n'a
+        // pas été ouvert ; après ouverture ils sont absents et seuls les
+        // items rolés apparaissent).
+        if (obj->GetFormType() == RE::FormType::LeveledItem) continue;
+        return false;
+    }
+    return true;
+}
+
 // --- Scanner une cellule et ajouter ses références ---
 static void ScanCell(RE::TESObjectCELL* cell, RE::PlayerCharacter* player, const RE::NiPoint3& playerPos) {
     if (!cell) return;
@@ -975,12 +1011,10 @@ static void ScanCell(RE::TESObjectCELL* cell, RE::PlayerCharacter* player, const
                 }
             }
 
-            // Détection conteneur/cadavre vide
+            // Détection conteneur/cadavre vide via base + ContainerChanges
             bool isEmpty = false;
             if (cat == kCatContainers || cat == kCatCorpses) {
-                try {
-                    isEmpty = (ref.GetInventoryCount() == 0);
-                } catch (...) {}
+                try { isEmpty = IsRefContainerEmpty(&ref); } catch (...) {}
             }
 
             // Détection porte de cellule (avec teleport)
@@ -1741,8 +1775,11 @@ static void RefreshFilteredList() {
         if (!ref) continue;
 
         // Objet ramassé, supprimé ou désactivé → retirer de la liste
-        // Exception : les quêtes gardent leur cache (cross-cell intentionnel)
-        if (obj.category != kCatQuests) {
+        // Exception : les quêtes ET les locations gardent leur cache.
+        // - Quêtes : cible cross-cell souvent dans une cellule non chargée
+        // - Locations : markers de carte distants (villes, donjons à 8000+ unites)
+        //   par essence non-3D-loaded, on garde leur position via lastKnownPos.
+        if (obj.category != kCatQuests && obj.category != kCatLocations) {
             if (ref->IsDisabled() || ref->IsDeleted() || !ref->Is3DLoaded()) {
                 obj.category = kCatAll;
                 obj.formID = 0;
@@ -1752,9 +1789,11 @@ static void RefreshFilteredList() {
 
         // Recalculer la distance en temps réel
         if (player) {
-            if (obj.category == kCatQuests && (obj.lastKnownPos.x != 0 || obj.lastKnownPos.y != 0)) {
-                // Pour les quêtes redirigées vers une porte, utiliser lastKnownPos
-                // (sinon on recalculerait vers le PNJ intérieur à 26000 unités)
+            // Quetes et locations utilisent lastKnownPos (markers distants ou
+            // refs cross-cell non-3D-loaded, lecture impossible via GetStablePosition).
+            const bool useCache = (obj.category == kCatQuests || obj.category == kCatLocations) &&
+                                  (obj.lastKnownPos.x != 0 || obj.lastKnownPos.y != 0);
+            if (useCache) {
                 auto diff = playerPos - obj.lastKnownPos;
                 obj.distance = diff.Length();
                 obj.zDiff = obj.lastKnownPos.z - playerPos.z;
@@ -1774,9 +1813,9 @@ static void RefreshFilteredList() {
             obj.category = CategorizeRef(*ref);
         }
 
-        // Re-vérifier empty
+        // Re-vérifier empty (base TESContainer + countDelta des ContainerChanges)
         if (obj.category == kCatContainers || obj.category == kCatCorpses) {
-            try { obj.empty = (ref->GetInventoryCount() == 0); } catch (...) {}
+            try { obj.empty = IsRefContainerEmpty(ref); } catch (...) {}
         }
 
         // Mettre à jour le state des piliers/anneaux puzzle
@@ -1902,16 +1941,18 @@ static void ScannerNextObjectImpl() {
     auto& nextObj = *g_scannedFiltered[g_scanIndex];
     auto* p = RE::PlayerCharacter::GetSingleton();
     if (p) {
+        auto playerPos = p->GetPosition();
         auto* refForm = RE::TESForm::LookupByID(nextObj.formID);
         auto* ref = refForm ? refForm->AsReference() : nullptr;
         if (ref && ref->Is3DLoaded()) {
             auto refPos = GetStablePosition(ref);
-            auto diff = p->GetPosition() - refPos;
+            auto diff = playerPos - refPos;
             nextObj.distance = diff.Length();
-            nextObj.zDiff = refPos.z - p->GetPosition().z;
+            nextObj.zDiff = refPos.z - playerPos.z;
         } else if (nextObj.lastKnownPos.x != 0 || nextObj.lastKnownPos.y != 0) {
-            auto diff = p->GetPosition() - nextObj.lastKnownPos;
+            auto diff = playerPos - nextObj.lastKnownPos;
             nextObj.distance = diff.Length();
+            nextObj.zDiff = nextObj.lastKnownPos.z - playerPos.z;
         }
     }
     std::wstring pos = L". " + std::to_wstring(g_scanIndex + 1) + L" of " + std::to_wstring(g_scannedFiltered.size());
@@ -1949,16 +1990,18 @@ static void ScannerPrevObjectImpl() {
     auto& prevObj = *g_scannedFiltered[g_scanIndex];
     auto* p = RE::PlayerCharacter::GetSingleton();
     if (p) {
+        auto playerPos = p->GetPosition();
         auto* refForm = RE::TESForm::LookupByID(prevObj.formID);
         auto* ref = refForm ? refForm->AsReference() : nullptr;
         if (ref && ref->Is3DLoaded()) {
             auto refPos = GetStablePosition(ref);
-            auto diff = p->GetPosition() - refPos;
+            auto diff = playerPos - refPos;
             prevObj.distance = diff.Length();
-            prevObj.zDiff = refPos.z - p->GetPosition().z;
+            prevObj.zDiff = refPos.z - playerPos.z;
         } else if (prevObj.lastKnownPos.x != 0 || prevObj.lastKnownPos.y != 0) {
-            auto diff = p->GetPosition() - prevObj.lastKnownPos;
+            auto diff = playerPos - prevObj.lastKnownPos;
             prevObj.distance = diff.Length();
+            prevObj.zDiff = prevObj.lastKnownPos.z - playerPos.z;
         }
     }
     std::wstring pos = L". " + std::to_wstring(g_scanIndex + 1) + L" of " + std::to_wstring(g_scannedFiltered.size());

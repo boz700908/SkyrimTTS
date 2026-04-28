@@ -16,6 +16,7 @@ EndEvent
 
 ; === Internal state ===
 ObjectReference CurrentTarget
+ObjectReference TempMarkerRef  ; XMarker cree par PlaceAtMe (mode coords), a supprimer au stop
 float fStopDistance = 100.0
 bool IsWalking = false
 bool MountedMode = false   ; true si le walk en cours utilise le mode "mounted"
@@ -55,20 +56,25 @@ Function OnWalkToTarget(int aiFormID, float afStopDistance, float afX = 0.0, flo
 
         fStopDistance = afStopDistance
 
-        ; Create a temp XMarker at the target position
+        ; Create a temp XMarker at the target position. Tracker dans TempMarkerRef
+        ; pour pouvoir le supprimer au stop sans toucher aux markers de carte vanilla
+        ; (qui sont AUSSI des XMarker baseForm 0x10 mais ne doivent JAMAIS etre supprimes).
         ObjectReference tempMarker = PlayerRef.PlaceAtMe(Game.GetForm(0x10), 1, true, true)
         tempMarker.SetPosition(afX, afY, afZ)
+        TempMarkerRef = tempMarker
         StartWalkToRef(tempMarker, afStopDistance)
     endIf
 EndFunction
 
 ; === MOUNTED MODE — Called from C++ when player is on a horse ===
-; OPTION B : on redirige l'alias Traveler vers le CHEVAL au lieu du joueur.
-; Notre Travel package est attaché au Traveler alias (via ALPC dans l'ESP), donc
-; en changeant l'alias on transfère l'exécution du package au cheval. Le cheval est
-; un Actor avec son propre AI complet, il peut exécuter un Travel package nativement.
-; Pas besoin de Game.SetPlayerAIDriven : c'est le cheval qui agit, pas le joueur.
+; Reproduit le comportement v1.4 qui marchait : meme dispatch qu'a pied
+; (SetPlayerAIDriven sur le joueur) avec en plus un EvaluatePackage sur
+; le cheval pour reveiller son AI. Le moteur Skyrim gere le couple
+; joueur+cheval : l'IA joueur AI-driven sur un cheval pilote le couple.
+; Le 6e parametre aiMountFormID permet de recuperer le cheval pour
+; appeler EvaluatePackage dessus (pas d'API Papyrus pour PlayerRef.GetMount).
 Function OnWalkToTargetMounted(int aiFormID, float afStopDistance, float afX, float afY, float afZ, int aiMountFormID)
+    Debug.Trace("SkyrimTTS:AutoWalkMounted - OnWalkToTargetMounted called: aiFormID=" + aiFormID + " stopDist=" + afStopDistance + " coords=(" + afX + "," + afY + "," + afZ + ") mountID=" + aiMountFormID)
     ; Récupérer le cheval
     Form mountForm = Game.GetForm(aiMountFormID)
     if mountForm == None
@@ -112,11 +118,21 @@ Function OnWalkToTargetMounted(int aiFormID, float afStopDistance, float afX, fl
 
         ObjectReference tempMarker = PlayerRef.PlaceAtMe(Game.GetForm(0x10), 1, true, true)
         tempMarker.SetPosition(afX, afY, afZ)
+        TempMarkerRef = tempMarker
         StartWalkToRefMounted(tempMarker, afStopDistance, mountActor)
     endIf
 EndFunction
 
 ; === MOUNTED MODE start helper ===
+; Reproduit le comportement v1.4 qui marchait : on dispatche le Travel package
+; sur le joueur via SetPlayerAIDriven(true) comme en mode a pied. Le moteur
+; Skyrim gere le couple joueur+cheval : l'IA joueur AI-driven sur un cheval
+; pilote indirectement le cheval.
+;
+; On ajoute juste un EvaluatePackage sur le cheval pour le reveiller,
+; et on flagge MountedMode pour que le stop fasse le bon cleanup.
+;
+; Pas de Traveler.ForceRefTo(mount) (option A jamais validee empiriquement).
 Function StartWalkToRefMounted(ObjectReference target, float stopDist, Actor mountActor)
     if IsWalking
         StopWalkingInternal(false)
@@ -143,24 +159,26 @@ Function StartWalkToRefMounted(ObjectReference target, float stopDist, Actor mou
     mountActor.StopCombat()
     mountActor.StopCombatAlarm()
 
-    ; OPTION B — Étape clé : rediriger l'alias Traveler vers le CHEVAL.
-    ; Notre Travel package est attaché à l'alias Traveler (via ALPC dans l'ESP).
-    ; En changeant la ref de l'alias, le package va s'exécuter sur le cheval
-    ; au lieu du joueur. Le cheval est un Actor avec son propre AI, il peut
-    ; exécuter le package nativement sans avoir besoin d'AIDriven.
-    Traveler.ForceRefTo(mountActor)
-    Debug.Trace("SkyrimTTS:AutoWalkMounted - Traveler alias redirected to mount: " + Traveler.GetReference())
-
-    ; Remplir DstMarker comme d'habitude (la cible ne change pas)
+    ; Remplir DstMarker avec la cible -> le Travel package lit cet alias
     DstMarker.ForceRefTo(target)
     Debug.Trace("SkyrimTTS:AutoWalkMounted - DstMarker set to " + DstMarker.GetReference())
 
-    ; Réveiller l'AI du cheval pour qu'il prenne en compte son nouveau package
-    mountActor.EvaluatePackage()
-    Debug.Trace("SkyrimTTS:AutoWalkMounted - mount.EvaluatePackage called")
+    ; Reset propre de l'AI joueur avant de la reactiver en AIDriven.
+    ; Equivalent Papyrus du SetAIDriven(false)+EvaluatePackage que le C++ v1.4
+    ; faisait avant le dispatch et qu'on a supprime cote C++ pour eviter le
+    ; crash BSShaderAccumulator. Ici en Papyrus c'est safe (le moteur gere le
+    ; timing). Sans ce reset, AIDriven semble silencieusement ignore quand le
+    ; joueur est sur un cheval (le contrôle reste au joueur, pas a l'IA).
+    Game.SetPlayerAIDriven(false)
+    PlayerRef.EvaluatePackage()
+    Debug.Trace("SkyrimTTS:AutoWalkMounted - pre-reset AIDriven=false done")
 
-    ; PAS de Game.SetPlayerAIDriven : on n'a pas besoin de driver le joueur,
-    ; c'est le cheval qui est maintenant l'acteur du package Travel.
+    ; Take away player control, let AI run the Travel package.
+    ; Sur un cheval, AIDriven sur le joueur fait que l'IA pilote le couple
+    ; joueur+cheval (comportement v1.4 confirme).
+    Game.SetPlayerAIDriven(true)
+    PlayerRef.EvaluatePackage()
+    Debug.Trace("SkyrimTTS:AutoWalkMounted - AI driven, EvaluatePackage called")
 
     IsWalking = true
     RegisterForSingleUpdate(CheckInterval)
@@ -220,41 +238,29 @@ Function StopWalkingInternal(bool abNotify)
     ; Clear DstMarker so the Travel package deactivates
     DstMarker.Clear()
 
+    ; Cleanup identique pour mounted et a pied : on libere SetPlayerAIDriven et on
+    ; reevalue le package du joueur. Le cheval revient a son AI normale au prochain
+    ; tick automatique du moteur (pas besoin d'EvaluatePackage explicite : on n'a
+    ; plus la ref du cheval ici, et de toute facon c'est l'IA du joueur qui pilotait).
+    Game.SetPlayerAIDriven(false)
+    PlayerRef.EvaluatePackage()
     if MountedMode
-        ; OPTION B : restaurer l'alias Traveler vers le PlayerRef pour que les
-        ; futurs autowalks à pied fonctionnent correctement.
-        ; On capture aussi la ref actuelle (le cheval) pour pouvoir EvaluatePackage
-        ; dessus afin qu'il revienne à son comportement normal.
-        Actor mountActor = Traveler.GetReference() as Actor
-        Traveler.ForceRefTo(PlayerRef)
-        Debug.Trace("SkyrimTTS:AutoWalkMounted - Traveler restored to PlayerRef")
-
-        if mountActor != None
-            mountActor.EvaluatePackage()
-            Debug.Trace("SkyrimTTS:AutoWalkMounted - mount.EvaluatePackage called (cleanup)")
-        endIf
-
-        ; Pas besoin de SetPlayerAIDriven(false) puisqu'on ne l'a jamais activé en mounted.
-        PlayerRef.EvaluatePackage()
         Debug.Trace("SkyrimTTS:AutoWalkMounted - Stopped")
     else
-        ; Mode à pied : restaurer le contrôle joueur.
-        ; Note : on ne touche PAS à SpeedMult — on ne l'a jamais boosté, donc rien à restaurer.
-        Game.SetPlayerAIDriven(false)
-        PlayerRef.EvaluatePackage()
         Debug.Trace("SkyrimTTS:AutoWalk - Stopped")
     endIf
 
-    ; Supprimer le temp marker si c'est un XMarker créé par PlaceAtMe (mode coordonnées).
-    ; Sans ça, les markers s'accumulent dans la save à chaque autowalk et finissent
-    ; par surcharger le scene graph → crash progressif.
-    if CurrentTarget != None && CurrentTarget != PlayerRef
-        Form baseForm = CurrentTarget.GetBaseObject()
-        if baseForm != None && baseForm.GetFormID() == 0x10
-            CurrentTarget.Disable()
-            CurrentTarget.Delete()
-            Debug.Trace("SkyrimTTS:AutoWalk - Deleted temp XMarker")
-        endIf
+    ; Supprimer UNIQUEMENT le temp marker qu'on a cree nous-memes via PlaceAtMe (mode coords).
+    ; ATTENTION : on ne peut PAS se contenter de tester baseForm.GetFormID() == 0x10
+    ; sur CurrentTarget car les markers de carte vanilla (Fort Dragon, villes, donjons)
+    ; sont AUSSI des XMarker de baseForm 0x10 — les supprimer les ferait disparaitre
+    ; definitivement de la carte. On utilise TempMarkerRef qu'on a explicitement
+    ; rempli a la creation du tempMarker, donc on est sur de ne supprimer que ca.
+    if TempMarkerRef != None
+        TempMarkerRef.Disable()
+        TempMarkerRef.Delete()
+        Debug.Trace("SkyrimTTS:AutoWalk - Deleted temp XMarker")
+        TempMarkerRef = None
     endIf
 
     CurrentTarget = None
@@ -327,6 +333,10 @@ Function OnLoadGameReset()
     IsWalking = false
     MountedMode = false
     CurrentTarget = None
+    ; Nettoyer un eventuel tempMarker orphelin de la save (mais NE PAS le delete :
+    ; la save pourrait avoir une ref obsolete pointant vers un marker de carte vanilla
+    ; suite a un ancien bug. On reset juste le pointeur sans toucher a la ref.)
+    TempMarkerRef = None
     currentLoopInstance = 0
     Debug.Trace("SkyrimTTS:AutoWalk - OnLoadGameReset: full state cleanup")
 EndFunction
@@ -407,4 +417,32 @@ Function OnStopLoopSound()
         Debug.Trace("SkyrimTTS:Sound - Stopped loop instance: " + currentLoopInstance)
         currentLoopInstance = 0
     endIf
+EndFunction
+
+; === REMOTE ACTIVATE — Called from C++ when player presses G in scanner ===
+; Activates the target reference as if the player pressed E next to it.
+; Works on items (pickup), containers (open), doors (teleport), activators
+; (lever/button/etc.). The C++ side enforces a max distance check before dispatch.
+Function OnRemoteActivate(int aiTargetFormID)
+    Debug.Trace("SkyrimTTS:RemoteActivate - Called with FormID: " + aiTargetFormID)
+    if aiTargetFormID == 0
+        Debug.Trace("SkyrimTTS:RemoteActivate - FormID is 0, abort")
+        return
+    endIf
+    Form targetForm = Game.GetForm(aiTargetFormID)
+    if targetForm == None
+        Debug.Trace("SkyrimTTS:RemoteActivate - GetForm returned None for FormID: " + aiTargetFormID)
+        return
+    endIf
+    ObjectReference targetRef = targetForm as ObjectReference
+    if targetRef == None
+        Debug.Trace("SkyrimTTS:RemoteActivate - Form is not an ObjectReference: " + aiTargetFormID)
+        return
+    endIf
+    if targetRef.IsDeleted()
+        Debug.Trace("SkyrimTTS:RemoteActivate - Target is deleted: " + aiTargetFormID)
+        return
+    endIf
+    Debug.Trace("SkyrimTTS:RemoteActivate - Activating ref: " + aiTargetFormID)
+    targetRef.Activate(PlayerRef)
 EndFunction

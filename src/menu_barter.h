@@ -13,6 +13,8 @@ static std::wstring     g_lastBarterDesc;
 static int              g_lastBarterItemCount{0};
 static bool             g_barterQuantityOpen{false};
 static int              g_lastBarterQuantity{0};
+// Pointeur Item* de la selection — cf. menu_inventory.h pour l'explication.
+static const void*      g_lastBarterItemPtr = nullptr;
 
 struct BarterSnapshot {
     std::wstring itemText;
@@ -27,6 +29,8 @@ struct BarterSnapshot {
     std::wstring soulLevelText;
     bool         isVendorSide{true};
     bool         atDivider{false};
+    bool         stolen{false};     // item appartenant a un PNJ/faction (pas au joueur)
+    const void*  itemPtr{nullptr};
 };
 
 static bool ReadBarterSnapshot(BarterSnapshot& snap) {
@@ -143,12 +147,30 @@ static bool ReadBarterSnapshot(BarterSnapshot& snap) {
     snap.weaponDamageText = StripMarkupForSpeech(snap.weaponDamageText);
     snap.apparelArmorText = StripMarkupForSpeech(snap.apparelArmorText);
 
+    // Pointeur Item* pour distinguer deux items homonymes (cf. menu_inventory.h).
+    // Lecture du flag stolen via IsItemStolen (cf. common.h).
+    {
+        auto* barterMenu = static_cast<RE::BarterMenu*>(menu.get());
+        if (barterMenu) {
+            auto& rd = barterMenu->GetRuntimeData();
+            if (rd.itemList) {
+                auto* sel = rd.itemList->GetSelectedItem();
+                snap.itemPtr = sel;
+                if (sel && sel->data.objDesc) {
+                    snap.stolen = IsItemStolen(sel->data.objDesc);
+                }
+            }
+        }
+    }
+
     return !snap.itemText.empty() || !snap.catText.empty();
 }
 
 static std::wstring BuildBarterItemAnnouncement(const BarterSnapshot& snap) {
     if (snap.itemText.empty()) return L"";
     std::wstring msg = snap.itemText;
+    if (snap.stolen)
+        msg += L", stolen";
     if (snap.count > 1)
         msg += L", " + std::to_wstring(snap.count);
     const std::wstring eq = FormatEquipState(snap.equipState);
@@ -221,13 +243,17 @@ static void AnnounceBarterChangeImpl() {
     const bool sideChanged = (side != g_lastBarterSide);
     const bool catChanged  = !snap.catText.empty() && (sideChanged || snap.catText != g_lastBarterCat);
     const std::wstring announce = BuildBarterItemAnnouncement(snap);
-    const bool itemChanged = !announce.empty() && announce != g_lastBarterItemAnnounce;
+    // Changement detecte soit par le texte, soit par le pointeur Item*.
+    const bool ptrChanged = snap.itemPtr != nullptr && g_lastBarterItemPtr != nullptr &&
+                            snap.itemPtr != g_lastBarterItemPtr;
+    const bool itemChanged = !announce.empty() && (announce != g_lastBarterItemAnnounce || ptrChanged);
 
     // Si on est dans les catégories (pas d'item), reset pour forcer la relecture au retour
     if (snap.itemText.empty() && !g_lastBarterItemAnnounce.empty()) {
         g_lastBarterItemAnnounce.clear();
         g_lastBarterItemName.clear();
         g_lastBarterItemCount = 0;
+        g_lastBarterItemPtr = nullptr;
         g_lastBarterCat.clear();  // relire la catégorie quand on revient avec flèche gauche
     }
 
@@ -239,7 +265,11 @@ static void AnnounceBarterChangeImpl() {
         g_lastBarterSide = side;
     }
     if (itemChanged) {
-        if (!firstRead && !snap.itemText.empty() && snap.itemText == g_lastBarterItemName && snap.count != g_lastBarterItemCount) {
+        // Si MEME item (meme pointeur) mais seul le count a changé → dire juste
+        // le nombre. Sinon relire tout (cas homonyme avec count different).
+        const bool sameItemPtr = snap.itemPtr != nullptr && snap.itemPtr == g_lastBarterItemPtr;
+        if (!firstRead && sameItemPtr &&
+            !snap.itemText.empty() && snap.itemText == g_lastBarterItemName && snap.count != g_lastBarterItemCount) {
             if (snap.count > 1)
                 Speak(std::to_wstring(snap.count));
             else
@@ -250,6 +280,7 @@ static void AnnounceBarterChangeImpl() {
         g_lastBarterItemAnnounce = announce;
         g_lastBarterItemName = snap.itemText;
         g_lastBarterItemCount = snap.count;
+        g_lastBarterItemPtr = snap.itemPtr;
         g_lastBarterDesc.clear();
     }
     if (!snap.descText.empty() && snap.descText != g_lastBarterDesc) {
