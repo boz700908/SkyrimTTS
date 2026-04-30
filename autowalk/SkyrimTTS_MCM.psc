@@ -226,7 +226,7 @@ event OnPageReset(string page)
         AddEmptyOption()
         AddHeaderOption("Other LB combos")
         oidGpSneak = AddMenuOption("Sneak toggle", GetGpButtonName(GpIdxSneak))
-        oidGpPOV = AddMenuOption("POV toggle", GetGpButtonName(GpIdxPOV))
+        oidGpPOV = AddMenuOption("Lock-on toggle (Shift+X)", GetGpButtonName(GpIdxPOV))
 
         AddEmptyOption()
         AddHeaderOption("Standalone (no LB)")

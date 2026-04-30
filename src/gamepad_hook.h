@@ -300,17 +300,8 @@ namespace GamepadHook
             if (idCode == keyTeleport) { LOG("GAMEPAD: LB+Teleport → ScannerTeleport"); ScannerTeleport(); return true; }
             if (idCode == keySneak)    { LOG("GAMEPAD: LB+Sneak → ToggleSneak"); ToggleSneakGamepad(); return true; }
             if (idCode == keyPOV) {
-                LOG("GAMEPAD: LB+POV → TogglePOV");
-                auto* camera = RE::PlayerCamera::GetSingleton();
-                if (camera) {
-                    if (camera->IsInFirstPerson()) {
-                        camera->ForceThirdPerson();
-                        Speak(L"Third person");
-                    } else {
-                        camera->ForceFirstPerson();
-                        Speak(L"First person");
-                    }
-                }
+                LOG("GAMEPAD: LB+RS click → ToggleLockOnEnemy (Shift+X equivalent)");
+                ToggleLockOnEnemy();
                 return true;
             }
 

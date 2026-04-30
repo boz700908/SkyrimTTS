@@ -10,6 +10,7 @@
 
 ### Changes
 - Active effects shortcut moved from Ctrl+H to Shift+H — Ctrl+H was conflicting with the vanilla stand/crouch shortcut some players remap to Ctrl. Press Shift+H in game to hear your active effects (poisons, diseases, buffs, etc.)
+- Gamepad: LB + right stick click now toggles enemy lock-on (equivalent to Shift+X on keyboard) instead of toggling first/third person camera. The MCM label has been renamed accordingly. POV toggle is still available via the F key on keyboard
 
 ### Bug fixes
 - **Map markers no longer disappear after autowalk** — a critical bug introduced in v1.5.1 caused vanilla map markers (cities, forts, dungeons, etc.) to be permanently deleted when stopping an autowalk if you had previously placed a custom map marker via P. The autowalk cleanup was identifying any XMarker (baseForm 0x10) as one of our temporary markers and deleting it, but vanilla map markers share the same baseForm. The cleanup now only deletes markers we explicitly created via PlaceAtMe. If you lost markers from a previous autowalk session, they need to be rediscovered (visit the location once)
