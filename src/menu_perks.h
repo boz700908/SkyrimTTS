@@ -254,13 +254,13 @@ struct CanLearnResult {
 static CanLearnResult CanLearnPerk(const PerkIndexEntry& e) {
     CanLearnResult r;
     auto* pc = RE::PlayerCharacter::GetSingleton();
-    if (!pc || !e.perk) { r.reason = Utf8ToWString("indisponible"); return r; }
+    if (!pc || !e.perk) { r.reason = TR("unavailable"); return r; }
 
     // 1. Déjà au rang max ?
     std::int8_t curRank   = GetPlayerRankOn(e.perk);
     std::int8_t totalRank = GetTotalRanks(e.perk);
     if (totalRank > 0 && curRank >= totalRank) {
-        r.reason = Utf8ToWString("already at max rank");
+        r.reason = TR("already at max rank");
         return r;
     }
 
@@ -270,7 +270,7 @@ static CanLearnResult CanLearnPerk(const PerkIndexEntry& e) {
     for (std::int8_t i = 0; i < curRank && nextRankPerk; ++i) {
         nextRankPerk = nextRankPerk->nextPerk;
     }
-    if (!nextRankPerk) { r.reason = Utf8ToWString("no next rank"); return r; }
+    if (!nextRankPerk) { r.reason = TR("no next rank"); return r; }
 
     // 3. Niveau de compétence
     if (e.skill != RE::ActorValue::kNone) {
@@ -279,11 +279,8 @@ static CanLearnResult CanLearnPerk(const PerkIndexEntry& e) {
             float baseLvl = avo->GetBaseActorValue(e.skill);
             std::int8_t reqLvl = nextRankPerk->data.level;
             if (baseLvl < (float)reqLvl) {
-                std::string s = "requires skill level ";
-                s += std::to_string((int)reqLvl);
-                s += ", you have ";
-                s += std::to_string((int)baseLvl);
-                r.reason = Utf8ToWString(s);
+                r.reason = TR("requires skill level ") + std::to_wstring((int)reqLvl)
+                         + TR(", you have ") + std::to_wstring((int)baseLvl);
                 return r;
             }
         }
@@ -295,7 +292,7 @@ static CanLearnResult CanLearnPerk(const PerkIndexEntry& e) {
         for (auto* parent : e.node->parents) {
             if (!parent || !parent->perk) continue;
             if (!pc->HasPerk(parent->perk)) {
-                r.reason = Utf8ToWString("missing prerequisite: ");
+                r.reason = TR("missing prerequisite: ");
                 const char* pn = parent->perk->GetFullName();
                 if (pn) r.reason += Utf8ToWString(pn);
                 return r;
@@ -306,7 +303,7 @@ static CanLearnResult CanLearnPerk(const PerkIndexEntry& e) {
     // 5. Conditions globales du perk
     if (nextRankPerk->perkConditions.head) {
         if (!nextRankPerk->perkConditions(pc, pc)) {
-            r.reason = Utf8ToWString("conditions not met");
+            r.reason = TR("conditions not met");
             return r;
         }
     }

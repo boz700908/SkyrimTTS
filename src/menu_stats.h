@@ -48,28 +48,34 @@ static bool g_statsRingCached = false;
 // Convention : on garde le préfixe "FR" historique des helpers, mais nos
 // textes scriptés sont maintenant en anglais (les textes localisés du jeu
 // restent évidemment dans la langue du joueur).
+//
+// FR() passe maintenant la cle anglaise dans TR() pour gerer la traduction
+// automatique. Si la cle n'existe pas dans Translate_<LANG>.txt, TR()
+// retourne le texte anglais d'origine -> compatibilite parfaite.
 
 static std::wstring FR(const char* utf8) {
-    return Utf8ToWString(std::string(utf8));
+    return TR(std::string(utf8));
 }
 
 // FR avec un nombre intégré : FRn("rank ", 3, " of 5")
+// Traduit le prefixe et le suffixe separement (le nombre est inclus
+// dans la chaine finale, pas dans la cle de traduction).
 static std::wstring FRn(const char* utf8Prefix, int value, const char* utf8Suffix = "") {
-    std::string s = utf8Prefix;
-    s += std::to_string(value);
-    s += utf8Suffix;
-    return Utf8ToWString(s);
+    std::wstring out = TR(std::string(utf8Prefix));
+    out += std::to_wstring(value);
+    if (utf8Suffix && *utf8Suffix) out += TR(std::string(utf8Suffix));
+    return out;
 }
 
 // FR avec deux nombres : FRnn("rank ", 3, " of ", 5)
 static std::wstring FRnn(const char* utf8Prefix, int value1, const char* utf8Mid,
                          int value2, const char* utf8Suffix = "") {
-    std::string s = utf8Prefix;
-    s += std::to_string(value1);
-    s += utf8Mid;
-    s += std::to_string(value2);
-    s += utf8Suffix;
-    return Utf8ToWString(s);
+    std::wstring out = TR(std::string(utf8Prefix));
+    out += std::to_wstring(value1);
+    if (utf8Mid && *utf8Mid)    out += TR(std::string(utf8Mid));
+    out += std::to_wstring(value2);
+    if (utf8Suffix && *utf8Suffix) out += TR(std::string(utf8Suffix));
+    return out;
 }
 
 // Lit et cache les 18 noms de compétences de l'anneau
@@ -227,10 +233,10 @@ static void AnnounceStatsOpenImpl() {
     if (!movie) return;
 
     std::string tmp;
-    std::wstring announce = L"Skills";
+    std::wstring announce = TR("Skills");
 
     if (GetGFxString(movie, STATS_LEVEL, tmp) && !tmp.empty())
-        announce += L", level " + Utf8ToWString(tmp);
+        announce += L", " + TR("level") + L" " + Utf8ToWString(tmp);
 
     if (GetGFxString(movie, STATS_PERKS, tmp) && !tmp.empty())
         announce += L", " + ResolveUIString(movie, tmp);

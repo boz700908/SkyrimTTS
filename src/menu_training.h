@@ -47,9 +47,9 @@ static void TrainingAdvanceMovie_Hook(RE::IMenu* a_this, float a_interval, std::
             GetGFxString(movie, TR_GOLD, gold);
             std::wstring msg;
             if (!skill.empty()) msg += Utf8ToWString(skill);
-            if (!times.empty()) msg += L", trained " + Utf8ToWString(times);
-            if (!cost.empty()) msg += L", cost " + Utf8ToWString(cost);
-            if (!gold.empty()) msg += L", gold " + Utf8ToWString(gold);
+            if (!times.empty()) msg += L", " + TR("trained") + L" " + Utf8ToWString(times);
+            if (!cost.empty()) msg += L", " + TR("cost") + L" " + Utf8ToWString(cost);
+            if (!gold.empty()) msg += L", " + TR("gold") + L" " + Utf8ToWString(gold);
             if (!msg.empty()) Speak(msg);
         }
     }
@@ -65,12 +65,12 @@ static void AnnounceTrainingOpen(RE::GFxMovieView* movie) {
 
     g_lastTrainingCost = cost;
 
-    std::wstring msg = L"Training";
+    std::wstring msg = TR("Training");
     if (!skill.empty()) msg += L", " + Utf8ToWString(skill);
-    if (!trainer.empty()) msg += L", trainer level " + Utf8ToWString(trainer);
-    if (!times.empty()) msg += L", trained " + Utf8ToWString(times);
-    if (!cost.empty()) msg += L", cost " + Utf8ToWString(cost);
-    if (!gold.empty()) msg += L", gold " + Utf8ToWString(gold);
+    if (!trainer.empty()) msg += L", " + TR("trainer level") + L" " + Utf8ToWString(trainer);
+    if (!times.empty()) msg += L", " + TR("trained") + L" " + Utf8ToWString(times);
+    if (!cost.empty()) msg += L", " + TR("cost") + L" " + Utf8ToWString(cost);
+    if (!gold.empty()) msg += L", " + TR("gold") + L" " + Utf8ToWString(gold);
     Speak(msg);
 }
 

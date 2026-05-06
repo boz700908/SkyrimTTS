@@ -157,7 +157,7 @@ static std::wstring TryReadSaveLoadEntry(RE::GFxMovieView* movie, bool isCharact
             std::wstring prefix;
             if (hasFileNum) {
                 std::wostringstream ss;
-                ss << L"Save " << std::setw(3) << std::setfill(L'0') << static_cast<int>(fileNumD);
+                ss << TR("Save") << L" " << std::setw(3) << std::setfill(L'0') << static_cast<int>(fileNumD);
                 prefix = ss.str() + L": ";
             }
 
@@ -169,8 +169,8 @@ static std::wstring TryReadSaveLoadEntry(RE::GFxMovieView* movie, bool isCharact
                 if (SafeIsNumber(val)) return SafeGetNumber(val) != 0.0;
                 return false;
             };
-            if (readBool(eb + ".corrupt"))  { LOG("SaveLoad entry: corrupt");  return prefix + L"Corrupt save"; }
-            if (readBool(eb + ".obsolete")) { LOG("SaveLoad entry: obsolete"); return prefix + L"Obsolete save"; }
+            if (readBool(eb + ".corrupt"))  { LOG("SaveLoad entry: corrupt");  return prefix + TR("Corrupt save"); }
+            if (readBool(eb + ".obsolete")) { LOG("SaveLoad entry: obsolete"); return prefix + TR("Obsolete save"); }
 
             // name: full character name (preferred over truncated text)
             std::string nameStr;
@@ -203,7 +203,7 @@ static std::wstring TryReadSaveLoadEntry(RE::GFxMovieView* movie, bool isCharact
 
             double levelD = 0.0;
             if (GetGFxNumber(movie, (eb + ".level").c_str(), levelD) && levelD > 0.0)
-                msg += L", level " + std::to_wstring(static_cast<int>(levelD));
+                msg += L", " + TR("level") + L" " + std::to_wstring(static_cast<int>(levelD));
 
             std::string playTimeStr;
             GetGFxString(movie, (eb + ".playTime").c_str(), playTimeStr);  // capital T — confirmed in AS
@@ -378,23 +378,23 @@ static void DiagnoseMainMenuNow() {
         RE::GFxMovieView* movie = GetMainMenuMovie(menuName);
 
         if (!movie) {
-            Speak(L"Main menu not found");
+            Speak(TR("Main menu not found"));
             return;
         }
 
         std::wstring item;
         std::string which;
         if (!ReadMainMenuUI(item, which)) {
-            Speak(L"Path not found");
+            Speak(TR("Path not found"));
             return;
         }
 
-        Speak(L"Main menu OK");
-        SpeakQueue(L"Selection");
+        Speak(TR("Main menu OK"));
+        SpeakQueue(TR("Selection"));
         SpeakQueue(item);
 
         if (!which.empty()) {
-            SpeakQueue(L"Path OK");
+            SpeakQueue(TR("Path OK"));
         }
     });
 }

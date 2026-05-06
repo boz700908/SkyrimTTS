@@ -303,7 +303,7 @@ static void AnnounceCharSheetChangeImpl() {
             if (!snap.entry.value.empty()) msg += L": " + snap.entry.value;
             SpeakQueue(msg);
         } else if (snap.totalEntries == 0) {
-            SpeakQueue(L"empty");
+            SpeakQueue(TR("empty"));
         }
 
         g_lastCharSheetKey = std::to_wstring(snap.selectedIndex) + L"|" +

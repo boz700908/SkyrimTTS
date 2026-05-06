@@ -170,20 +170,20 @@ static std::wstring BuildContainerItemAnnouncement(const ContainerSnapshot& snap
     if (snap.itemText.empty()) return L"";
     std::wstring msg = snap.itemText;
     if (snap.stolen)
-        msg += L", stolen";
+        msg += L", " + TR("stolen");
     if (snap.count > 1)
         msg += L", " + std::to_wstring(snap.count);
     const std::wstring eq = FormatEquipState(snap.equipState);
     if (!eq.empty())
         msg += L", " + eq;
     if (!snap.weaponDamageText.empty() && snap.weaponDamageText != L"0")
-        msg += L", damage " + snap.weaponDamageText;
+        msg += L", " + TR("damage") + L" " + snap.weaponDamageText;
     if (!snap.apparelArmorText.empty() && snap.apparelArmorText != L"0")
-        msg += L", armor " + snap.apparelArmorText;
+        msg += L", " + TR("armor") + L" " + snap.apparelArmorText;
     if (!snap.valueText.empty() && !isZero(snap.valueText))
-        msg += L", value " + snap.valueText;
+        msg += L", " + TR("value") + L" " + snap.valueText;
     if (!snap.weightText.empty() && !isZero(snap.weightText))
-        msg += L", weight " + snap.weightText;
+        msg += L", " + TR("weight") + L" " + snap.weightText;
     if (!snap.soulLevelText.empty())
         msg += L", " + snap.soulLevelText;
     return msg;
@@ -217,7 +217,7 @@ static void AnnounceContainerChangeImpl() {
                 if (!g_containerQuantityOpen) {
                     g_containerQuantityOpen = true;
                     g_lastContainerQuantity = qty;
-                    Speak(L"Quantity: " + std::to_wstring(qty));
+                    Speak(TR("Quantity") + L": " + std::to_wstring(qty));
                 } else if (qty != g_lastContainerQuantity) {
                     g_lastContainerQuantity = qty;
                     Speak(std::to_wstring(qty));
@@ -234,6 +234,8 @@ static void AnnounceContainerChangeImpl() {
     if (!ReadContainerSnapshot(snap)) return;
 
     const bool skyui = g_skyuiMode.load(std::memory_order_relaxed);
+    // Cle technique stable (anglaise) pour comparer d'un cycle a l'autre.
+    // La traduction n'intervient qu'a l'affichage plus bas.
     const std::wstring side = snap.isContainerSide ? L"container" : L"inventory";
     const bool sideChanged = (side != g_lastContainerSide);
     const bool catChanged  = !snap.catText.empty() && (sideChanged || snap.catText != g_lastContainerCat);
@@ -278,7 +280,10 @@ static void AnnounceContainerChangeImpl() {
 
     const bool firstRead = g_lastContainerCat.empty() && g_lastContainerItemAnnounce.empty();
     if (catChanged) {
-        std::wstring catMsg = snap.atDivider ? (L"Your inventory: " + snap.catText) : (side + L": " + snap.catText);
+        // Pour le prefixe parle, utiliser la traduction du mot "container" / "inventory".
+        const std::wstring sideSpoken = snap.isContainerSide ? TR("container") : TR("inventory");
+        std::wstring catMsg = snap.atDivider ? (TR("Your inventory") + L": " + snap.catText)
+                                             : (sideSpoken + L": " + snap.catText);
         if (firstRead) SpeakQueue(catMsg); else Speak(catMsg);
         g_lastContainerCat  = snap.catText;
         g_lastContainerSide = side;
@@ -342,10 +347,10 @@ static void AnnounceContainerStats() {
 
         std::wstring msg;
         if (!gold.empty())
-            msg += Utf8ToWString(gold) + L" gold";
+            msg += Utf8ToWString(gold) + L" " + TR("gold");
         if (!carry.empty()) {
-            if (!msg.empty()) msg += L", weight: ";
-            else              msg  = L"weight: ";
+            if (!msg.empty()) msg += L", " + TR("weight") + L": ";
+            else              msg  = TR("weight") + L": ";
             msg += FormatCarryWeight(Utf8ToWString(carry));
         }
 
@@ -360,10 +365,10 @@ static void AnnounceContainerStats() {
             float maxCarry = targetActor->AsActorValueOwner()->GetActorValue(RE::ActorValue::kCarryWeight);
             float currentWeight = targetActor->GetWeightInContainer();
             const char* rawName = targetActor->GetDisplayFullName();
-            std::wstring followerName = (rawName && rawName[0]) ? Utf8ToWString(rawName) : L"Follower";
+            std::wstring followerName = (rawName && rawName[0]) ? Utf8ToWString(rawName) : TR("Follower");
             if (!msg.empty()) msg += L", ";
             msg += followerName + L": " + std::to_wstring(static_cast<int>(currentWeight))
-                 + L" of " + std::to_wstring(static_cast<int>(maxCarry));
+                 + L" " + TR("of") + L" " + std::to_wstring(static_cast<int>(maxCarry));
         }
 
         if (!msg.empty()) Speak(msg);

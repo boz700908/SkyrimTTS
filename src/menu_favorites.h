@@ -29,10 +29,10 @@ static std::unordered_map<std::wstring, std::wstring> g_ehsHotkeyMap;
 
 static std::wstring FavEquipStateText(int state) {
     switch (state) {
-        case 1: return L"equipped";
-        case 2: return L"left hand";
-        case 3: return L"right hand";
-        case 4: return L"both hands";
+        case 1: return TR("equipped");
+        case 2: return TR("left hand");
+        case 3: return TR("right hand");
+        case 4: return TR("both hands");
         default: return L"";
     }
 }
@@ -89,11 +89,11 @@ static void AnnounceFavChangeImpl() {
         std::lock_guard<std::mutex> lock(g_ehsMapMutex);
         auto it = g_ehsHotkeyMap.find(item);
         if (it != g_ehsHotkeyMap.end())
-            announce += L", hotkey " + it->second;
+            announce += L", " + TR("hotkey") + L" " + it->second;
     } else {
         int hk = static_cast<int>(hotkey);
         if (hk >= 0 && hk <= 7)
-            announce += L", hotkey " + std::to_wstring(hk + 1);
+            announce += L", " + TR("hotkey") + L" " + std::to_wstring(hk + 1);
     }
 
     if (announce == g_lastFavItemAnnounce) return;
@@ -182,7 +182,7 @@ static void AnnounceEHSHotkeyImpl(std::wstring label) {
     std::wstring eqText = FavEquipStateText(static_cast<int>(equipState));
     if (!eqText.empty())
         announce += L", " + eqText;
-    announce += L", hotkey " + label;
+    announce += L", " + TR("hotkey") + L" " + label;
 
     Speak(announce);
     // Synchronise le cache pour eviter un double announce au prochain poll.

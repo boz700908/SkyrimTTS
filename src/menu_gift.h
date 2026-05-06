@@ -114,20 +114,20 @@ static std::wstring BuildGiftItemAnnouncement(const GiftSnapshot& snap) {
     if (snap.itemText.empty()) return L"";
     std::wstring msg = snap.itemText;
     if (snap.stolen)
-        msg += L", stolen";
+        msg += L", " + TR("stolen");
     if (snap.count > 1)
         msg += L", " + std::to_wstring(snap.count);
     const std::wstring eq = FormatEquipState(snap.equipState);
     if (!eq.empty())
         msg += L", " + eq;
     if (!snap.weaponDamageText.empty() && snap.weaponDamageText != L"0")
-        msg += L", damage " + snap.weaponDamageText;
+        msg += L", " + TR("damage") + L" " + snap.weaponDamageText;
     if (!snap.apparelArmorText.empty() && snap.apparelArmorText != L"0")
-        msg += L", armor " + snap.apparelArmorText;
+        msg += L", " + TR("armor") + L" " + snap.apparelArmorText;
     if (!snap.valueText.empty() && !isZero(snap.valueText))
-        msg += L", value " + snap.valueText;
+        msg += L", " + TR("value") + L" " + snap.valueText;
     if (!snap.weightText.empty() && !isZero(snap.weightText))
-        msg += L", weight " + snap.weightText;
+        msg += L", " + TR("weight") + L" " + snap.weightText;
     if (!snap.soulLevelText.empty())
         msg += L", " + snap.soulLevelText;
     return msg;
@@ -161,7 +161,7 @@ static void AnnounceGiftChangeImpl() {
                 if (!g_giftQuantityOpen) {
                     g_giftQuantityOpen = true;
                     g_lastGiftQuantity = qty;
-                    Speak(L"Quantity: " + std::to_wstring(qty));
+                    Speak(TR("Quantity") + L": " + std::to_wstring(qty));
                 } else if (qty != g_lastGiftQuantity) {
                     g_lastGiftQuantity = qty;
                     Speak(std::to_wstring(qty));

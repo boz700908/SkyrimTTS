@@ -208,10 +208,10 @@ static bool ReadInventorySnapshot(InventorySnapshot& snap) {
 static std::wstring FormatEquipState(int state) {
     // InventoryDefines.as: ES_NONE=0, ES_EQUIPPED=1, ES_LEFT=2, ES_RIGHT=3, ES_BOTH=4
     switch (state) {
-        case 1: return L"equipped";
-        case 2: return L"left hand";
-        case 3: return L"right hand";
-        case 4: return L"both hands";
+        case 1: return TR("equipped");
+        case 2: return TR("left hand");
+        case 3: return TR("right hand");
+        case 4: return TR("both hands");
         default: return L"";
     }
 }
@@ -221,7 +221,7 @@ static std::wstring BuildItemAnnouncement(const InventorySnapshot& snap) {
     if (snap.itemText.empty()) return L"";
     std::wstring msg = snap.itemText;
     if (snap.stolen)
-        msg += L", stolen";
+        msg += L", " + TR("stolen");
     if (snap.count > 1)
         msg += L", " + std::to_wstring(snap.count);
     const std::wstring eq = FormatEquipState(snap.equipState);
@@ -231,17 +231,17 @@ static std::wstring BuildItemAnnouncement(const InventorySnapshot& snap) {
         try { return std::stof(s) == 0.0f; } catch (...) { return s.empty(); }
     };
     if (!snap.weaponDamageText.empty() && !isZero(snap.weaponDamageText))
-        msg += L", damage " + snap.weaponDamageText;
+        msg += L", " + TR("damage") + L" " + snap.weaponDamageText;
     if (!snap.apparelArmorText.empty() && !isZero(snap.apparelArmorText))
-        msg += L", armor " + snap.apparelArmorText;
+        msg += L", " + TR("armor") + L" " + snap.apparelArmorText;
     if (!snap.valueText.empty() && !isZero(snap.valueText))
-        msg += L", value " + snap.valueText;
+        msg += L", " + TR("value") + L" " + snap.valueText;
     if (!snap.weightText.empty() && !isZero(snap.weightText))
-        msg += L", weight " + snap.weightText;
+        msg += L", " + TR("weight") + L" " + snap.weightText;
     if (!snap.soulLevelText.empty())
         msg += L", " + snap.soulLevelText;
     if (snap.favorite)
-        msg += L", favorite";
+        msg += L", " + TR("favorite");
     return msg;
 }
 
@@ -277,7 +277,7 @@ static void AnnounceInventoryChangeImpl() {
                 if (!g_invQuantityOpen) {
                     g_invQuantityOpen = true;
                     g_lastInvQuantity = qty;
-                    Speak(L"Quantity: " + std::to_wstring(qty));
+                    Speak(TR("Quantity") + L": " + std::to_wstring(qty));
                 } else if (qty != g_lastInvQuantity) {
                     g_lastInvQuantity = qty;
                     Speak(std::to_wstring(qty));
@@ -353,7 +353,7 @@ static void AnnounceInventoryChangeImpl() {
         g_lastInvItemPtr = snap.itemPtr;
         g_lastInvDesc.clear();
     } else if (favChanged) {
-        Speak(snap.favorite ? L"added to favorites" : L"removed from favorites");
+        Speak(snap.favorite ? TR("added to favorites") : TR("removed from favorites"));
         g_lastInvFavorite = favInt;
         g_lastInvItemAnnounce = announce;  // mettre à jour pour refléter le changement
     }
@@ -392,10 +392,10 @@ static void AnnounceInventoryStats() {
 
         std::wstring msg;
         if (!gold.empty())
-            msg += Utf8ToWString(gold) + L" gold";
+            msg += Utf8ToWString(gold) + L" " + TR("gold");
         if (!carry.empty()) {
-            if (!msg.empty()) msg += L", weight: ";
-            else              msg += L"weight: ";
+            if (!msg.empty()) msg += L", " + TR("weight") + L": ";
+            else              msg += TR("weight") + L": ";
             msg += FormatCarryWeight(Utf8ToWString(carry));
         }
         if (!msg.empty()) Speak(msg);
@@ -404,16 +404,16 @@ static void AnnounceInventoryStats() {
 
 static void DiagnoseInventoryNow() {
     if (!g_invOpen.load(std::memory_order_relaxed)) {
-        Speak(L"Inventory closed");
+        Speak(TR("Inventory closed"));
         return;
     }
     auto* task = SKSE::GetTaskInterface();
     if (!task) return;
     task->AddUITask([]() {
         InventorySnapshot snap;
-        if (!ReadInventorySnapshot(snap)) { Speak(L"UI selection not found"); return; }
-        if (!snap.catText.empty())  { Speak(L"Category"); SpeakQueue(snap.catText); }
-        if (!snap.itemText.empty()) { SpeakQueue(L"Item");     SpeakQueue(snap.itemText); }
+        if (!ReadInventorySnapshot(snap)) { Speak(TR("UI selection not found")); return; }
+        if (!snap.catText.empty())  { Speak(TR("Category")); SpeakQueue(snap.catText); }
+        if (!snap.itemText.empty()) { SpeakQueue(TR("Item")); SpeakQueue(snap.itemText); }
     });
 }
 
@@ -454,7 +454,7 @@ static void StopInventoryPolling() {
 //   itemNameColumn a 4 états : 1=nom, 2=équipé, 3=volé, 4=enchanté
 //   weightColumn/valueColumn : 2 états chacun (asc/desc)
 // On utilise restoreColumnState(columnIndex, stateIndex) pour cibler directement le bon tri
-static void SkyUISortColumn(int columnIndex, int stateIndex, const wchar_t* label) {
+static void SkyUISortColumn(int columnIndex, int stateIndex, const std::wstring& label) {
     if (!g_skyuiMode.load(std::memory_order_relaxed)) return;
     auto* task = SKSE::GetTaskInterface();
     if (!task) return;

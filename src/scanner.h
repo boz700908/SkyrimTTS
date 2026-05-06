@@ -19,6 +19,8 @@ enum ScanCategory : int {
     kCatCOUNT
 };
 
+// Cles techniques anglaises (servent aussi de cle de traduction).
+// Toujours en anglais : utilisees pour comparaisons et logs.
 static const wchar_t* g_categoryNames[] = {
     L"All",
     L"NPCs",
@@ -31,6 +33,14 @@ static const wchar_t* g_categoryNames[] = {
     L"Quests",
     L"Locations"
 };
+
+// Helper : retourne le libelle traduit d'une categorie (pour vocalisation).
+static std::wstring GetCategoryNameSpoken(int cat) {
+    if (cat < 0 || cat >= static_cast<int>(sizeof(g_categoryNames) / sizeof(g_categoryNames[0])))
+        return L"";
+    // On passe le wchar_t* a travers std::string pour TR() qui prend une cle UTF-8.
+    return TR(WStringToUtf8(g_categoryNames[cat]));
+}
 
 // --- Sous-catégories ---
 // Les valeurs TypeA/TypeB sont utilisées pour les catégories génériques
@@ -323,35 +333,35 @@ static const std::vector<ScanSubcategory>& GetSubcategoriesFor(ScanCategory cat)
     return empty;
 }
 
-// --- Nom de la sous-catégorie (dépend de la catégorie courante) ---
-static const wchar_t* GetSubcategoryName(ScanSubcategory sub) {
+// --- Nom de la sous-catégorie (dépend de la catégorie courante, traduit) ---
+static std::wstring GetSubcategoryName(ScanSubcategory sub) {
     if (g_scanCategory == kCatContainers) {
         switch (sub) {
-            case ScanSubcategory::All: return L"All";
-            case ScanSubcategory::TypeA: return L"Non-empty";
-            case ScanSubcategory::TypeB: return L"Empty";
+            case ScanSubcategory::All: return TR("All");
+            case ScanSubcategory::TypeA: return TR("Non-empty");
+            case ScanSubcategory::TypeB: return TR("Empty");
             default: return L"?";
         }
     } else if (g_scanCategory == kCatDoors) {
         switch (sub) {
-            case ScanSubcategory::All: return L"All";
-            case ScanSubcategory::TypeA: return L"Locked";
-            case ScanSubcategory::TypeB: return L"Cell doors";
+            case ScanSubcategory::All: return TR("All");
+            case ScanSubcategory::TypeA: return TR("Locked");
+            case ScanSubcategory::TypeB: return TR("Cell doors");
             default: return L"?";
         }
     } else if (g_scanCategory == kCatCorpses) {
         switch (sub) {
-            case ScanSubcategory::All: return L"All";
-            case ScanSubcategory::TypeA: return L"Unlooted";
-            case ScanSubcategory::TypeB: return L"Looted";
+            case ScanSubcategory::All: return TR("All");
+            case ScanSubcategory::TypeA: return TR("Unlooted");
+            case ScanSubcategory::TypeB: return TR("Looted");
             default: return L"?";
         }
     } else if (g_scanCategory == kCatActivators) {
         switch (sub) {
-            case ScanSubcategory::All: return L"All";
-            case ScanSubcategory::TypeA: return L"Furniture";
-            case ScanSubcategory::TypeB: return L"Other";
-            case ScanSubcategory::ActivatorDestructible: return L"Destructible";
+            case ScanSubcategory::All: return TR("All");
+            case ScanSubcategory::TypeA: return TR("Furniture");
+            case ScanSubcategory::TypeB: return TR("Other");
+            case ScanSubcategory::ActivatorDestructible: return TR("Destructible");
             default: return L"?";
         }
     } else if (g_scanCategory == kCatItems || g_scanCategory == kCatAll) {
@@ -359,20 +369,20 @@ static const wchar_t* GetSubcategoryName(ScanSubcategory sub) {
         // Dans kCatAll, "All" affiche tous les objets (pas juste items).
         // Dans kCatItems, "All" n'affiche que les items.
         switch (sub) {
-            case ScanSubcategory::All:             return L"All";
-            case ScanSubcategory::ItemWeapons:     return L"Weapons";
-            case ScanSubcategory::ItemArmor:       return L"Armor";
-            case ScanSubcategory::ItemPotions:     return L"Potions";
-            case ScanSubcategory::ItemFood:        return L"Food";
-            case ScanSubcategory::ItemIngredients: return L"Ingredients";
-            case ScanSubcategory::ItemScrolls:     return L"Scrolls";
-            case ScanSubcategory::ItemBooks:       return L"Books";
-            case ScanSubcategory::ItemSoulGems:    return L"Soul Gems";
-            case ScanSubcategory::ItemMisc:        return L"Miscellaneous";
+            case ScanSubcategory::All:             return TR("All");
+            case ScanSubcategory::ItemWeapons:     return TR("Weapons");
+            case ScanSubcategory::ItemArmor:       return TR("Armor");
+            case ScanSubcategory::ItemPotions:     return TR("Potions");
+            case ScanSubcategory::ItemFood:        return TR("Food");
+            case ScanSubcategory::ItemIngredients: return TR("Ingredients");
+            case ScanSubcategory::ItemScrolls:     return TR("Scrolls");
+            case ScanSubcategory::ItemBooks:       return TR("Books");
+            case ScanSubcategory::ItemSoulGems:    return TR("Soul Gems");
+            case ScanSubcategory::ItemMisc:        return TR("Miscellaneous");
             default: return L"?";
         }
     }
-    return L"All";
+    return TR("All");
 }
 
 // --- Vérifier si un objet correspond à la sous-catégorie ---
@@ -554,22 +564,22 @@ static std::wstring GetObjectDirection(const ScannedObject& obj) {
     float angle = std::atan2(dx, dy) * 180.0f / 3.14159265f;
     if (angle < 0) angle += 360.0f;
 
-    if (angle >= 337.5f || angle < 22.5f)   return L"north";
-    if (angle >= 22.5f  && angle < 67.5f)   return L"northeast";
-    if (angle >= 67.5f  && angle < 112.5f)  return L"east";
-    if (angle >= 112.5f && angle < 157.5f)  return L"southeast";
-    if (angle >= 157.5f && angle < 202.5f)  return L"south";
-    if (angle >= 202.5f && angle < 247.5f)  return L"southwest";
-    if (angle >= 247.5f && angle < 292.5f)  return L"west";
-    return L"northwest";
+    if (angle >= 337.5f || angle < 22.5f)   return TR("north");
+    if (angle >= 22.5f  && angle < 67.5f)   return TR("northeast");
+    if (angle >= 67.5f  && angle < 112.5f)  return TR("east");
+    if (angle >= 112.5f && angle < 157.5f)  return TR("southeast");
+    if (angle >= 157.5f && angle < 202.5f)  return TR("south");
+    if (angle >= 202.5f && angle < 247.5f)  return TR("southwest");
+    if (angle >= 247.5f && angle < 292.5f)  return TR("west");
+    return TR("northwest");
 }
 
 // Helper : renvoie ", above" / ", below" / "" selon l'ecart vertical entre deux
 // positions. Seuil 256 unites (~1 etage Skyrim), meme valeur que dans
 // FormatObjectAnnounce. Utilise par la visee auto et l'annonce des ennemis.
 static std::wstring FormatElevationSuffix(float zDiff) {
-    if (zDiff > 256.0f) return L", above";
-    if (zDiff < -256.0f) return L", below";
+    if (zDiff > 256.0f) return L", " + TR("above");
+    if (zDiff < -256.0f) return L", " + TR("below");
     return L"";
 }
 
@@ -577,9 +587,9 @@ static std::wstring FormatElevationSuffix(float zDiff) {
 static std::wstring FormatObjectAnnounce(const ScannedObject& obj) {
     std::wstring msg = obj.name;
 
-    if (!obj.doorDestination.empty()) msg += L", to " + obj.doorDestination;
-    if (obj.locked) msg += L", locked";
-    if (obj.empty) msg += L", empty";
+    if (!obj.doorDestination.empty()) msg += L", " + TR("to") + L" " + obj.doorDestination;
+    if (obj.locked) msg += L", " + TR("locked");
+    if (obj.empty) msg += L", " + TR("empty");
 
     // Flag "deja fouille par le joueur" : s'applique aux conteneurs et cadavres.
     // Indique au joueur qu'il a deja ouvert ce conteneur/cadavre au moins une
@@ -588,14 +598,16 @@ static std::wstring FormatObjectAnnounce(const ScannedObject& obj) {
     // Voir src/loot_tracker.h pour la logique de persistance et respawn.
     if ((obj.category == kCatContainers || obj.category == kCatCorpses) &&
         LootTracker::GetSingleton()->IsLooted(obj.formID)) {
-        msg += L", looted";
+        msg += L", " + TR("looted");
     }
 
     // Flag destructible : on ajoute le label ("Spider web", "Barricade", etc.)
     // seulement si différent du nom affiché (pour éviter "Spider web, spider web").
     // Puis la santé restante si < 100% (intact = pas d'info = plein par défaut).
     if (obj.isDestructible && obj.destructibleLabel) {
-        std::wstring lbl = obj.destructibleLabel;
+        // Cle anglaise stable -> traduction au moment de l'annonce.
+        std::wstring lblEn = obj.destructibleLabel;
+        std::wstring lbl = TR(WStringToUtf8(lblEn));
         // Comparaison insensible à la casse pour éviter la redondance
         auto toLower = [](std::wstring s) {
             for (auto& c : s) c = static_cast<wchar_t>(towlower(c));
@@ -604,14 +616,14 @@ static std::wstring FormatObjectAnnounce(const ScannedObject& obj) {
         if (toLower(obj.name).find(toLower(lbl)) == std::wstring::npos) {
             msg += L", " + lbl;
         } else {
-            msg += L", destructible";
+            msg += L", " + TR("destructible");
         }
         if (obj.destructibleHealthPercent < 100) {
             msg += L" " + std::to_wstring(obj.destructibleHealthPercent) + L"%";
         }
     }
 
-    msg += L", " + std::to_wstring(static_cast<int>(obj.distance)) + L" units";
+    msg += L", " + std::to_wstring(static_cast<int>(obj.distance)) + L" " + TR("units");
 
     // Direction seulement pour les piliers puzzle
     std::wstring nameCheck = obj.name;
@@ -620,8 +632,8 @@ static std::wstring FormatObjectAnnounce(const ScannedObject& obj) {
         if (!dir.empty()) msg += L" " + dir;
     }
 
-    if (obj.zDiff > 256.0f) msg += L", above";
-    else if (obj.zDiff < -256.0f) msg += L", below";
+    if (obj.zDiff > 256.0f) msg += L", " + TR("above");
+    else if (obj.zDiff < -256.0f) msg += L", " + TR("below");
 
     return msg;
 }
@@ -864,7 +876,7 @@ static void ScanCell(RE::TESObjectCELL* cell, RE::PlayerCharacter* player, const
                 GetScriptTypeCached(ref) == ScriptTypeKind::WordWall) {
                 ScannedObject obj;
                 obj.formID = ref.GetFormID();
-                obj.name = L"Word Wall";
+                obj.name = TR("Word Wall");
                 obj.distance = dist;
                 obj.zDiff = refPos.z - playerPos.z;
                 obj.lastKnownPos = refPos;
@@ -1116,7 +1128,8 @@ static void ScanCell(RE::TESObjectCELL* cell, RE::PlayerCharacter* player, const
             } else if (!nameStr.empty()) {
                 obj.name = Utf8ToWString(nameStr.c_str());
             } else {
-                obj.name = destructibleLabel;  // garanti non-null grace au check ci-dessus
+                // Pas de nom natif -> on utilise le label destructible traduit.
+                obj.name = TR(WStringToUtf8(std::wstring(destructibleLabel)));
             }
             obj.distance = dist;
             obj.zDiff = zDiff;
@@ -1570,7 +1583,7 @@ static void DoScanInternal() {
 
         ScannedObject obj;
         obj.formID = g_customMarkerFormID;  // FormID réel du marqueur de carte
-        obj.name = L"Marker: " + g_customMarkerName;
+        obj.name = TR("Marker") + L": " + g_customMarkerName;
         obj.distance = dist;
         obj.zDiff = g_customMarkerPos.z - playerPos.z;
         obj.lastKnownPos = g_customMarkerPos;
@@ -1632,12 +1645,15 @@ static void DoScanInternal() {
                         if (dup) continue;
 
                         RE::MARKER_TYPE markerType = mapData->type.get();
-                        const wchar_t* typeName = GetMarkerTypeName(markerType);
+                        std::wstring typeName = GetMarkerTypeName(markerType);
 
                         ScannedObject obj;
                         obj.formID = ref->GetFormID();
                         obj.name = Utf8ToWString(rawName);
-                        if (typeName && std::wstring(typeName) != L"Location") {
+                        // Si le type est generique ("Location"), on ne l'ajoute pas
+                        // pour eviter le bruit. On compare contre la version traduite
+                        // ET la version anglaise (cle source) pour rester robuste.
+                        if (!typeName.empty() && typeName != TR("Location") && typeName != L"Location") {
                             obj.name += L" (";
                             obj.name += typeName;
                             obj.name += L")";
@@ -1738,11 +1754,11 @@ static void DoScan(ScanAction postAction = kScanOnly) {
             default: {
                 // Scan manuel : annoncer le résultat
                 int count = static_cast<int>(g_scannedFiltered.size());
-                std::wstring msg = std::to_wstring(count) + L" " + g_categoryNames[g_scanCategory];
+                std::wstring msg = std::to_wstring(count) + L" " + GetCategoryNameSpoken(g_scanCategory);
                 if (count > 0) {
                     msg += L". " + FormatObjectAnnounce(*g_scannedFiltered[0]);
                 } else {
-                    msg += L" nearby";
+                    msg += L" " + TR("nearby");
                 }
                 Speak(msg);
                 break;
@@ -1931,7 +1947,7 @@ static void ScannerNextObjectImpl() {
     // Rafraîchir l'état des objets (PNJ mort, conteneur vidé, etc.)
     RefreshFilteredList();
     if (g_scannedFiltered.empty()) {
-        Speak(L"No objects in this category");
+        Speak(TR("No objects in this category"));
         return;
     }
     g_scanIndex++;
@@ -1980,7 +1996,7 @@ static void ScannerPrevObjectImpl() {
     // Rafraîchir l'état des objets
     RefreshFilteredList();
     if (g_scannedFiltered.empty()) {
-        Speak(L"No objects in this category");
+        Speak(TR("No objects in this category"));
         return;
     }
     g_scanIndex--;
@@ -2030,7 +2046,7 @@ static void ScannerNextCategoryImpl() {
     // Toujours repartir du premier objet (le plus proche) au changement de catégorie
     g_scanIndex = g_scannedFiltered.empty() ? -1 : 0;
 
-    std::wstring msg = g_categoryNames[g_scanCategory];
+    std::wstring msg = GetCategoryNameSpoken(g_scanCategory);
 
     if (!g_scannedFiltered.empty()) {
         msg += L". " + FormatObjectAnnounce(*g_scannedFiltered[0]);
@@ -2055,7 +2071,7 @@ static void ScannerPrevCategoryImpl() {
     // Toujours repartir du premier objet (le plus proche) au changement de catégorie
     g_scanIndex = g_scannedFiltered.empty() ? -1 : 0;
 
-    std::wstring msg = g_categoryNames[g_scanCategory];
+    std::wstring msg = GetCategoryNameSpoken(g_scanCategory);
 
     if (!g_scannedFiltered.empty()) {
         msg += L". " + FormatObjectAnnounce(*g_scannedFiltered[0]);
@@ -2240,7 +2256,7 @@ static void RefreshQuestTarget(ScannedObject& obj) {
 
 static void ScannerAnnounceCurrent() {
     if (g_scannedFiltered.empty() || g_scanIndex < 0) {
-        Speak(L"No object selected");
+        Speak(TR("No object selected"));
         return;
     }
 
@@ -2277,7 +2293,7 @@ static void ScannerAnnounceCurrent() {
 
         if (g_scannedFiltered.empty()) {
             g_scanIndex = -1;
-            Speak(L"Object gone. No more objects in this category.");
+            Speak(TR("Object gone") + L". " + TR("No more objects in this category"));
             return;
         }
         // Rester sur le même index (l'élément suivant a glissé à cette position),
@@ -2288,7 +2304,7 @@ static void ScannerAnnounceCurrent() {
         auto& nextObj = *g_scannedFiltered[g_scanIndex];
         std::wstring posStr = L". " + std::to_wstring(g_scanIndex + 1) + L" of " +
                               std::to_wstring(g_scannedFiltered.size());
-        Speak(L"Object gone. " + FormatObjectAnnounce(nextObj) + posStr);
+        Speak(TR("Object gone") + L". " + FormatObjectAnnounce(nextObj) + posStr);
         return;
     }
 
@@ -2478,7 +2494,7 @@ static void ScannerAnnounceCurrent() {
 // --- Cycler les sous-catégories (touche End) ---
 static void ScannerCycleSubcategory() {
     if (!HasSubcategories(g_scanCategory)) {
-        Speak(L"No subcategories");
+        Speak(TR("No subcategories"));
         return;
     }
 
@@ -2518,11 +2534,11 @@ static std::wstring ScannerGetCurrentName() {
 // Téléporte le joueur à côté de l'objet sélectionné dans le scanner
 static void ScannerTeleport() {
     if (!g_mcmTeleportEnabled.load()) {
-        Speak(L"Teleport disabled");
+        Speak(TR("Teleport disabled"));
         return;
     }
     if (g_scannedFiltered.empty() || g_scanIndex < 0) {
-        Speak(L"No target selected");
+        Speak(TR("No target selected"));
         return;
     }
 
@@ -2532,7 +2548,7 @@ static void ScannerTeleport() {
     int category = obj.category;
 
     if (targetID == 0) {
-        Speak(L"No valid target");
+        Speak(TR("No valid target"));
         return;
     }
 
@@ -2550,7 +2566,7 @@ static void ScannerTeleport() {
         auto* targetRef = form ? form->AsReference() : nullptr;
 
         if (!targetRef) {
-            Speak(L"Target not found");
+            Speak(TR("Target not found"));
             LOG("ScannerTeleport: FormID {:08X} not found", targetID);
             return;
         }
@@ -2571,7 +2587,7 @@ static void ScannerTeleport() {
                 auto targetPos = targetRef->GetPosition();
                 float dist = (playerPos - targetPos).Length();
                 if (dist > 1000.0f) {
-                    Speak(L"Quest target is too far to teleport");
+                    Speak(TR("Quest target is too far to teleport"));
                     LOG("ScannerTeleport: blocked - cross-cell quest target distance {:.0f} > 1000", dist);
                     return;
                 }
@@ -2584,7 +2600,7 @@ static void ScannerTeleport() {
         if (playerCell && playerCell->IsInteriorCell()) {
             auto* targetCell = targetRef->GetParentCell();
             if (targetCell != playerCell) {
-                Speak(L"Target is in another area");
+                Speak(TR("Target is in another area"));
                 LOG("ScannerTeleport: blocked - different interior cell");
                 return;
             }
@@ -2593,7 +2609,7 @@ static void ScannerTeleport() {
         auto targetPos = targetRef->GetPosition();
         float dist = (playerPos - targetPos).Length();
         if (dist > maxTpDist) {
-            Speak(L"Target is too far");
+            Speak(TR("Target is too far"));
             LOG("ScannerTeleport: blocked - distance {:.0f} > {:.0f}", dist, maxTpDist);
             return;
         }
@@ -2642,7 +2658,7 @@ static void ScannerTeleport() {
             });
         }
 
-        Speak(L"Teleported to " + targetName);
+        Speak(TR("Teleported to") + L" " + targetName);
     });
 }
 
@@ -2946,14 +2962,14 @@ static void StartAutoAimTracking() {
             // Vérifier que la cible est toujours valide
             auto targetPtr = g_autoAimTarget.get();
             if (!targetPtr) {
-                Speak(L"Target lost");
+                Speak(TR("Target lost"));
                 g_autoAimTracking.store(false);
                 LOG("AutoAim: target handle invalid");
                 break;
             }
             auto* target = targetPtr.get();
             if (!target || target->IsDead()) {
-                Speak(L"Target lost");
+                Speak(TR("Target lost"));
                 g_autoAimTracking.store(false);
                 LOG("AutoAim: target dead or lost");
                 break;
@@ -3122,7 +3138,7 @@ static bool GetActiveQuestNavTarget(RE::PlayerCharacter* player, RE::NiPoint3& o
             } else if (quest->GetFullName()) {
                 outName = Utf8ToWString(quest->GetFullName());
             } else {
-                outName = L"Quest target";
+                outName = TR("Quest target");
             }
             return true;
         }
@@ -3185,7 +3201,7 @@ static bool FindNearestQuestTarget(RE::PlayerCharacter* player, RE::NiPoint3& ou
                 } else if (quest->GetFullName()) {
                     outName = Utf8ToWString(quest->GetFullName());
                 } else {
-                    outName = L"Quest target";
+                    outName = TR("Quest target");
                 }
             }
         }
@@ -3198,7 +3214,7 @@ static bool FindNearestQuestTarget(RE::PlayerCharacter* player, RE::NiPoint3& ou
 static void LockNearestEnemy() {
     auto* player = RE::PlayerCharacter::GetSingleton();
     if (!player) {
-        Speak(L"No enemy nearby");
+        Speak(TR("No enemy nearby"));
         return;
     }
 
@@ -3223,7 +3239,7 @@ static void LockNearestEnemy() {
             return;
         }
 
-        Speak(L"No enemy nearby");
+        Speak(TR("No enemy nearby"));
         StopAutoAim();
         return;
     }
@@ -3277,7 +3293,7 @@ static void StartToggleLockOn() {
                     float dist = 0;
                     auto* nearest = FindNearestEnemy(player, dist);
                     if (!nearest) {
-                        Speak(L"No enemy nearby");
+                        Speak(TR("No enemy nearby"));
                         g_toggleLockOn.store(false);
                         LOG("ToggleLock: no more enemies");
                         return;
@@ -3298,26 +3314,26 @@ static void ToggleLockOnEnemy() {
     if (g_toggleLockOn.load()) {
         // Déjà actif → arrêter
         StopToggleLockOn();
-        Speak(L"Lock off");
+        Speak(TR("Lock off"));
         return;
     }
 
     auto* player = RE::PlayerCharacter::GetSingleton();
     if (!player) {
-        Speak(L"No enemy nearby");
+        Speak(TR("No enemy nearby"));
         return;
     }
 
     float dist = 0;
     auto* nearest = FindNearestEnemy(player, dist);
     if (!nearest) {
-        Speak(L"No enemy nearby");
+        Speak(TR("No enemy nearby"));
         return;
     }
 
     const char* rawName = nearest->GetDisplayFullName();
-    std::wstring name = rawName ? Utf8ToWString(rawName) : L"Enemy";
-    Speak(L"Lock on, " + name);
+    std::wstring name = rawName ? Utf8ToWString(rawName) : TR("Enemy");
+    Speak(TR("Lock on") + L", " + name);
     LOG("ToggleLock: locked {} at distance {}", rawName ? rawName : "?", dist);
 
     // Démarrer la surveillance vol/sol si c'est un dragon
@@ -3376,10 +3392,10 @@ static void StartDragonFlightWatch() {
                     bool flying = dragon->AsActorState()->IsFlying();
 
                     if (flying && !g_lastDragonFlying) {
-                        Speak(L"Dragon en vol");
+                        Speak(TR("Dragon flying"));
                         LOG("DragonWatch: dragon took off");
                     } else if (!flying && g_lastDragonFlying) {
-                        Speak(L"Dragon au sol");
+                        Speak(TR("Dragon grounded"));
                         LOG("DragonWatch: dragon landed");
                     }
                     g_lastDragonFlying = flying;
@@ -3446,18 +3462,18 @@ static void StartBowAutoAimPolling() {
 
                         const char* rawName = nearest->GetDisplayFullName();
                         bool dragon = IsDragon(nearest);
-                        std::wstring name = rawName ? Utf8ToWString(rawName) : L"Enemy";
+                        std::wstring name = rawName ? Utf8ToWString(rawName) : TR("Enemy");
                         std::wstring msg = name + L", " + std::to_wstring(static_cast<int>(dist));
-                        if (dragon) msg += L", Dragon";
+                        if (dragon) msg += L", " + TR("Dragon");
 
                         // Vérifier si la cible est à portée de flèche
                         float maxRange = GetArrowEffectiveRange(player);
                         if (maxRange > 0.0f && dist > maxRange) {
-                            msg += L", out of range";
+                            msg += L", " + TR("out of range");
                         } else {
                             bool losUnused = false;
                             if (!player->HasLineOfSight(nearest, losUnused)) {
-                                msg += L", obstructed";
+                                msg += L", " + TR("obstructed");
                             }
                         }
 
@@ -3531,7 +3547,7 @@ public:
         // TODO: SetStage ne marche pas depuis le C++, en attente d'un script Papyrus
         // En attendant, le joueur peut taper "setstage MQ105 90" dans la console (accessible avec NVDA)
         LOG("ShoutAssist: MQ105 obj40 active — shout detected, use console: setstage MQ105 90");
-        Speak(L"Use console command: setstage MQ105 90");
+        Speak(TR("Use console command: setstage MQ105 90"));
 
         return RE::BSEventNotifyControl::kContinue;
     }

@@ -16,12 +16,12 @@ static std::jthread     g_tweenPollThread;
 static std::atomic<int> g_lastTweenFrame{-1};
 
 // UP=2(Skills) LEFT=3(Magic) RIGHT=4(Items) DOWN=5(Map)
-static const wchar_t* TweenDirectionSuffix(int frame) {
+static std::wstring TweenDirectionSuffix(int frame) {
     switch (frame) {
-        case 2: return L", up";
-        case 3: return L", left";
-        case 4: return L", right";
-        case 5: return L", down";
+        case 2: return L", " + TR("up");
+        case 3: return L", " + TR("left");
+        case 4: return L", " + TR("right");
+        case 5: return L", " + TR("down");
         default: return L"";
     }
 }
@@ -30,10 +30,10 @@ static const wchar_t* TweenDirectionSuffix(int frame) {
 static void AnnounceTweenNavKey(int frame) {
     std::wstring announce;
     switch (frame) {
-        case 2: announce = L"Skills"; break;
-        case 3: announce = L"Magic";  break;
-        case 4: announce = L"Items";  break;
-        case 5: announce = L"Map";    break;
+        case 2: announce = TR("Skills"); break;
+        case 3: announce = TR("Magic");  break;
+        case 4: announce = TR("Items");  break;
+        case 5: announce = TR("Map");    break;
         default: return;
     }
     announce += TweenDirectionSuffix(frame);
@@ -53,7 +53,7 @@ static void AnnounceTweenLevelImpl() {
     std::wstring announce;
 
     if (GetGFxString(movie, TWEEN_LEVEL_TEXT, tmp) && !tmp.empty())
-        announce += L"Level " + ResolveUIString(movie, tmp);
+        announce += TR("Level") + L" " + ResolveUIString(movie, tmp);
 
     if (GetGFxString(movie, TWEEN_DATE_TEXT, tmp) && !tmp.empty()) {
         if (!announce.empty()) announce += L", ";

@@ -181,7 +181,7 @@ static bool AutoWalkInputUpdate(RE::InputEvent* const* a_event) {
     }
 
     if (shouldCancel) {
-        Speak(L"Stopping");
+        Speak(TR("Stopping"));
         g_autoWalking.store(false);
         LOG("AutoWalk: cancelled by user input (event-driven)");
         DispatchPapyrusStop();
@@ -296,7 +296,7 @@ public:
                 return RE::BSEventNotifyControl::kContinue;
             }
             LOG("AutoWalk: arrived event received from Papyrus");
-            Speak(L"Arrived at " + g_autoWalkTarget);
+            Speak(TR("Arrived at") + L" " + g_autoWalkTarget);
             g_autoWalking.store(false);
             // Pas de cleanup C++ ici : Papyrus StopWalkingInternal s'en charge.
         }
@@ -398,7 +398,7 @@ static void StartAutoWalk(RE::FormID targetFormID, float stopDistance = 100.0f,
         auto* quest = FindAutoWalkQuest();
         if (!quest) {
             LOG("AutoWalk: quest SkyrimTTS_AutoWalkQuest not found");
-            Speak(L"AutoWalk quest not found");
+            Speak(TR("AutoWalk quest not found"));
             return;
         }
 
@@ -417,7 +417,7 @@ static void StartAutoWalk(RE::FormID targetFormID, float stopDistance = 100.0f,
         auto handle = policy->GetHandleForObject(RE::FormType::Quest, quest);
         if (handle == policy->EmptyHandle()) {
             LOG("AutoWalk: could not get quest handle");
-            Speak(L"AutoWalk error: no quest handle");
+            Speak(TR("AutoWalk error: no quest handle"));
             return;
         }
 
@@ -478,7 +478,7 @@ static void StartAutoWalk(RE::FormID targetFormID, float stopDistance = 100.0f,
             // L'arrivee est detectee cote Papyrus (OnUpdate + ModEvent).
         } else {
             LOG("AutoWalk: DispatchMethodCall failed (mounted={})", mounted);
-            Speak(L"AutoWalk error");
+            Speak(TR("AutoWalk error"));
         }
     });
 }
@@ -549,7 +549,7 @@ static void StartRemoteActivate(RE::FormID targetFormID) {
         auto* quest = FindAutoWalkQuest();
         if (!quest) {
             LOG("RemoteActivate: AutoWalk quest not found");
-            Speak(L"Activate failed: quest not found");
+            Speak(TR("Activate failed: quest not found"));
             return;
         }
 
@@ -585,7 +585,7 @@ static void StartRemoteActivate(RE::FormID targetFormID) {
             LOG("RemoteActivate: dispatched OnRemoteActivate FormID={:08X}", targetFormID);
         } else {
             LOG("RemoteActivate: DispatchMethodCall failed for FormID={:08X}", targetFormID);
-            Speak(L"Activate failed");
+            Speak(TR("Activate failed"));
         }
     });
 }
@@ -610,7 +610,7 @@ static void ScannerActivateCurrent() {
         g_scanIndex >= static_cast<int>(g_scannedFiltered.size())) {
         LOG("RemoteActivate: no current target (empty={}, idx={})",
             g_scannedFiltered.empty(), g_scanIndex);
-        Speak(L"No target selected. Scan first.");
+        Speak(TR("No target selected") + L". " + TR("Scan first"));
         return;
     }
 
@@ -621,7 +621,7 @@ static void ScannerActivateCurrent() {
 
     if (targetID == 0) {
         LOG("RemoteActivate: target FormID is 0");
-        Speak(L"No valid target");
+        Speak(TR("No valid target"));
         return;
     }
 
@@ -642,19 +642,19 @@ static void ScannerActivateCurrent() {
         auto* targetRef = form ? form->AsReference() : nullptr;
         if (!targetRef) {
             LOG("RemoteActivate: FormID {:08X} not found (despawned?)", targetID);
-            Speak(L"Target not found");
+            Speak(TR("Target not found"));
             return;
         }
 
         if (targetRef->IsDeleted()) {
             LOG("RemoteActivate: FormID {:08X} is deleted", targetID);
-            Speak(L"Target no longer exists");
+            Speak(TR("Target no longer exists"));
             return;
         }
 
         if (targetRef->IsDisabled()) {
             LOG("RemoteActivate: FormID {:08X} is disabled", targetID);
-            Speak(L"Target not available");
+            Speak(TR("Target not available"));
             return;
         }
 
@@ -665,7 +665,7 @@ static void ScannerActivateCurrent() {
         if (dist > kRemoteActivateMaxDistance) {
             LOG("RemoteActivate: blocked - distance {:.0f} > {:.0f} for FormID={:08X}",
                 dist, kRemoteActivateMaxDistance, targetID);
-            Speak(L"Target is too far");
+            Speak(TR("Target is too far"));
             return;
         }
 
@@ -757,7 +757,7 @@ static void ToggleAutoWalkImpl();
 static void ToggleAutoWalk() {
     LOG("InputDiag: ToggleAutoWalk ENTRY, g_autoWalking={}", g_autoWalking.load());
     if (g_autoWalking.load()) {
-        Speak(L"Stopping");
+        Speak(TR("Stopping"));
         StopAutoWalk();
         return;
     }
@@ -778,7 +778,7 @@ static void ToggleAutoWalkImpl() {
         if (now < until) {
             int64_t waitMs = until - now;
             LOG("AutoWalk: blocked by safety cooldown ({}ms remaining)", waitMs);
-            Speak(L"Please wait, game still loading");
+            Speak(TR("Please wait, game still loading"));
             return;
         }
     }
@@ -792,7 +792,7 @@ static void ToggleAutoWalkImpl() {
             if (ui->IsMenuOpen(RE::LoadingMenu::MENU_NAME) ||
                 ui->IsMenuOpen("Fader Menu")) {
                 LOG("AutoWalk: blocked because LoadingMenu or Fader Menu is open");
-                Speak(L"Please wait, game still loading");
+                Speak(TR("Please wait, game still loading"));
                 return;
             }
         }
@@ -808,12 +808,12 @@ static void ToggleAutoWalkImpl() {
 
     RE::FormID targetID = ScannerGetCurrentFormID();
     if (targetID == 0) {
-        Speak(L"No target selected. Scan first.");
+        Speak(TR("No target selected") + L". " + TR("Scan first"));
         return;
     }
 
     std::wstring targetName = ScannerGetCurrentName();
-    if (targetName.empty()) targetName = L"target";
+    if (targetName.empty()) targetName = TR("target");
     g_autoWalkTarget = targetName;
 
     // Style f4access pur : on fait confiance au Travel Package natif du moteur
@@ -834,7 +834,7 @@ static void ToggleAutoWalkImpl() {
     // marche dans la bonne direction meme si le navmesh global n'atteint pas la
     // cible finale.
 
-    Speak(L"Walking to " + targetName);
+    Speak(TR("Walking to") + L" " + targetName);
 
     // Cas FF* : refs dynamiques (aliases de quete spawn, objets jetes, PNJ
     // invoques). Si chargees en 3D, coord mode vers la position visuelle
@@ -872,7 +872,7 @@ static void ToggleAutoWalkImpl() {
             }
         }
         LOG("AutoWalk: FF {:08X} not 3D-loaded and no lastKnownPos, cannot walk", targetID);
-        Speak(L"Cannot walk to this target");
+        Speak(TR("Cannot walk to this target"));
         return;
     }
 

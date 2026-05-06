@@ -171,15 +171,15 @@ static bool ReadMcmSnapshot(McmSnapshot& snap) {
 }
 
 // Convertit le type d'option en texte lisible
-static const wchar_t* McmOptionTypeName(int type) {
+static std::wstring McmOptionTypeName(int type) {
     switch (type) {
-        case MCM_OPT_HEADER:  return L"header";
-        case MCM_OPT_TOGGLE:  return L"toggle";
-        case MCM_OPT_SLIDER:  return L"slider";
-        case MCM_OPT_MENU:    return L"menu";
-        case MCM_OPT_COLOR:   return L"color";
-        case MCM_OPT_KEYMAP:  return L"key";
-        case MCM_OPT_INPUT:   return L"input";
+        case MCM_OPT_HEADER:  return TR("header");
+        case MCM_OPT_TOGGLE:  return TR("toggle");
+        case MCM_OPT_SLIDER:  return TR("slider");
+        case MCM_OPT_MENU:    return TR("menu");
+        case MCM_OPT_COLOR:   return TR("color");
+        case MCM_OPT_KEYMAP:  return TR("key");
+        case MCM_OPT_INPUT:   return TR("input");
         default:              return L"";
     }
 }
@@ -188,7 +188,7 @@ static const wchar_t* McmOptionTypeName(int type) {
 static std::wstring FormatMcmOptionValue(const McmSnapshot& snap) {
     switch (snap.optionType) {
         case MCM_OPT_TOGGLE:
-            return snap.optionNumValue != 0.0 ? L"on" : L"off";
+            return snap.optionNumValue != 0.0 ? TR("on") : TR("off");
         case MCM_OPT_SLIDER:
             // strValue contient le format string, numValue la valeur
             if (!snap.optionStrValue.empty()) {
@@ -218,7 +218,7 @@ static std::wstring FormatMcmOptionValue(const McmSnapshot& snap) {
             return snap.optionStrValue;
         case MCM_OPT_KEYMAP: {
             int keyCode = static_cast<int>(snap.optionNumValue);
-            if (keyCode <= 0 || keyCode == 282) return L"unbound";
+            if (keyCode <= 0 || keyCode == 282) return TR("unbound");
             return DXScanCodeToName(keyCode);
         }
         default:
@@ -290,9 +290,9 @@ static void AnnounceMcmChangeImpl() {
             if (!value.empty())
                 announce += L": " + value;
 
-            const wchar_t* typeName = McmOptionTypeName(snap.optionType);
-            if (*typeName && snap.optionType != MCM_OPT_TEXT && snap.optionType != MCM_OPT_HEADER)
-                announce += L", " + std::wstring(typeName);
+            std::wstring typeName = McmOptionTypeName(snap.optionType);
+            if (!typeName.empty() && snap.optionType != MCM_OPT_TEXT && snap.optionType != MCM_OPT_HEADER)
+                announce += L", " + typeName;
 
             if (firstRead) SpeakQueue(announce); else Speak(announce);
 

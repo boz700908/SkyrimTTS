@@ -117,13 +117,13 @@ static std::wstring BuildQuickLootItemAnnouncement(const QuickLootSnapshot& snap
         msg += L", " + std::to_wstring(snap.count);
     }
     if (!snap.valueText.empty() && snap.valueText != L"0") {
-        msg += L", value " + snap.valueText;
+        msg += L", " + TR("value") + L" " + snap.valueText;
     }
     if (!snap.weightText.empty() && snap.weightText != L"0") {
-        msg += L", weight " + snap.weightText;
+        msg += L", " + TR("weight") + L" " + snap.weightText;
     }
     if (snap.stolen) {
-        msg += L", stolen";
+        msg += L", " + TR("stolen");
     }
     return msg;
 }

@@ -234,7 +234,7 @@ static bool ReadJournalSnapshot(JournalSnapshot& snap) {
                         // Checkbox: value 0=off, 1=on
                         double v = 0.0;
                         if (GetGFxNumber(movie, (eb + ".value").c_str(), v))
-                            valStr = (v != 0.0) ? L"on" : L"off";
+                            valStr = (v != 0.0) ? TR("on") : TR("off");
                     }
                     snap.systemItem = valStr.empty() ? label : label + L": " + valStr;
                 }
@@ -257,7 +257,7 @@ static bool ReadJournalSnapshot(JournalSnapshot& snap) {
                 std::wstring prefix;
                 if (hasFileNum) {
                     std::wostringstream ss;
-                    ss << L"Save " << std::setw(3) << std::setfill(L'0') << static_cast<int>(fileNumD);
+                    ss << TR("Save") << L" " << std::setw(3) << std::setfill(L'0') << static_cast<int>(fileNumD);
                     prefix = ss.str() + L": ";
                 }
 
@@ -283,7 +283,7 @@ static bool ReadJournalSnapshot(JournalSnapshot& snap) {
                     msg += L", " + Utf8ToWString(raceStr);
                 double levelD = 0.0;
                 if (GetGFxNumber(movie, (eb + ".level").c_str(), levelD) && levelD > 0.0)
-                    msg += L", niveau " + std::to_wstring(static_cast<int>(levelD));
+                    msg += L", " + TR("level") + L" " + std::to_wstring(static_cast<int>(levelD));
                 std::string playTimeStr;
                 if (GetGFxString(movie, (eb + ".playTime").c_str(), playTimeStr) && !playTimeStr.empty())
                     msg += L", " + Utf8ToWString(playTimeStr);
@@ -377,11 +377,12 @@ static bool ReadJournalSnapshot(JournalSnapshot& snap) {
     return snap.tab >= 0;
 }
 
-static const wchar_t* JournalTabName(int tab) {
+// Retourne wstring (pas wchar_t*) pour permettre la traduction dynamique.
+static std::wstring JournalTabName(int tab) {
     switch (tab) {
-        case JOURNAL_TAB_QUESTS: return L"Quests";
-        case JOURNAL_TAB_STATS:  return L"Stats";
-        case JOURNAL_TAB_SYSTEM: return L"System";
+        case JOURNAL_TAB_QUESTS: return TR("Quests");
+        case JOURNAL_TAB_STATS:  return TR("Stats");
+        case JOURNAL_TAB_SYSTEM: return TR("System");
         default:                 return L"";
     }
 }
@@ -426,7 +427,7 @@ static void AnnounceJournalChangeImpl() {
                     if (!g_mcmOpen.load(std::memory_order_relaxed)) {
                         g_mcmOpen.store(true);
                         ResetMcmState();
-                        Speak(L"Mod Configuration");
+                        Speak(TR("Mod Configuration"));
                         LOG("MCM: opened (tab={}, focus={})", static_cast<int>(currentTab), static_cast<int>(mcmFocus));
                     }
                     AnnounceMcmChangeImpl();
@@ -449,8 +450,8 @@ static void AnnounceJournalChangeImpl() {
     const bool tabChanged = snap.tab != g_lastJournalTab;
     const bool firstRead = g_lastJournalTab < 0;
     if (tabChanged) {
-        const wchar_t* name = JournalTabName(snap.tab);
-        if (*name) { if (firstRead) SpeakQueue(name); else Speak(name); }
+        std::wstring name = JournalTabName(snap.tab);
+        if (!name.empty()) { if (firstRead) SpeakQueue(name); else Speak(name); }
         g_lastJournalTab = snap.tab;
         g_lastJournalTitle.clear();
         g_lastJournalDesc.clear();
@@ -485,7 +486,7 @@ static void AnnounceJournalChangeImpl() {
             std::wstring announce = snap.questTitle;
             // Pour les quêtes normales, ajouter "active" ; pour Divers, pas de statut global
             if (snap.questFormID != 0.0 && snap.questActive)
-                announce += L", active";
+                announce += L", " + TR("active");
             if (firstRead) SpeakQueue(announce); else Speak(announce);
             g_lastJournalTitle = snap.questTitle;
             g_lastJournalDesc.clear();
@@ -508,8 +509,8 @@ static void AnnounceJournalChangeImpl() {
                 for (const auto& obj : snap.objectives) {
                     if (obj.text.empty()) continue;
                     std::wstring objLine = obj.text;
-                    if (obj.completed)     objLine += L", completed";
-                    else if (obj.failed)   objLine += L", failed";
+                    if (obj.completed)     objLine += L", " + TR("completed");
+                    else if (obj.failed)   objLine += L", " + TR("failed");
                     SpeakQueue(objLine);
                 }
             }
@@ -519,7 +520,7 @@ static void AnnounceJournalChangeImpl() {
             if (!snap.miscObjText.empty() && (snap.miscObjText != g_lastMiscObjText || snap.miscObjIdx != g_lastMiscObjIdx)) {
                 // Nouvel objectif sélectionné
                 std::wstring announce = snap.miscObjText;
-                if (snap.miscObjActive) announce += L", active";
+                if (snap.miscObjActive) announce += L", " + TR("active");
                 Speak(announce);
                 g_lastMiscObjText = snap.miscObjText;
                 g_lastMiscObjIdx = snap.miscObjIdx;
@@ -529,7 +530,7 @@ static void AnnounceJournalChangeImpl() {
                 // Même objectif : détecter activation/désactivation (touche Entrée)
                 int curActive = snap.miscObjActive ? 1 : 0;
                 if (g_lastMiscObjActive >= 0 && curActive != g_lastMiscObjActive) {
-                    Speak(snap.miscObjActive ? L"active" : L"inactive");
+                    Speak(snap.miscObjActive ? TR("active") : TR("inactive"));
                     LOG("Journal: misc quest toggled to {}", snap.miscObjActive ? "active" : "inactive");
                 }
                 g_lastMiscObjActive = curActive;
@@ -538,7 +539,7 @@ static void AnnounceJournalChangeImpl() {
             // Quête normale : détecter activation/désactivation sans changer de quête
             int curActive = snap.questActive ? 1 : 0;
             if (g_lastQuestActive >= 0 && curActive != g_lastQuestActive) {
-                Speak(snap.questActive ? L"active" : L"inactive");
+                Speak(snap.questActive ? TR("active") : TR("inactive"));
             }
             g_lastQuestActive = curActive;
         }
@@ -578,14 +579,14 @@ static void StopJournalPolling() {
 
 static void DiagnoseJournalNow() {
     if (!g_journalOpen.load(std::memory_order_relaxed)) {
-        Speak(L"Journal closed");
+        Speak(TR("Journal closed"));
         return;
     }
     auto* task = SKSE::GetTaskInterface();
     if (!task) return;
     task->AddUITask([]() {
         JournalSnapshot snap;
-        if (!ReadJournalSnapshot(snap)) { Speak(L"Journal: no data"); return; }
+        if (!ReadJournalSnapshot(snap)) { Speak(TR("Journal: no data")); return; }
         Speak(JournalTabName(snap.tab));
         if (snap.tab == JOURNAL_TAB_QUESTS && !snap.questTitle.empty())
             Speak(snap.questTitle);

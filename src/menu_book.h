@@ -35,14 +35,14 @@ static void AnnounceBookContent() {
     if (book->TeachesSkill()) {
         auto skill = book->GetSkill();
         if (skill != RE::ActorValue::kNone) {
-            SpeakQueue(L"This book teaches a skill");
+            SpeakQueue(TR("This book teaches a skill"));
         }
     } else if (book->TeachesSpell()) {
         auto* spell = book->GetSpell();
         if (spell) {
             const char* spellName = spell->GetFullName();
             if (spellName && spellName[0]) {
-                SpeakQueue(L"Teaches spell: " + Utf8ToWString(spellName));
+                SpeakQueue(TR("Teaches spell") + L": " + Utf8ToWString(spellName));
             }
         }
     }

@@ -123,12 +123,14 @@ static bool ReadMagicSnapshot(MagicSnapshot& snap) {
     return !snap.itemName.empty() || !snap.category.empty();
 }
 
-static const wchar_t* MagicEquipText(int state) {
+// Note : retourne wstring (pas wchar_t*) car les traductions sont dynamiques.
+// L'appelant concatène directement.
+static std::wstring MagicEquipText(int state) {
     switch (state) {
-        case MAGIC_ES_EQUIPPED: return L", equipped";
-        case MAGIC_ES_LEFT:     return L", equipped left";
-        case MAGIC_ES_RIGHT:    return L", equipped right";
-        case MAGIC_ES_BOTH:     return L", equipped both hands";
+        case MAGIC_ES_EQUIPPED: return L", " + TR("equipped");
+        case MAGIC_ES_LEFT:     return L", " + TR("equipped left");
+        case MAGIC_ES_RIGHT:    return L", " + TR("equipped right");
+        case MAGIC_ES_BOTH:     return L", " + TR("equipped both hands");
         default:                return L"";
     }
 }
@@ -160,8 +162,8 @@ static void AnnounceMagicChangeImpl() {
     if (itemChanged) {
         std::wstring announce = snap.itemName;
         announce += MagicEquipText(snap.equipState);
-        if (snap.favorite)      announce += L", favorite";
-        if (!snap.itemEnabled)  announce += L", locked";
+        if (snap.favorite)      announce += L", " + TR("favorite");
+        if (!snap.itemEnabled)  announce += L", " + TR("locked");
         if (firstRead) SpeakQueue(announce); else Speak(announce);
         g_lastMagicItem       = snap.itemName;
         g_lastMagicEquipState = snap.equipState;
@@ -173,7 +175,7 @@ static void AnnounceMagicChangeImpl() {
         Speak(announce);
         g_lastMagicEquipState = snap.equipState;
     } else if (favoriteChanged) {
-        Speak(snap.favorite ? L"added to favorites" : L"removed from favorites");
+        Speak(snap.favorite ? TR("added to favorites") : TR("removed from favorites"));
         g_lastMagicFavorite = favInt;
     }
 
@@ -182,15 +184,15 @@ static void AnnounceMagicChangeImpl() {
         SpeakQueue(snap.effects);
         if (snap.spellCost > 0) {
             if (snap.itemType == MAGIC_ICT_SHOUT)
-                SpeakQueue(L"recovery " + std::to_wstring(static_cast<int>(snap.spellCost)) + L" seconds");
+                SpeakQueue(TR("recovery") + L" " + std::to_wstring(static_cast<int>(snap.spellCost)) + L" " + TR("seconds"));
             else if (snap.itemType != MAGIC_ICT_ACTIVE_EFFECT)
-                SpeakQueue(L"cost " + std::to_wstring(static_cast<int>(snap.spellCost)));
+                SpeakQueue(TR("cost") + L" " + std::to_wstring(static_cast<int>(snap.spellCost)));
         }
         if (snap.itemType == MAGIC_ICT_SHOUT) {
             for (int i = 0; i < 3; ++i) {
                 if (snap.shoutWords[i].name.empty()) continue;
-                SpeakQueue(snap.shoutWords[i].name +
-                           (snap.shoutWords[i].unlocked ? L", known" : L", locked"));
+                SpeakQueue(snap.shoutWords[i].name + L", " +
+                           (snap.shoutWords[i].unlocked ? TR("known") : TR("locked")));
             }
         }
         g_lastMagicEffects = snap.effects;
@@ -224,42 +226,42 @@ static void StopMagicPolling() {
 
 static void DiagnoseMagicNow() {
     if (!g_magicOpen.load(std::memory_order_relaxed)) {
-        Speak(L"Magic menu closed");
+        Speak(TR("Magic menu closed"));
         return;
     }
     auto* task = SKSE::GetTaskInterface();
     if (!task) return;
     task->AddUITask([]() {
         MagicSnapshot snap;
-        if (!ReadMagicSnapshot(snap)) { Speak(L"Magic: no data"); return; }
+        if (!ReadMagicSnapshot(snap)) { Speak(TR("Magic: no data")); return; }
 
         if (!snap.category.empty()) Speak(snap.category);
 
-        if (snap.itemName.empty()) { SpeakQueue(L"no item selected"); return; }
+        if (snap.itemName.empty()) { SpeakQueue(TR("no item selected")); return; }
 
         std::wstring announce = snap.itemName;
         announce += MagicEquipText(snap.equipState);
-        if (snap.favorite)     announce += L", favorite";
-        if (!snap.itemEnabled) announce += L", locked";
+        if (snap.favorite)     announce += L", " + TR("favorite");
+        if (!snap.itemEnabled) announce += L", " + TR("locked");
         SpeakQueue(announce);
 
         if (snap.itemType == MAGIC_ICT_SPELL) {
             if (snap.castLevel > 0)
-                SpeakQueue(L"skill level " + std::to_wstring(static_cast<int>(snap.castLevel)));
+                SpeakQueue(TR("skill level") + L" " + std::to_wstring(static_cast<int>(snap.castLevel)));
             if (snap.spellCost > 0)
-                SpeakQueue(L"cost " + std::to_wstring(static_cast<int>(snap.spellCost)));
+                SpeakQueue(TR("cost") + L" " + std::to_wstring(static_cast<int>(snap.spellCost)));
             if (snap.castTime == 0.0)
-                SpeakQueue(L"concentration");
+                SpeakQueue(TR("concentration"));
 
         } else if (snap.itemType == MAGIC_ICT_SPELL_DEFAULT) {
             if (snap.spellCost > 0)
-                SpeakQueue(L"cost " + std::to_wstring(static_cast<int>(snap.spellCost)));
+                SpeakQueue(TR("cost") + L" " + std::to_wstring(static_cast<int>(snap.spellCost)));
 
         } else if (snap.itemType == MAGIC_ICT_SHOUT) {
             for (int i = 0; i < 3; ++i) {
                 if (snap.shoutWords[i].name.empty()) continue;
-                SpeakQueue(snap.shoutWords[i].name +
-                      (snap.shoutWords[i].unlocked ? L", known" : L", locked"));
+                SpeakQueue(snap.shoutWords[i].name + L", " +
+                      (snap.shoutWords[i].unlocked ? TR("known") : TR("locked")));
             }
 
         } else if (snap.itemType == MAGIC_ICT_ACTIVE_EFFECT && snap.timeRemaining > 0) {
@@ -267,12 +269,12 @@ static void DiagnoseMagicNow() {
             std::wstring timeStr;
             if (secs >= 3600) {
                 int h = secs / 3600;
-                timeStr = std::to_wstring(h) + (h == 1 ? L" hour" : L" hours");
+                timeStr = std::to_wstring(h) + L" " + (h == 1 ? TR("hour") : TR("hours"));
             } else if (secs >= 60) {
                 int m = secs / 60;
-                timeStr = std::to_wstring(m) + (m == 1 ? L" minute" : L" minutes");
+                timeStr = std::to_wstring(m) + L" " + (m == 1 ? TR("minute") : TR("minutes"));
             } else {
-                timeStr = std::to_wstring(secs) + (secs == 1 ? L" second" : L" seconds");
+                timeStr = std::to_wstring(secs) + L" " + (secs == 1 ? TR("second") : TR("seconds"));
             }
             SpeakQueue(timeStr);
         }

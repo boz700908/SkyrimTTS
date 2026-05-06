@@ -203,7 +203,7 @@ static void HUDAdvanceMovie_Hook(RE::IMenu* a_this, float a_interval, std::uint3
             bool sneaking = player->IsSneaking();
             if (sneaking != g_wasSneaking) {
                 g_wasSneaking = sneaking;
-                Speak(sneaking ? L"Sneaking" : L"Standing");
+                Speak(sneaking ? TR("Sneaking") : TR("Standing"));
             }
         }
     }
@@ -344,9 +344,9 @@ static void AnnouncePlayerVitals() {
         int curS = static_cast<int>(av->GetActorValue(RE::ActorValue::kStamina));
         int maxS = static_cast<int>(av->GetPermanentActorValue(RE::ActorValue::kStamina));
 
-        std::wstring msg = std::to_wstring(curH) + L" / " + std::to_wstring(maxH) + L" health";
-        msg += L", " + std::to_wstring(curM) + L" / " + std::to_wstring(maxM) + L" magicka";
-        msg += L", " + std::to_wstring(curS) + L" / " + std::to_wstring(maxS) + L" stamina";
+        std::wstring msg = std::to_wstring(curH) + L" / " + std::to_wstring(maxH) + L" " + TR("health");
+        msg += L", " + std::to_wstring(curM) + L" / " + std::to_wstring(maxM) + L" " + TR("magicka");
+        msg += L", " + std::to_wstring(curS) + L" / " + std::to_wstring(maxS) + L" " + TR("stamina");
         Speak(msg);
     });
 }
@@ -363,7 +363,7 @@ static void AnnounceActiveEffects() {
         auto* magicTarget = player->AsMagicTarget();
         if (!magicTarget) return;
         auto* list = magicTarget->GetActiveEffectList();
-        if (!list) { Speak(L"No active effects"); return; }
+        if (!list) { Speak(TR("No active effects")); return; }
 
         struct Entry { std::wstring name; float magnitude; float remaining; bool detrimental; };
         std::vector<Entry> entries;
@@ -384,14 +384,14 @@ static void AnnounceActiveEffects() {
             entries.push_back(std::move(e));
         }
 
-        if (entries.empty()) { Speak(L"No active effects"); return; }
+        if (entries.empty()) { Speak(TR("No active effects")); return; }
 
         // Néfastes en premier
         std::stable_sort(entries.begin(), entries.end(),
                          [](const Entry& a, const Entry& b) { return a.detrimental && !b.detrimental; });
 
-        std::wstring msg = std::to_wstring(entries.size()) + L" active effect" +
-                           (entries.size() > 1 ? L"s: " : L": ");
+        std::wstring msg = std::to_wstring(entries.size()) + L" " +
+                           (entries.size() > 1 ? TR("active effects") : TR("active effect")) + L": ";
         bool first = true;
         for (const auto& e : entries) {
             if (!first) msg += L", ";
@@ -400,7 +400,7 @@ static void AnnounceActiveEffects() {
             if (e.magnitude > 0.0f)
                 msg += L" " + std::to_wstring(static_cast<int>(e.magnitude));
             if (e.remaining > 0.0f)
-                msg += L" " + std::to_wstring(static_cast<int>(e.remaining)) + L" seconds";
+                msg += L" " + std::to_wstring(static_cast<int>(e.remaining)) + L" " + TR("seconds");
         }
         Speak(msg);
     });

@@ -170,7 +170,7 @@ static std::wstring BuildBarterItemAnnouncement(const BarterSnapshot& snap) {
     if (snap.itemText.empty()) return L"";
     std::wstring msg = snap.itemText;
     if (snap.stolen)
-        msg += L", stolen";
+        msg += L", " + TR("stolen");
     if (snap.count > 1)
         msg += L", " + std::to_wstring(snap.count);
     const std::wstring eq = FormatEquipState(snap.equipState);
@@ -180,13 +180,13 @@ static std::wstring BuildBarterItemAnnouncement(const BarterSnapshot& snap) {
         try { return std::stof(s) == 0.0f; } catch (...) { return s.empty(); }
     };
     if (!snap.weaponDamageText.empty() && !isZero(snap.weaponDamageText))
-        msg += L", damage " + snap.weaponDamageText;
+        msg += L", " + TR("damage") + L" " + snap.weaponDamageText;
     if (!snap.apparelArmorText.empty() && !isZero(snap.apparelArmorText))
-        msg += L", armor " + snap.apparelArmorText;
+        msg += L", " + TR("armor") + L" " + snap.apparelArmorText;
     if (!snap.valueText.empty() && !isZero(snap.valueText))
-        msg += L", value " + snap.valueText;
+        msg += L", " + TR("value") + L" " + snap.valueText;
     if (!snap.weightText.empty() && !isZero(snap.weightText))
-        msg += L", weight " + snap.weightText;
+        msg += L", " + TR("weight") + L" " + snap.weightText;
     if (!snap.soulLevelText.empty())
         msg += L", " + snap.soulLevelText;
     return msg;
@@ -221,7 +221,7 @@ static void AnnounceBarterChangeImpl() {
                     // Slider vient de s'ouvrir
                     g_barterQuantityOpen = true;
                     g_lastBarterQuantity = qty;
-                    Speak(L"Quantity: " + std::to_wstring(qty));
+                    Speak(TR("Quantity") + L": " + std::to_wstring(qty));
                 } else if (qty != g_lastBarterQuantity) {
                     // Valeur changée
                     g_lastBarterQuantity = qty;
@@ -239,6 +239,8 @@ static void AnnounceBarterChangeImpl() {
     BarterSnapshot snap;
     if (!ReadBarterSnapshot(snap)) return;
 
+    // Cle technique stable (anglaise) pour comparer d'un cycle a l'autre.
+    // La traduction n'intervient qu'a l'affichage plus bas.
     const std::wstring side = snap.isVendorSide ? L"vendor" : L"inventory";
     const bool sideChanged = (side != g_lastBarterSide);
     const bool catChanged  = !snap.catText.empty() && (sideChanged || snap.catText != g_lastBarterCat);
@@ -259,7 +261,9 @@ static void AnnounceBarterChangeImpl() {
 
     const bool firstRead = g_lastBarterCat.empty() && g_lastBarterItemAnnounce.empty();
     if (catChanged) {
-        std::wstring catMsg = snap.atDivider ? (L"Your inventory: " + snap.catText) : (side + L": " + snap.catText);
+        const std::wstring sideSpoken = snap.isVendorSide ? TR("vendor") : TR("inventory");
+        std::wstring catMsg = snap.atDivider ? (TR("Your inventory") + L": " + snap.catText)
+                                             : (sideSpoken + L": " + snap.catText);
         if (firstRead) SpeakQueue(catMsg); else Speak(catMsg);
         g_lastBarterCat  = snap.catText;
         g_lastBarterSide = side;
@@ -323,7 +327,7 @@ static void AnnounceBarterStats() {
                         };
                         for (auto p : playerGoldPaths) {
                             if (GetGFxString(movie, p, playerGold) && !playerGold.empty()) {
-                                msg += L"Your gold: " + StripMarkupForSpeech(Utf8ToWString(playerGold));
+                                msg += TR("Your gold") + L": " + StripMarkupForSpeech(Utf8ToWString(playerGold));
                                 break;
                             }
                         }
@@ -340,7 +344,7 @@ static void AnnounceBarterStats() {
                             if (GetGFxString(movie, p, vendorGold) && !vendorGold.empty()) {
                                 LOG("BarterStats: vendor gold at '{}' = '{}'", p, vendorGold);
                                 if (!msg.empty()) msg += L", ";
-                                msg += L"Vendor gold: " + StripMarkupForSpeech(Utf8ToWString(vendorGold));
+                                msg += TR("Vendor gold") + L": " + StripMarkupForSpeech(Utf8ToWString(vendorGold));
                                 break;
                             }
                         }
@@ -352,7 +356,7 @@ static void AnnounceBarterStats() {
                             float carryMax = av->GetActorValue(RE::ActorValue::kCarryWeight);
                             float carryCur = player->GetWeightInContainer();
                             if (!msg.empty()) msg += L", ";
-                            msg += L"weight: " + std::to_wstring(static_cast<int>(carryCur)) + L" / " + std::to_wstring(static_cast<int>(carryMax));
+                            msg += TR("weight") + L": " + std::to_wstring(static_cast<int>(carryCur)) + L" / " + std::to_wstring(static_cast<int>(carryMax));
                         }
                     }
                 }

@@ -5,17 +5,17 @@
 static std::atomic_bool g_levelUpOpen{false};
 static std::atomic_int  g_levelUpSelection{0}; // 0=Health, 1=Magicka, 2=Stamina
 
-static const wchar_t* LevelUpSelectionName(int sel) {
+static std::wstring LevelUpSelectionName(int sel) {
     switch (sel) {
-        case 0: return L"Health";
-        case 1: return L"Magicka";
-        case 2: return L"Stamina";
+        case 0: return TR("Health");
+        case 1: return TR("Magicka");
+        case 2: return TR("Stamina");
         default: return L"";
     }
 }
 
 static void AnnounceLevelUpSelection(bool queue = false) {
-    const wchar_t* name = LevelUpSelectionName(g_levelUpSelection.load());
+    std::wstring name = LevelUpSelectionName(g_levelUpSelection.load());
     if (queue) SpeakQueue(name); else Speak(name);
 }
 

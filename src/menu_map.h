@@ -18,12 +18,16 @@ enum class MapFilter : int {
     COUNT
 };
 
-static const wchar_t* g_mapFilterNames[] = {
-    L"All",
-    L"Discovered",
-    L"Undiscovered",
-    L"Quest Targets"
-};
+// Retourne le libelle traduit du filtre principal.
+static std::wstring GetMapFilterName(MapFilter f) {
+    switch (f) {
+        case MapFilter::All:          return TR("All");
+        case MapFilter::Discovered:   return TR("Discovered");
+        case MapFilter::Undiscovered: return TR("Undiscovered");
+        case MapFilter::QuestTargets: return TR("Quest Targets");
+        default:                      return L"";
+    }
+}
 
 // Sous-catégories par type de lieu (Alt+End)
 enum class MapSubFilter : int {
@@ -36,14 +40,18 @@ enum class MapSubFilter : int {
     COUNT
 };
 
-static const wchar_t* g_mapSubFilterNames[] = {
-    L"All types",
-    L"Cities",
-    L"Towns",
-    L"Dungeons",
-    L"Forts",
-    L"Camps"
-};
+// Retourne le libelle traduit du sous-filtre par type.
+static std::wstring GetMapSubFilterName(MapSubFilter f) {
+    switch (f) {
+        case MapSubFilter::AllTypes: return TR("All types");
+        case MapSubFilter::Cities:   return TR("Cities");
+        case MapSubFilter::Towns:    return TR("Towns");
+        case MapSubFilter::Dungeons: return TR("Dungeons");
+        case MapSubFilter::Forts:    return TR("Forts");
+        case MapSubFilter::Camps:    return TR("Camps");
+        default:                     return L"";
+    }
+}
 
 // --- Marqueur de carte ---
 struct MapMarkerInfo {
@@ -82,48 +90,48 @@ static std::wstring                g_customMarkerName;
 static RE::FormID                  g_customMarkerFormID{0};
 static bool                        g_customMarkerActive{false};
 
-// --- Nom du type de marqueur ---
-static const wchar_t* GetMarkerTypeName(RE::MARKER_TYPE type) {
+// --- Nom du type de marqueur (traduit) ---
+static std::wstring GetMarkerTypeName(RE::MARKER_TYPE type) {
     switch (type) {
-        case RE::MARKER_TYPE::kCity:            return L"City";
-        case RE::MARKER_TYPE::kTown:            return L"Town";
-        case RE::MARKER_TYPE::kSettlement:      return L"Settlement";
-        case RE::MARKER_TYPE::kCave:            return L"Cave";
-        case RE::MARKER_TYPE::kCamp:            return L"Camp";
-        case RE::MARKER_TYPE::kFort:            return L"Fort";
-        case RE::MARKER_TYPE::kNordicRuins:     return L"Nordic Ruins";
-        case RE::MARKER_TYPE::kDwemerRuin:      return L"Dwemer Ruin";
-        case RE::MARKER_TYPE::kShipwreck:       return L"Shipwreck";
-        case RE::MARKER_TYPE::kGrove:           return L"Grove";
-        case RE::MARKER_TYPE::kLandmark:        return L"Landmark";
-        case RE::MARKER_TYPE::kDragonLair:      return L"Dragon Lair";
-        case RE::MARKER_TYPE::kFarm:            return L"Farm";
-        case RE::MARKER_TYPE::kWoodMill:        return L"Wood Mill";
-        case RE::MARKER_TYPE::kMine:            return L"Mine";
-        case RE::MARKER_TYPE::kImperialCamp:    return L"Imperial Camp";
-        case RE::MARKER_TYPE::kStormcloakCamp:  return L"Stormcloak Camp";
-        case RE::MARKER_TYPE::kDoomstone:       return L"Standing Stone";
-        case RE::MARKER_TYPE::kWheatMill:       return L"Wheat Mill";
-        case RE::MARKER_TYPE::kSmelter:         return L"Smelter";
-        case RE::MARKER_TYPE::kStable:          return L"Stable";
-        case RE::MARKER_TYPE::kImperialTower:   return L"Imperial Tower";
-        case RE::MARKER_TYPE::kClearing:        return L"Clearing";
-        case RE::MARKER_TYPE::kPass:            return L"Pass";
-        case RE::MARKER_TYPE::kAlter:           return L"Altar";
-        case RE::MARKER_TYPE::kRock:            return L"Rock";
-        case RE::MARKER_TYPE::kLighthouse:      return L"Lighthouse";
-        case RE::MARKER_TYPE::kOrcStronghold:   return L"Orc Stronghold";
-        case RE::MARKER_TYPE::kGiantCamp:       return L"Giant Camp";
-        case RE::MARKER_TYPE::kShack:           return L"Shack";
-        case RE::MARKER_TYPE::kNordicTower:     return L"Nordic Tower";
-        case RE::MARKER_TYPE::kNordicDwelling:  return L"Nordic Dwelling";
-        case RE::MARKER_TYPE::kDocks:           return L"Docks";
-        case RE::MARKER_TYPE::kShrine:          return L"Shrine";
+        case RE::MARKER_TYPE::kCity:            return TR("City");
+        case RE::MARKER_TYPE::kTown:            return TR("Town");
+        case RE::MARKER_TYPE::kSettlement:      return TR("Settlement");
+        case RE::MARKER_TYPE::kCave:            return TR("Cave");
+        case RE::MARKER_TYPE::kCamp:            return TR("Camp");
+        case RE::MARKER_TYPE::kFort:            return TR("Fort");
+        case RE::MARKER_TYPE::kNordicRuins:     return TR("Nordic Ruins");
+        case RE::MARKER_TYPE::kDwemerRuin:      return TR("Dwemer Ruin");
+        case RE::MARKER_TYPE::kShipwreck:       return TR("Shipwreck");
+        case RE::MARKER_TYPE::kGrove:           return TR("Grove");
+        case RE::MARKER_TYPE::kLandmark:        return TR("Landmark");
+        case RE::MARKER_TYPE::kDragonLair:      return TR("Dragon Lair");
+        case RE::MARKER_TYPE::kFarm:            return TR("Farm");
+        case RE::MARKER_TYPE::kWoodMill:        return TR("Wood Mill");
+        case RE::MARKER_TYPE::kMine:            return TR("Mine");
+        case RE::MARKER_TYPE::kImperialCamp:    return TR("Imperial Camp");
+        case RE::MARKER_TYPE::kStormcloakCamp:  return TR("Stormcloak Camp");
+        case RE::MARKER_TYPE::kDoomstone:       return TR("Standing Stone");
+        case RE::MARKER_TYPE::kWheatMill:       return TR("Wheat Mill");
+        case RE::MARKER_TYPE::kSmelter:         return TR("Smelter");
+        case RE::MARKER_TYPE::kStable:          return TR("Stable");
+        case RE::MARKER_TYPE::kImperialTower:   return TR("Imperial Tower");
+        case RE::MARKER_TYPE::kClearing:        return TR("Clearing");
+        case RE::MARKER_TYPE::kPass:            return TR("Pass");
+        case RE::MARKER_TYPE::kAlter:           return TR("Altar");
+        case RE::MARKER_TYPE::kRock:            return TR("Rock");
+        case RE::MARKER_TYPE::kLighthouse:      return TR("Lighthouse");
+        case RE::MARKER_TYPE::kOrcStronghold:   return TR("Orc Stronghold");
+        case RE::MARKER_TYPE::kGiantCamp:       return TR("Giant Camp");
+        case RE::MARKER_TYPE::kShack:           return TR("Shack");
+        case RE::MARKER_TYPE::kNordicTower:     return TR("Nordic Tower");
+        case RE::MARKER_TYPE::kNordicDwelling:  return TR("Nordic Dwelling");
+        case RE::MARKER_TYPE::kDocks:           return TR("Docks");
+        case RE::MARKER_TYPE::kShrine:          return TR("Shrine");
         default: {
             int t = static_cast<int>(type);
-            if (t >= 35 && t <= 52) return L"Castle";
-            if (t >= 53 && t <= 58) return L"Solstheim";
-            return L"Location";
+            if (t >= 35 && t <= 52) return TR("Castle");
+            if (t >= 53 && t <= 58) return TR("Solstheim");
+            return TR("Location");
         }
     }
 }
@@ -133,14 +141,14 @@ static std::wstring GetDirectionString(float dx, float dy) {
     float angle = std::atan2(dx, dy) * 180.0f / 3.14159265f;
     if (angle < 0) angle += 360.0f;
 
-    if (angle >= 337.5f || angle < 22.5f)   return L"north";
-    if (angle >= 22.5f  && angle < 67.5f)   return L"northeast";
-    if (angle >= 67.5f  && angle < 112.5f)  return L"east";
-    if (angle >= 112.5f && angle < 157.5f)  return L"southeast";
-    if (angle >= 157.5f && angle < 202.5f)  return L"south";
-    if (angle >= 202.5f && angle < 247.5f)  return L"southwest";
-    if (angle >= 247.5f && angle < 292.5f)  return L"west";
-    return L"northwest";
+    if (angle >= 337.5f || angle < 22.5f)   return TR("north");
+    if (angle >= 22.5f  && angle < 67.5f)   return TR("northeast");
+    if (angle >= 67.5f  && angle < 112.5f)  return TR("east");
+    if (angle >= 112.5f && angle < 157.5f)  return TR("southeast");
+    if (angle >= 157.5f && angle < 202.5f)  return TR("south");
+    if (angle >= 202.5f && angle < 247.5f)  return TR("southwest");
+    if (angle >= 247.5f && angle < 292.5f)  return TR("west");
+    return TR("northwest");
 }
 
 // Forward declarations
@@ -291,7 +299,7 @@ static void AddQuestTargetsToMap(RE::PlayerCharacter* player, const RE::NiPoint3
             MapMarkerInfo m;
             m.formID = fid;
             m.name = Utf8ToWString(objText);
-            m.typeName = L"Quest Target";
+            m.typeName = TR("Quest Target");
             m.distance = std::sqrt(dx * dx + dy * dy);
             m.direction = GetDirectionString(dx, dy);
             m.isQuestTarget = true;
@@ -518,24 +526,24 @@ static void ApplyMapFilter() {
 
     g_mapIndex = g_mapFiltered.empty() ? -1 : 0;
     LOG("MapMenu: filter '{}' sub '{}' -> {} markers",
-        WStringToUtf8(g_mapFilterNames[static_cast<int>(g_mapFilter)]),
-        WStringToUtf8(g_mapSubFilterNames[static_cast<int>(g_mapSubFilter)]),
+        WStringToUtf8(GetMapFilterName(g_mapFilter)),
+        WStringToUtf8(GetMapSubFilterName(g_mapSubFilter)),
         g_mapFiltered.size());
 }
 
 // --- Formater l'annonce d'un marqueur ---
 static std::wstring FormatMapMarkerAnnounce(const MapMarkerInfo& m, bool fullDetails = false) {
     std::wstring msg = m.name;
-    msg += L", " + std::wstring(m.typeName);
+    msg += L", " + m.typeName;
 
     // Convert distance to a more meaningful unit (Skyrim units / 70 ~ feet, / 21 ~ meters)
     int distUnits = static_cast<int>(m.distance);
-    msg += L", " + std::to_wstring(distUnits) + L" units " + m.direction;
+    msg += L", " + std::to_wstring(distUnits) + L" " + TR("units") + L" " + m.direction;
 
     if (fullDetails) {
-        if (!m.discovered) msg += L", undiscovered";
-        if (m.canTravelTo) msg += L", can fast travel";
-        else msg += L", cannot fast travel";
+        if (!m.discovered) msg += L", " + TR("undiscovered");
+        if (m.canTravelTo) msg += L", " + TR("can fast travel");
+        else msg += L", " + TR("cannot fast travel");
     }
 
     return msg;
@@ -650,11 +658,11 @@ static void TryCenterMapOnMarker(const MapMarkerInfo& marker) {
 static void MapNextMarker() {
     g_mapFastTravelConfirm = false;  // annuler toute confirmation en cours
     if (!g_mapReady.load()) {
-        Speak(L"Loading markers");
+        Speak(TR("Loading markers"));
         return;
     }
     if (g_mapFiltered.empty()) {
-        Speak(L"No markers in this filter");
+        Speak(TR("No markers in this filter"));
         return;
     }
 
@@ -669,7 +677,7 @@ static void MapNextMarker() {
     }
 
     auto& m = g_mapMarkers[filteredIdx];
-    std::wstring pos = L". " + std::to_wstring(g_mapIndex + 1) + L" of " + std::to_wstring(g_mapFiltered.size());
+    std::wstring pos = L". " + std::to_wstring(g_mapIndex + 1) + L" " + TR("of") + L" " + std::to_wstring(g_mapFiltered.size());
     Speak(FormatMapMarkerAnnounce(m) + pos);
     TryCenterMapOnMarker(m);
 }
@@ -678,11 +686,11 @@ static void MapNextMarker() {
 static void MapPrevMarker() {
     g_mapFastTravelConfirm = false;  // annuler toute confirmation en cours
     if (!g_mapReady.load()) {
-        Speak(L"Loading markers");
+        Speak(TR("Loading markers"));
         return;
     }
     if (g_mapFiltered.empty()) {
-        Speak(L"No markers in this filter");
+        Speak(TR("No markers in this filter"));
         return;
     }
 
@@ -697,7 +705,7 @@ static void MapPrevMarker() {
     }
 
     auto& m = g_mapMarkers[filteredIdx];
-    std::wstring pos = L". " + std::to_wstring(g_mapIndex + 1) + L" of " + std::to_wstring(g_mapFiltered.size());
+    std::wstring pos = L". " + std::to_wstring(g_mapIndex + 1) + L" " + TR("of") + L" " + std::to_wstring(g_mapFiltered.size());
     Speak(FormatMapMarkerAnnounce(m) + pos);
     TryCenterMapOnMarker(m);
 }
@@ -705,7 +713,7 @@ static void MapPrevMarker() {
 // --- Annoncer les détails complets ---
 static void MapAnnounceDetails() {
     if (!g_mapReady.load() || g_mapFiltered.empty() || g_mapIndex < 0) {
-        Speak(L"No marker selected");
+        Speak(TR("No marker selected"));
         return;
     }
 
@@ -713,14 +721,14 @@ static void MapAnnounceDetails() {
     if (filteredIdx < 0 || filteredIdx >= static_cast<int>(g_mapMarkers.size())) return;
 
     auto& m = g_mapMarkers[filteredIdx];
-    std::wstring pos = L". " + std::to_wstring(g_mapIndex + 1) + L" of " + std::to_wstring(g_mapFiltered.size());
+    std::wstring pos = L". " + std::to_wstring(g_mapIndex + 1) + L" " + TR("of") + L" " + std::to_wstring(g_mapFiltered.size());
     Speak(FormatMapMarkerAnnounce(m, true) + pos);
 }
 
 // --- Point de référence (Shift+Home) ---
 static void MapSetReference() {
     if (!g_mapReady.load() || g_mapFiltered.empty() || g_mapIndex < 0) {
-        Speak(L"No marker selected");
+        Speak(TR("No marker selected"));
         return;
     }
 
@@ -745,7 +753,7 @@ static void MapSetReference() {
             [](const MapMarkerInfo& a, const MapMarkerInfo& b) { return a.distance < b.distance; });
         ApplyMapFilter();
 
-        Speak(L"Reference cleared, distances from player");
+        Speak(TR("Reference cleared, distances from player"));
         return;
     }
 
@@ -772,13 +780,13 @@ static void MapSetReference() {
     ApplyMapFilter();
     g_mapIndex = 0;
 
-    Speak(L"Reference: " + g_mapReferenceName + L". Distances from this marker");
+    Speak(TR("Reference") + L": " + g_mapReferenceName + L". " + TR("Distances from this marker"));
 }
 
 // --- Sous-filtre par type de lieu (Alt+End) ---
 static void MapCycleSubFilter() {
     if (!g_mapReady.load()) {
-        Speak(L"Loading markers");
+        Speak(TR("Loading markers"));
         return;
     }
 
@@ -787,8 +795,8 @@ static void MapCycleSubFilter() {
 
     ApplyMapFilter();
 
-    std::wstring msg = g_mapSubFilterNames[static_cast<int>(g_mapSubFilter)];
-    msg += L", " + std::to_wstring(g_mapFiltered.size()) + L" markers";
+    std::wstring msg = GetMapSubFilterName(g_mapSubFilter);
+    msg += L", " + std::to_wstring(g_mapFiltered.size()) + L" " + TR("markers");
     if (!g_mapFiltered.empty()) {
         int idx = g_mapFiltered[0];
         if (idx >= 0 && idx < static_cast<int>(g_mapMarkers.size())) {
@@ -801,7 +809,7 @@ static void MapCycleSubFilter() {
 // --- Placer un marqueur personnalisé (P) ---
 static void MapPlaceCustomMarker() {
     if (!g_mapReady.load() || g_mapFiltered.empty() || g_mapIndex < 0) {
-        Speak(L"No marker selected");
+        Speak(TR("No marker selected"));
         return;
     }
 
@@ -815,7 +823,7 @@ static void MapPlaceCustomMarker() {
         g_customMarkerActive = false;
         g_customMarkerName.clear();
         g_customMarkerPos = {0, 0, 0};
-        Speak(L"Marker removed");
+        Speak(TR("Marker removed"));
         return;
     }
 
@@ -824,13 +832,13 @@ static void MapPlaceCustomMarker() {
     g_customMarkerFormID = m.formID;
     g_customMarkerActive = true;
 
-    Speak(L"Marker placed on " + m.name);
+    Speak(TR("Marker placed on") + L" " + m.name);
 }
 
 // --- Cycler les filtres ---
 static void MapCycleFilter() {
     if (!g_mapReady.load()) {
-        Speak(L"Loading markers");
+        Speak(TR("Loading markers"));
         return;
     }
 
@@ -840,8 +848,8 @@ static void MapCycleFilter() {
 
     ApplyMapFilter();
 
-    std::wstring msg = g_mapFilterNames[static_cast<int>(g_mapFilter)];
-    msg += L", " + std::to_wstring(g_mapFiltered.size()) + L" markers";
+    std::wstring msg = GetMapFilterName(g_mapFilter);
+    msg += L", " + std::to_wstring(g_mapFiltered.size()) + L" " + TR("markers");
     if (!g_mapFiltered.empty()) {
         int idx = g_mapFiltered[0];
         if (idx >= 0 && idx < static_cast<int>(g_mapMarkers.size())) {
@@ -854,7 +862,7 @@ static void MapCycleFilter() {
 // --- Cycler les filtres dans l'autre sens (pour la manette) ---
 static void MapCyclePrevFilter() {
     if (!g_mapReady.load()) {
-        Speak(L"Loading markers");
+        Speak(TR("Loading markers"));
         return;
     }
 
@@ -865,8 +873,8 @@ static void MapCyclePrevFilter() {
 
     ApplyMapFilter();
 
-    std::wstring msg = g_mapFilterNames[static_cast<int>(g_mapFilter)];
-    msg += L", " + std::to_wstring(g_mapFiltered.size()) + L" markers";
+    std::wstring msg = GetMapFilterName(g_mapFilter);
+    msg += L", " + std::to_wstring(g_mapFiltered.size()) + L" " + TR("markers");
     if (!g_mapFiltered.empty()) {
         int idx = g_mapFiltered[0];
         if (idx >= 0 && idx < static_cast<int>(g_mapMarkers.size())) {
@@ -879,7 +887,7 @@ static void MapCyclePrevFilter() {
 // --- Cycler les sous-filtres dans l'autre sens (pour la manette) ---
 static void MapCyclePrevSubFilter() {
     if (!g_mapReady.load()) {
-        Speak(L"Loading markers");
+        Speak(TR("Loading markers"));
         return;
     }
 
@@ -889,8 +897,8 @@ static void MapCyclePrevSubFilter() {
 
     ApplyMapFilter();
 
-    std::wstring msg = g_mapSubFilterNames[static_cast<int>(g_mapSubFilter)];
-    msg += L", " + std::to_wstring(g_mapFiltered.size()) + L" markers";
+    std::wstring msg = GetMapSubFilterName(g_mapSubFilter);
+    msg += L", " + std::to_wstring(g_mapFiltered.size()) + L" " + TR("markers");
     if (!g_mapFiltered.empty()) {
         int idx = g_mapFiltered[0];
         if (idx >= 0 && idx < static_cast<int>(g_mapMarkers.size())) {
@@ -904,7 +912,7 @@ static void MapCyclePrevSubFilter() {
 // Premier Entrée = demande confirmation, deuxième Entrée = confirme
 static void MapFastTravel() {
     if (!g_mapReady.load() || g_mapFiltered.empty() || g_mapIndex < 0) {
-        Speak(L"No marker selected");
+        Speak(TR("No marker selected"));
         return;
     }
 
@@ -914,19 +922,19 @@ static void MapFastTravel() {
     auto& m = g_mapMarkers[filteredIdx];
 
     if (!m.canTravelTo) {
-        Speak(L"Cannot fast travel here");
+        Speak(TR("Cannot fast travel here"));
         return;
     }
 
     if (m.formID == 0) {
-        Speak(L"No valid destination");
+        Speak(TR("No valid destination"));
         return;
     }
 
     // Premier appui : demander confirmation
     if (!g_mapFastTravelConfirm) {
         g_mapFastTravelConfirm = true;
-        Speak(L"Fast travel to " + m.name + L"? Press Enter to confirm");
+        Speak(TR("Fast travel to") + L" " + m.name + L"? " + TR("Press Enter to confirm"));
         return;
     }
 
@@ -938,14 +946,14 @@ static void MapFastTravel() {
     auto* vm = RE::BSScript::Internal::VirtualMachine::GetSingleton();
     if (!vm) {
         LOG("MapMenu: VM not available");
-        Speak(L"Error: VM not available");
+        Speak(TR("Error: VM not available"));
         return;
     }
 
     auto* quest = RE::TESForm::LookupByEditorID<RE::TESQuest>("SkyrimTTS_AutoWalkQuest");
     if (!quest) {
         LOG("MapMenu: SkyrimTTS_AutoWalkQuest quest not found");
-        Speak(L"Error: autowalk quest not found");
+        Speak(TR("Error: autowalk quest not found"));
         return;
     }
 
@@ -958,7 +966,7 @@ static void MapFastTravel() {
     auto handle = policy->GetHandleForObject(RE::FormType::Quest, quest);
     if (handle == policy->EmptyHandle()) {
         LOG("MapMenu: failed to get quest handle");
-        Speak(L"Error: quest handle failed");
+        Speak(TR("Error: quest handle failed"));
         return;
     }
 
@@ -971,7 +979,7 @@ static void MapFastTravel() {
         args,
         callback);
 
-    Speak(L"Traveling to " + m.name);
+    Speak(TR("Traveling to") + L" " + m.name);
 }
 
 // --- Ouverture de la carte ---
@@ -996,7 +1004,7 @@ static void OnMapOpen() {
 
             BuildMapMarkerList();
             int count = static_cast<int>(g_mapFiltered.size());
-            SpeakQueue(std::to_wstring(count) + L" map markers");
+            SpeakQueue(std::to_wstring(count) + L" " + TR("map markers"));
 
             // Auto-select first marker
             if (!g_mapFiltered.empty()) {

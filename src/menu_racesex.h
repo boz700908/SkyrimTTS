@@ -31,7 +31,7 @@ static std::wstring GetKeyName(std::uint32_t keyCode)
     };
     auto it = kKeyNames.find(keyCode);
     if (it != kKeyNames.end()) return it->second;
-    return L"Key " + std::to_wstring(keyCode);
+    return TR("Key") + L" " + std::to_wstring(keyCode);
 }
 
 // Retourne les hints de navigation pour le menu RaceSex
@@ -40,13 +40,13 @@ static std::wstring GetKeyName(std::uint32_t keyCode)
 static std::wstring BuildRaceSexHints()
 {
     std::wstring cached;
-    cached = L". Ctrl Left / Right: change category";
+    cached = L". " + TR("Ctrl Left / Right: change category");
     auto* cm = RE::ControlMap::GetSingleton();
     if (cm) {
         constexpr std::uint32_t kInvalid = 0xFF;
         const std::uint32_t doneKey = cm->GetMappedKey("XButton", RE::INPUT_DEVICE::kKeyboard, RE::UserEvents::INPUT_CONTEXT_ID::kItemMenu);
         if (doneKey != kInvalid)
-            cached += L", " + GetKeyName(doneKey) + L": confirm";
+            cached += L", " + GetKeyName(doneKey) + L": " + TR("confirm");
     }
     return cached;
 }
@@ -220,7 +220,7 @@ static void AnnounceRaceSexChangeImpl() {
         if (!sliderLabel.empty() && (sliderLabel != g_lastRaceSexSliderLabel || sliderVal != g_lastRaceSexSliderValue)) {
             std::wstring msg;
             if (isSexSlider) {
-                msg = (sex == 1) ? L"Female" : L"Male";
+                msg = (sex == 1) ? TR("Female") : TR("Male");
             } else {
                 msg = sliderLabel;
                 if (sliderVal >= 0.0)
