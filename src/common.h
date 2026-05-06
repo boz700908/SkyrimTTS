@@ -687,6 +687,118 @@ static std::wstring ResolveUIString([[maybe_unused]] RE::GFxMovieView* movie, co
     return Utf8ToWString(raw);
 }
 
+// ---------------- Plugin-owned translations (TR helper) ----------------
+//
+// Système de traduction des textes hardcodés du plugin (annonces vocales,
+// libellés de raccourcis, etc.). Indépendant du système Scaleform $cles
+// (g_fileTranslations + g_builtinTranslations) qui sert aux clés du jeu.
+//
+// Usage : Speak(TR("Inventory open"));
+//
+// Le texte anglais EST la clé. Si la traduction manque, on retourne
+// directement l'anglais en wstring → aucune régression possible si le
+// fichier de traduction n'est pas déployé ou est incomplet.
+//
+// Fichier source : Data/Interface/Translations/SkyrimNVDA_<LANGUAGE>.txt
+// Format : UTF-16 LE BOM, "<clé anglaise><TAB><traduction>" par ligne.
+// Lignes vides ou commençant par '//' ignorées.
+
+static std::unordered_map<std::string, std::wstring> g_pluginTranslations;
+
+// Charge le fichier de traduction du plugin (SkyrimNVDA_<LANG>.txt) selon
+// la langue déjà détectée par LoadTranslationFile(). Doit être appelé
+// APRÈS LoadTranslationFile() pour que g_currentLanguage soit valide.
+static void LoadPluginTranslations() {
+    g_pluginTranslations.clear();
+
+    auto tryLoad = [](const std::string& path) -> int {
+        RE::BSResourceNiBinaryStream stream(path.c_str());
+        if (!stream.good()) return -1;
+
+        auto fileSize = static_cast<size_t>(stream.stream->totalSize);
+        if (fileSize == 0) return 0;
+        std::vector<char> buf(fileSize);
+        stream.read(buf.data(), static_cast<std::uint32_t>(fileSize));
+
+        std::wstring content;
+        if (fileSize >= 2 &&
+            static_cast<unsigned char>(buf[0]) == 0xFF &&
+            static_cast<unsigned char>(buf[1]) == 0xFE) {
+            const wchar_t* data = reinterpret_cast<const wchar_t*>(buf.data() + 2);
+            size_t wlen = (fileSize - 2) / sizeof(wchar_t);
+            content.assign(data, wlen);
+        } else if (fileSize >= 3 &&
+                   static_cast<unsigned char>(buf[0]) == 0xEF &&
+                   static_cast<unsigned char>(buf[1]) == 0xBB &&
+                   static_cast<unsigned char>(buf[2]) == 0xBF) {
+            content = Utf8ToWString(std::string(buf.begin() + 3, buf.end()));
+        } else {
+            content = Utf8ToWString(std::string(buf.begin(), buf.end()));
+        }
+
+        std::wstringstream ss(content);
+        std::wstring line;
+        int count = 0;
+        while (std::getline(ss, line)) {
+            if (!line.empty() && line.back() == L'\r') line.pop_back();
+            if (line.empty()) continue;
+            if (line.size() >= 2 && line[0] == L'/' && line[1] == L'/') continue;
+            // Format : "clé anglaise<TAB>traduction"
+            size_t tab = line.find(L'\t');
+            if (tab == std::wstring::npos) continue;
+            std::wstring key = line.substr(0, tab);
+            std::wstring value = line.substr(tab + 1);
+            // trim whitespace
+            while (!key.empty() && (key.back() == L' ' || key.back() == L'\t')) key.pop_back();
+            while (!value.empty() && (value.back() == L' ' || value.back() == L'\t')) value.pop_back();
+            size_t valStart = 0;
+            while (valStart < value.size() && (value[valStart] == L' ' || value[valStart] == L'\t')) ++valStart;
+            value = value.substr(valStart);
+            if (key.empty() || value.empty()) continue;
+            g_pluginTranslations[WStringToUtf8(key)] = value;
+            ++count;
+        }
+        return count;
+    };
+
+    // Langue courante
+    std::string langLower = g_currentLanguage;
+    for (char& c : langLower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    std::string pathLang = "Interface\\Translations\\SkyrimNVDA_" + langLower + ".txt";
+    int loaded = tryLoad(pathLang);
+    if (loaded >= 0) {
+        LOG("LoadPluginTranslations: '{}' -> {} entries", pathLang, loaded);
+        return;
+    }
+
+    // Si la langue courante est l'anglais, pas la peine d'essayer un fallback
+    // (anglais = défaut, et les clés anglaises servent déjà de fallback dans TR()).
+    if (g_currentLanguage == "ENGLISH") {
+        LOG("LoadPluginTranslations: no file for ENGLISH (English keys are the fallback) -> 0 entries");
+        return;
+    }
+
+    LOG("LoadPluginTranslations: '{}' not found, using English keys as fallback", pathLang);
+}
+
+// Traduit un texte hardcodé du plugin. La clé EST le texte anglais.
+// Si la clé n'a pas de traduction dans la langue courante, retourne le
+// texte anglais en wstring → aucune perte d'information.
+static std::wstring TR(const char* englishKey) {
+    if (!englishKey || !*englishKey) return L"";
+    auto it = g_pluginTranslations.find(englishKey);
+    if (it != g_pluginTranslations.end()) return it->second;
+    return Utf8ToWString(englishKey);
+}
+
+// Variante prenant un std::string (utile pour des clés construites dynamiquement).
+static std::wstring TR(const std::string& englishKey) {
+    if (englishKey.empty()) return L"";
+    auto it = g_pluginTranslations.find(englishKey);
+    if (it != g_pluginTranslations.end()) return it->second;
+    return Utf8ToWString(englishKey);
+}
+
 // ---------------- Helpers texte partagés ----------------
 
 // Strips GFx/HTML markup (tags <...>, blocks {...}, &nbsp;) for speech synthesis

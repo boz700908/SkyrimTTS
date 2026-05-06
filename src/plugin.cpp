@@ -245,7 +245,7 @@ public:
                 g_lastRaceSexSex = -1;
                 g_lastRaceSexNameEntryActive = true;  // true au départ pour ne pas lire "Enter your name" à l'ouverture
                 g_raceSexTickCount = 0;
-                Speak(L"Character creation");
+                Speak(TR("Character creation"));
                 QueueRaceSexRead();
                 StartRaceSexPolling();
             } else {
@@ -261,7 +261,7 @@ public:
                 g_lastInvCat.clear();
                 g_lastInvItemAnnounce.clear();
                 g_lastInvDesc.clear();
-                Speak(L"Inventory open");
+                Speak(TR("Inventory open"));
                 QueueInventoryRead();
                 StartInventoryPolling();
             } else {
@@ -277,7 +277,7 @@ public:
                 g_lastContainerCat.clear();
                 g_lastContainerItemAnnounce.clear();
                 g_lastContainerSide.clear();
-                Speak(L"Container open");
+                Speak(TR("Container open"));
                 QueueContainerRead();
                 StartContainerPolling();
 
@@ -325,7 +325,7 @@ public:
                 g_lastBarterItemAnnounce.clear();
                 g_lastBarterSide.clear();
                 g_lastBarterDesc.clear();
-                Speak(L"Barter menu open");
+                Speak(TR("Barter menu open"));
                 QueueBarterRead();
                 StartBarterPolling();
             } else {
@@ -347,7 +347,7 @@ public:
                 // (notification, tutoriel, furtivité) pour que l'ouverture du menu
                 // soit clairement entendue. Le firstRead interne au menu utilise
                 // ensuite SpeakQueue pour enchaîner après celle-ci.
-                Speak(L"Crafting menu open");
+                Speak(TR("Crafting menu open"));
                 StartCraftingPolling();
             } else {
                 g_craftingOpen.store(false);
@@ -360,7 +360,7 @@ public:
                 g_consoleOpen.store(true);
                 g_lastConsoleEntry.clear();
                 g_lastConsoleMessage.clear();
-                Speak(L"Console");
+                Speak(TR("Console"));
             } else {
                 g_consoleOpen.store(false);
             }
@@ -408,7 +408,7 @@ public:
                 g_lastGiftItemAnnounce.clear();
                 g_lastGiftItemName.clear();
                 g_lastGiftItemCount = 0;
-                Speak(L"Gift menu open");
+                Speak(TR("Gift menu open"));
                 QueueGiftRead();
                 StartGiftPolling();
             } else {
@@ -458,7 +458,7 @@ public:
                 g_lastJournalTab = -1;
                 g_lastJournalTitle.clear();
                 g_lastJournalDesc.clear();
-                Speak(L"Journal open");
+                Speak(TR("Journal open"));
                 QueueJournalRead();
                 StartJournalPolling();
             } else {
@@ -485,7 +485,7 @@ public:
                 g_lastMagicEquipState = -1;
                 g_lastMagicFavorite   = -1;
                 g_lastMagicEffects.clear();
-                Speak(L"Magic menu open");
+                Speak(TR("Magic menu open"));
                 QueueMagicRead();
                 StartMagicPolling();
             } else {
@@ -510,7 +510,7 @@ public:
         if (e->menuName == RE::MapMenu::MENU_NAME) {
             if (e->opening) {
                 g_tweenForeground.store(false);
-                Speak(L"Map");
+                Speak(TR("Map"));
                 OnMapOpen();
             } else {
                 OnMapClose();
@@ -528,7 +528,7 @@ public:
                 g_tweenForeground.store(true);
                 g_lastTweenFrame.store(-1);
                 g_tweenLevelAnnounced.store(false);
-                Speak(L"Cross menu");
+                Speak(TR("Cross menu"));
                 StartTweenPolling();
             } else {
                 g_tweenOpen.store(false);
@@ -541,7 +541,7 @@ public:
             if (e->opening) {
                 g_levelUpOpen.store(true);
                 g_levelUpSelection.store(0);
-                Speak(L"Level gained! Choose your improvement.");
+                Speak(TR("Level gained! Choose your improvement."));
                 AnnounceLevelUpSelection(true);
             } else {
                 g_levelUpOpen.store(false);
@@ -560,7 +560,7 @@ public:
                 g_favOpen.store(true);
                 g_lastFavItemAnnounce.clear();
                 g_lastFavCategory.clear();
-                Speak(L"Favorites");
+                Speak(TR("Favorites"));
                 QueueFavRead();
                 StartFavPolling();
             } else {
@@ -573,7 +573,7 @@ public:
             if (e->opening) {
                 g_uiListMenuOpen.store(true);
                 g_lastUIListItem.clear();
-                Speak(L"Activate menu");
+                Speak(TR("Activate menu"));
                 StartUIListPolling();
             } else {
                 g_uiListMenuOpen.store(false);
@@ -630,7 +630,7 @@ public:
                 g_lastSaveLoadItem.clear();
                 g_lastConfirmText.clear();
 
-                SpeakQueue(L"Main menu open");
+                SpeakQueue(TR("Main menu open"));
                 QueueMainMenuRead();
                 StartMainMenuPolling();
             } else {
@@ -789,7 +789,7 @@ static void ToggleSneakGamepad() {
     if (state) {
         state->actorState1.sneaking = wasSneaking ? 0 : 1;
     }
-    Speak(wasSneaking ? L"Standing" : L"Sneaking");
+    Speak(wasSneaking ? TR("Standing") : TR("Sneaking"));
     LOG("GAMEPAD: ToggleSneak → {}", wasSneaking ? "Standing" : "Sneaking");
 }
 
@@ -898,7 +898,7 @@ public:
                         // Sinon, annuler l'autowalk
                         else if (g_autoWalking.load()) {
                             LOG("GAMEPAD: Left stick movement during autowalk → stopping");
-                            Speak(L"Stopping");
+                            Speak(TR("Stopping"));
                             StopAutoWalk();
                         }
                     }
@@ -1362,7 +1362,7 @@ public:
                             code == RE::BSKeyboardDevice::Keys::kA ||
                             code == RE::BSKeyboardDevice::Keys::kS ||
                             code == RE::BSKeyboardDevice::Keys::kD) {
-                            Speak(L"Stopping");
+                            Speak(TR("Stopping"));
                             StopAutoWalk();
                         }
                     }
@@ -1396,10 +1396,10 @@ public:
                     if (camera) {
                         if (camera->IsInFirstPerson()) {
                             camera->ForceThirdPerson();
-                            Speak(L"Third person");
+                            Speak(TR("Third person"));
                         } else {
                             camera->ForceFirstPerson();
-                            Speak(L"First person");
+                            Speak(TR("First person"));
                         }
                     }
                 }
@@ -1430,10 +1430,10 @@ public:
                 (g_invOpen.load(std::memory_order_relaxed) || g_containerOpen.load(std::memory_order_relaxed) || g_barterOpen.load(std::memory_order_relaxed))) {
                 // col 2 = itemNameColumn (state1=nom, state2=équipé, state3=volé, state4=enchanté)
                 // col 4 = weightColumn, col 5 = valueColumn
-                if (code == RE::BSKeyboardDevice::Keys::kNum1) { SkyUISortColumn(2, 2, L"Sort by equipped"); continue; }
-                if (code == RE::BSKeyboardDevice::Keys::kNum2) { SkyUISortColumn(2, 1, L"Sort by name"); continue; }
-                if (code == RE::BSKeyboardDevice::Keys::kNum3) { SkyUISortColumn(4, 1, L"Sort by weight"); continue; }
-                if (code == RE::BSKeyboardDevice::Keys::kNum4) { SkyUISortColumn(5, 1, L"Sort by value"); continue; }
+                if (code == RE::BSKeyboardDevice::Keys::kNum1) { SkyUISortColumn(2, 2, TR("Sort by equipped")); continue; }
+                if (code == RE::BSKeyboardDevice::Keys::kNum2) { SkyUISortColumn(2, 1, TR("Sort by name")); continue; }
+                if (code == RE::BSKeyboardDevice::Keys::kNum3) { SkyUISortColumn(4, 1, TR("Sort by weight")); continue; }
+                if (code == RE::BSKeyboardDevice::Keys::kNum4) { SkyUISortColumn(5, 1, TR("Sort by value")); continue; }
             }
 
             // Navigation logique dans l'arbre de perks (touches 1-4) en mode
@@ -1549,14 +1549,15 @@ public:
 
         if (nextPos == 0) return RE::BSEventNotifyControl::kContinue;
 
-        // Déterminer le symbole
-        std::wstring symbol = L"Position " + std::to_wstring(nextPos);
+        // Déterminer le symbole. On garde les noms anglais comme cles (stables)
+        // et on les passe par TR au moment de l'annonce vocale.
+        std::wstring symbolKey = L"Position " + std::to_wstring(nextPos);
 
         if (foundScript == "defaultPuzzlePillarScript") {
             // Piliers : toujours Eagle/Snake/Whale
-            if (nextPos == 1) symbol = L"Eagle";
-            else if (nextPos == 2) symbol = L"Snake";
-            else if (nextPos == 3) symbol = L"Whale";
+            if (nextPos == 1) symbolKey = L"Eagle";
+            else if (nextPos == 2) symbolKey = L"Snake";
+            else if (nextPos == 3) symbolKey = L"Whale";
         } else if (foundScript == "HallofStoriesDiskScript") {
             // Anneaux : chercher via le linkedRef (serrure)
             auto* linkedRef = ref->GetLinkedRef(nullptr);
@@ -1576,16 +1577,17 @@ public:
                 };
                 for (auto& ds : table) {
                     if (ds.id == keyholeID) {
-                        if (nextPos == 1) symbol = ds.s1;
-                        else if (nextPos == 2) symbol = ds.s2;
-                        else if (nextPos == 3) symbol = ds.s3;
+                        if (nextPos == 1) symbolKey = ds.s1;
+                        else if (nextPos == 2) symbolKey = ds.s2;
+                        else if (nextPos == 3) symbolKey = ds.s3;
                         break;
                     }
                 }
             }
         }
 
-        SpeakQueue(symbol);
+        // Traduction au moment de la vocalisation (cle = symbole anglais).
+        SpeakQueue(TR(WStringToUtf8(symbolKey)));
 
         return RE::BSEventNotifyControl::kContinue;
     }
@@ -1990,6 +1992,10 @@ SKSEPluginLoad(const SKSE::LoadInterface* skse) {
             }
             LoadTranslationFile(); // fallback pour les clés absentes du BSScaleformTranslator
 
+            // Traductions du plugin lui-même (textes hardcodés des annonces).
+            // Doit suivre LoadTranslationFile() qui détecte sLanguage.
+            LoadPluginTranslations();
+
             // Traductions des mods custom : charge Interface\translations\<mod>_<LANG>.txt
             // (fallback sur english.txt si la langue n'est pas traduite)
             LoadExtraTranslationFile("ShowStats");       // Skyrim Character Sheet stats
@@ -2030,7 +2036,7 @@ SKSEPluginLoad(const SKSE::LoadInterface* skse) {
             // pas encore initialise ce champ correctement.
             GamepadHook::InstallHooks();
 
-            Speak(L"Plugin loaded");
+            Speak(TR("Plugin loaded"));
             LOG("kDataLoaded: listeners registered");
         }
 
