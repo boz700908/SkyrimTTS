@@ -120,6 +120,11 @@ inline SpeechQueueState& GetSpeechQueue() {
     return s;
 }
 
+// Forward declaration — la définition de WStringToUtf8 vient plus bas
+// dans le fichier, mais on l'utilise dans Speak/SpeakQueue pour logger
+// tout ce qui est envoyé à NVDA.
+static std::string WStringToUtf8(const std::wstring& w);
+
 // Interrompt la synthèse en cours puis lit le texte.
 // Non-bloquant : pousse dans la queue worker et retourne immédiatement.
 // Si plusieurs Speak() sont appelés en rafale, seul le dernier texte est
@@ -129,6 +134,7 @@ static void Speak(const wchar_t* w) {
     if (!w || !*w) return;
     auto& q = GetSpeechQueue();
     std::wstring norm = NormalizeForSpeech(w);
+    LOG("[SPEAK]      \"{}\"", WStringToUtf8(norm));
     {
         std::lock_guard<std::mutex> lock(q.mutex);
         q.latest = std::move(norm);
@@ -141,6 +147,7 @@ static void Speak(const std::wstring& w) {
     if (w.empty()) return;
     auto& q = GetSpeechQueue();
     std::wstring norm = NormalizeForSpeech(w);
+    LOG("[SPEAK]      \"{}\"", WStringToUtf8(norm));
     {
         std::lock_guard<std::mutex> lock(q.mutex);
         q.latest = std::move(norm);
@@ -155,6 +162,7 @@ static void SpeakQueue(const std::wstring& w) {
     if (w.empty()) return;
     auto& q = GetSpeechQueue();
     std::wstring norm = NormalizeForSpeech(w);
+    LOG("[SPEAKQUEUE] \"{}\"", WStringToUtf8(norm));
     {
         std::lock_guard<std::mutex> lock(q.mutex);
         q.queued.push(std::move(norm));
