@@ -10,6 +10,7 @@ static std::wstring     g_lastContainerItemAnnounce;
 static std::wstring     g_lastContainerSide;
 static std::wstring     g_lastContainerItemName;
 static int              g_lastContainerItemCount{0};
+static std::wstring     g_lastContainerDesc;
 static bool             g_containerQuantityOpen{false};
 static int              g_lastContainerQuantity{0};
 // Pointeur RE::ItemList::Item* de l'entree selectionnee — permet de detecter
@@ -31,6 +32,7 @@ struct ContainerSnapshot {
     bool         atDivider{false};
     bool         stolen{false};     // item appartenant a un PNJ/faction (pas au joueur)
     const void*  itemPtr{nullptr};  // cf. g_lastContainerItemPtr
+    std::wstring descText;          // description / effets / enchantements (depuis ItemCard.infoText)
 };
 
 static bool ReadContainerSnapshot(ContainerSnapshot& snap) {
@@ -84,6 +86,37 @@ static bool ReadContainerSnapshot(ContainerSnapshot& snap) {
         if (hasDivider && hasCatIdx && divider > 0) {
             snap.isContainerSide = (catIdx < divider);
             snap.atDivider       = (catIdx == divider);
+        }
+    }
+
+    // Read description/effects/enchantments from ItemCard infoText (C++ side)
+    {
+        auto* contMenu = static_cast<RE::ContainerMenu*>(menu.get());
+        if (contMenu) {
+            auto& rd = contMenu->GetRuntimeData();
+            if (rd.itemCard && rd.itemCard->infoText.c_str()) {
+                std::string raw = rd.itemCard->infoText.c_str();
+                if (!raw.empty()) {
+                    std::string norm;
+                    for (size_t i = 0; i < raw.size(); ) {
+                        if (raw[i] == '\r' && i + 1 < raw.size() && raw[i + 1] == '\n') { norm += ", "; i += 2; }
+                        else if (raw[i] == '\n' || raw[i] == '\r') { norm += ", "; ++i; }
+                        else { norm += raw[i++]; }
+                    }
+                    auto trimComma = [](std::string& s) {
+                        size_t start = 0;
+                        while (start < s.size() && (s[start] == ' ' || s[start] == ',')) ++start;
+                        s = s.substr(start);
+                        while (!s.empty() && (s.back() == ' ' || s.back() == ',')) s.pop_back();
+                    };
+                    trimComma(norm);
+                    for (size_t p = norm.find(", ,"); p != std::string::npos; p = norm.find(", ,"))
+                        norm.replace(p, 3, ",");
+                    trimComma(norm);
+                    if (!norm.empty())
+                        snap.descText = StripMarkupForSpeech(Utf8ToWString(norm));
+                }
+            }
         }
     }
 
@@ -269,6 +302,11 @@ static void AnnounceContainerChangeImpl() {
         g_lastContainerItemName = snap.itemText;
         g_lastContainerItemCount = snap.count;
         g_lastContainerItemPtr = snap.itemPtr;
+        g_lastContainerDesc.clear();
+    }
+    if (!snap.descText.empty() && snap.descText != g_lastContainerDesc) {
+        SpeakQueue(snap.descText);
+        g_lastContainerDesc = snap.descText;
     }
 }
 
