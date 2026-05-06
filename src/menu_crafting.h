@@ -26,6 +26,99 @@ struct CraftingSnapshot {
     bool         inCategoryMode{true};  // true = dans les catégories, false = dans les items
 };
 
+// Reformate la chaîne SkyUI des matériaux requis pour clarifier "requis vs possédé".
+//
+// Format SkyUI brut (UpdateIngredients) : "Required: [N ]Name[ (M)], [N ]Name[ (M)], ..."
+//   - N (préfixe) = quantité requise. ABSENT si requis = 1 (vanilla SkyUI design).
+//   - (M) (suffixe) = quantité possédée par le joueur. Présent seulement si M >= 1.
+//
+// Exemples bruts → reformulés :
+//   "Required: Leather"          → "Required: 1 Leather"
+//   "Required: Leather (5)"      → "Required: 1 Leather, you have 5"
+//   "Required: 4 Leather (2)"    → "Required: 4 Leather, you have 2"
+//   "Required: 4 Leather, Iron Ingot (5)" → "Required: 4 Leather, 1 Iron Ingot, you have 5"
+//
+// Sans cette reformulation, "Leather (5)" laisse croire que 5 cuirs sont requis
+// alors que c'est l'inventaire du joueur — bug rapporté par les utilisateurs aveugles.
+static std::wstring ReformatCraftingIngredients(const std::wstring& raw) {
+    if (raw.empty()) return raw;
+
+    // Séparer label (ex: "Required") du reste après le premier ":"
+    size_t colon = raw.find(L':');
+    std::wstring label;
+    std::wstring body;
+    if (colon != std::wstring::npos) {
+        label = raw.substr(0, colon);
+        body = raw.substr(colon + 1);
+        // trim espaces de tête du body
+        while (!body.empty() && body.front() == L' ') body.erase(body.begin());
+    } else {
+        body = raw;
+    }
+
+    // Découper sur ", "
+    std::vector<std::wstring> tokens;
+    {
+        size_t pos = 0;
+        while (pos < body.size()) {
+            size_t next = body.find(L", ", pos);
+            if (next == std::wstring::npos) {
+                tokens.push_back(body.substr(pos));
+                break;
+            }
+            tokens.push_back(body.substr(pos, next - pos));
+            pos = next + 2;
+        }
+    }
+
+    // Pour chaque token : extraire (N requis, Name, M possédé)
+    std::wstring result;
+    if (!label.empty()) result = label + L": ";
+    for (size_t i = 0; i < tokens.size(); ++i) {
+        std::wstring tok = tokens[i];
+        // trim
+        while (!tok.empty() && tok.front() == L' ') tok.erase(tok.begin());
+        while (!tok.empty() && tok.back()  == L' ') tok.pop_back();
+        if (tok.empty()) continue;
+
+        // Extraire (M) à la fin si présent
+        std::wstring owned;
+        if (!tok.empty() && tok.back() == L')') {
+            size_t openParen = tok.rfind(L" (");
+            if (openParen != std::wstring::npos) {
+                std::wstring inside = tok.substr(openParen + 2, tok.size() - openParen - 3);
+                bool allDigits = !inside.empty();
+                for (wchar_t c : inside) if (c < L'0' || c > L'9') { allDigits = false; break; }
+                if (allDigits) {
+                    owned = inside;
+                    tok = tok.substr(0, openParen);
+                }
+            }
+        }
+
+        // Extraire N préfixe si présent (chiffres + espace)
+        std::wstring required = L"1";
+        size_t firstSpace = tok.find(L' ');
+        if (firstSpace != std::wstring::npos) {
+            std::wstring maybeNum = tok.substr(0, firstSpace);
+            bool allDigits = !maybeNum.empty();
+            for (wchar_t c : maybeNum) if (c < L'0' || c > L'9') { allDigits = false; break; }
+            if (allDigits) {
+                required = maybeNum;
+                tok = tok.substr(firstSpace + 1);
+            }
+        }
+
+        // Composer le token reformaté
+        if (i > 0) result += L", ";
+        result += required + L" " + tok;
+        if (!owned.empty())
+            result += L", you have " + owned;
+    }
+
+    return result;
+}
+
 // Lit le texte d'enchantement (effets) depuis l'ItemCard.
 // L'ItemCard du crafting bascule via gotoAndStop entre frames Apparel/Weapon/Apparel_Enchanted/Weapon_Enchanted.
 // On essaie les deux labels (armure/arme), htmlText puis text en fallback.
@@ -89,10 +182,10 @@ static bool ReadCraftingSnapshotSimple(CraftingSnapshot& snap) {
     snap.weaponDamageText = StripMarkupForSpeech(snap.weaponDamageText);
     snap.apparelArmorText = StripMarkupForSpeech(snap.apparelArmorText);
 
-    // Matériaux requis
+    // Matériaux requis (reformatés pour clarifier requis vs possédé)
     std::string ingredients;
     if (GetGFxString(movie, "_root.Menu.ItemInfoHolder.AdditionalDescriptionHolder.AdditionalDescription.text", ingredients) && !ingredients.empty())
-        snap.ingredientsText = StripMarkupForSpeech(Utf8ToWString(ingredients));
+        snap.ingredientsText = ReformatCraftingIngredients(StripMarkupForSpeech(Utf8ToWString(ingredients)));
 
     // Effets enchantements (sacs à dos modés, items enchantés)
     ReadCraftingEnchantment(movie, snap.enchantmentText);
@@ -175,12 +268,12 @@ static bool ReadCraftingSnapshotForge(CraftingSnapshot& snap) {
     snap.weaponDamageText = StripMarkupForSpeech(snap.weaponDamageText);
     snap.apparelArmorText = StripMarkupForSpeech(snap.apparelArmorText);
 
-    // Matériaux requis
+    // Matériaux requis (reformatés pour clarifier requis vs possédé)
     std::string ingredients;
     if (GetGFxString(movie, "_root.Menu.AdditionalDescriptionHolder.AdditionalDescription.text", ingredients) && !ingredients.empty())
-        snap.ingredientsText = StripMarkupForSpeech(Utf8ToWString(ingredients));
+        snap.ingredientsText = ReformatCraftingIngredients(StripMarkupForSpeech(Utf8ToWString(ingredients)));
     else if (GetGFxString(movie, "_root.Menu.ItemInfoHolder.AdditionalDescriptionHolder.AdditionalDescription.text", ingredients) && !ingredients.empty())
-        snap.ingredientsText = StripMarkupForSpeech(Utf8ToWString(ingredients));
+        snap.ingredientsText = ReformatCraftingIngredients(StripMarkupForSpeech(Utf8ToWString(ingredients)));
 
     // Effets enchantements (sacs à dos modés, items enchantés)
     ReadCraftingEnchantment(movie, snap.enchantmentText);
