@@ -1,5 +1,18 @@
 ScriptName SkyrimTTS_MCM extends SKI_ConfigBase
 
+; ===========================================================================
+; Localisation des libellés du MCM
+;
+; Tous les libellés visibles ($... préfixés) sont résolus automatiquement par
+; SkyUI à partir de Data/Interface/Translations/SkyrimNVDA_<LANGUE>.txt en
+; fonction de sLanguage:General dans Skyrim.ini. Le fichier _ENGLISH.txt sert
+; aussi de fallback si la langue du joueur n'est pas traduite.
+;
+; IMPORTANT : ne jamais retirer le ModName "SkyrimNVDA" — c'est ce nom qui
+; détermine le préfixe du fichier de traduction. Si on le change, SkyUI
+; cherchera SkyrimNVDA_<LANG>.txt avec un autre nom et la traduction casse.
+; ===========================================================================
+
 ; === Réglages sauvegardés ===
 bool property StealthAnnounce = true auto
 bool property TeleportEnabled = true auto
@@ -66,15 +79,15 @@ int oidGpLockEnemy
 event OnConfigInit()
     ModName = "SkyrimNVDA"
     Pages = new string[4]
-    Pages[0] = "General"
-    Pages[1] = "Audio"
-    Pages[2] = "Controls"
-    Pages[3] = "Gamepad"
+    Pages[0] = "$MCM_PageGeneral"
+    Pages[1] = "$MCM_PageAudio"
+    Pages[2] = "$MCM_PageControls"
+    Pages[3] = "$MCM_PageGamepad"
 endEvent
 
 ; === Version — incrémenter à chaque changement de structure du MCM ===
 int function GetVersion()
-    return 7
+    return 8
 endFunction
 
 event OnVersionUpdate(int a_version)
@@ -118,6 +131,17 @@ event OnVersionUpdate(int a_version)
         GpIdxPrimary = 6
         GpIdxRemoteActivate = 4
     endIf
+    if a_version >= 8
+        ; Migration vers libellés traduisibles ($cles). Re-affecter les noms
+        ; de pages avec le préfixe $... pour que SkyUI les résolve via
+        ; SkyrimNVDA_<LANG>.txt. Les noms anglais en dur de v5/7 deviennent
+        ; obsolètes.
+        Pages = new string[4]
+        Pages[0] = "$MCM_PageGeneral"
+        Pages[1] = "$MCM_PageAudio"
+        Pages[2] = "$MCM_PageControls"
+        Pages[3] = "$MCM_PageGamepad"
+    endIf
 endEvent
 
 event OnGameReload()
@@ -125,7 +149,10 @@ event OnGameReload()
     SyncAllToNative()
 endEvent
 
-; === Liste des noms de boutons manette (l'ordre doit correspondre à g_gamepadButtonCodes côté C++) ===
+; === Liste des noms de boutons manette ===
+; Les noms physiques (D-pad Up, A, B, X, Y, LS click...) ne sont PAS traduits :
+; ils correspondent aux gravures du contrôleur. Un joueur français regarde sa
+; manette et voit "A", pas "A traduit". On garde donc l'anglais.
 string function GetGpButtonName(int idx)
     if idx == 0
         return "D-pad Up"
@@ -180,57 +207,60 @@ endFunction
 event OnPageReset(string page)
     SetCursorFillMode(TOP_TO_BOTTOM)
 
-    if page == "" || page == "General"
-        AddHeaderOption("Scanner")
-        oidTeleportToggle = AddToggleOption("Teleport enabled", TeleportEnabled)
-        oidScanRange = AddSliderOption("Scan range (0 = unlimited)", ScanRange, "{0}")
-        oidTeleportRange = AddSliderOption("Teleport range", TeleportRange, "{0}")
+    ; Comparaison avec les libellés traduits (résolus par SkyUI au runtime).
+    ; "page" reçoit déjà la valeur traduite — la comparaison fonctionne car
+    ; on a stocké les mêmes $cles dans Pages[].
+    if page == "" || page == "$MCM_PageGeneral"
+        AddHeaderOption("$MCM_HeaderScanner")
+        oidTeleportToggle = AddToggleOption("$MCM_TeleportEnabled", TeleportEnabled)
+        oidScanRange = AddSliderOption("$MCM_ScanRange", ScanRange, "{0}")
+        oidTeleportRange = AddSliderOption("$MCM_TeleportRange", TeleportRange, "{0}")
 
         AddEmptyOption()
-        AddHeaderOption("Combat")
-        oidAutoAimToggle = AddToggleOption("Bow auto aim", AutoAimEnabled)
+        AddHeaderOption("$MCM_HeaderCombat")
+        oidAutoAimToggle = AddToggleOption("$MCM_BowAutoAim", AutoAimEnabled)
 
         AddEmptyOption()
-        AddHeaderOption("Announcements")
-        oidStealthToggle = AddToggleOption("Stealth announcements", StealthAnnounce)
+        AddHeaderOption("$MCM_HeaderAnnouncements")
+        oidStealthToggle = AddToggleOption("$MCM_StealthAnnouncements", StealthAnnounce)
 
         AddEmptyOption()
-        oidResetAll = AddTextOption("Reset all to defaults", "")
+        oidResetAll = AddTextOption("$MCM_ResetAll", "")
 
-    elseIf page == "Audio"
-        AddHeaderOption("Sound volumes")
-        oidAimVolume = AddSliderOption("Aim sound", AimVolume, "{2}")
-        oidKillVolume = AddSliderOption("Kill sound", KillVolume, "{2}")
-        oidDragonHitVolume = AddSliderOption("Dragon hit sound", DragonHitVolume, "{2}")
+    elseIf page == "$MCM_PageAudio"
+        AddHeaderOption("$MCM_HeaderSoundVolumes")
+        oidAimVolume = AddSliderOption("$MCM_AimSound", AimVolume, "{2}")
+        oidKillVolume = AddSliderOption("$MCM_KillSound", KillVolume, "{2}")
+        oidDragonHitVolume = AddSliderOption("$MCM_DragonHitSound", DragonHitVolume, "{2}")
 
-    elseIf page == "Controls"
-        AddHeaderOption("Scanner keys")
-        oidKeyScan = AddKeyMapOption("Scan objects", KeyScan)
-        oidKeyAnnounce = AddKeyMapOption("Announce / Autowalk", KeyAnnounce)
-        oidKeyNextObject = AddKeyMapOption("Next object (Shift = category)", KeyNextObject)
-        oidKeyPrevObject = AddKeyMapOption("Previous object (Shift = category)", KeyPrevObject)
-        oidKeySubcategory = AddKeyMapOption("Cycle subcategory", KeySubcategory)
-        oidKeyTeleport = AddKeyMapOption("Teleport (Alt + key)", KeyTeleport)
+    elseIf page == "$MCM_PageControls"
+        AddHeaderOption("$MCM_HeaderScannerKeys")
+        oidKeyScan = AddKeyMapOption("$MCM_KeyScan", KeyScan)
+        oidKeyAnnounce = AddKeyMapOption("$MCM_KeyAnnounce", KeyAnnounce)
+        oidKeyNextObject = AddKeyMapOption("$MCM_KeyNextObject", KeyNextObject)
+        oidKeyPrevObject = AddKeyMapOption("$MCM_KeyPrevObject", KeyPrevObject)
+        oidKeySubcategory = AddKeyMapOption("$MCM_KeySubcategory", KeySubcategory)
+        oidKeyTeleport = AddKeyMapOption("$MCM_KeyTeleport", KeyTeleport)
 
-    elseIf page == "Gamepad"
-        AddHeaderOption("LB + button combos (scanner and map)")
-        oidGpScanNext = AddMenuOption("Next object / marker", GetGpButtonName(GpIdxScanNext))
-        oidGpScanPrev = AddMenuOption("Previous object / marker", GetGpButtonName(GpIdxScanPrev))
-        oidGpScanAnnounce = AddMenuOption("Announce current", GetGpButtonName(GpIdxScanAnnounce))
-        oidGpPrimary = AddMenuOption("Autowalk / Fast travel", GetGpButtonName(GpIdxPrimary))
-        oidGpRemoteActivate = AddMenuOption("Remote activate (G)", GetGpButtonName(GpIdxRemoteActivate))
-        oidGpTeleport = AddMenuOption("Teleport (gameplay)", GetGpButtonName(GpIdxTeleport))
-        oidGpVitals = AddMenuOption("Vitals (gameplay)", GetGpButtonName(GpIdxVitals))
-        oidGpMapSetRef = AddMenuOption("Set reference (map)", GetGpButtonName(GpIdxMapSetRef))
-
-        AddEmptyOption()
-        AddHeaderOption("Other LB combos")
-        oidGpSneak = AddMenuOption("Sneak toggle", GetGpButtonName(GpIdxSneak))
-        oidGpPOV = AddMenuOption("Lock-on toggle (Shift+X)", GetGpButtonName(GpIdxPOV))
+    elseIf page == "$MCM_PageGamepad"
+        AddHeaderOption("$MCM_HeaderLBCombos")
+        oidGpScanNext = AddMenuOption("$MCM_GpScanNext", GetGpButtonName(GpIdxScanNext))
+        oidGpScanPrev = AddMenuOption("$MCM_GpScanPrev", GetGpButtonName(GpIdxScanPrev))
+        oidGpScanAnnounce = AddMenuOption("$MCM_GpScanAnnounce", GetGpButtonName(GpIdxScanAnnounce))
+        oidGpPrimary = AddMenuOption("$MCM_GpPrimary", GetGpButtonName(GpIdxPrimary))
+        oidGpRemoteActivate = AddMenuOption("$MCM_GpRemoteActivate", GetGpButtonName(GpIdxRemoteActivate))
+        oidGpTeleport = AddMenuOption("$MCM_GpTeleport", GetGpButtonName(GpIdxTeleport))
+        oidGpVitals = AddMenuOption("$MCM_GpVitals", GetGpButtonName(GpIdxVitals))
+        oidGpMapSetRef = AddMenuOption("$MCM_GpMapSetRef", GetGpButtonName(GpIdxMapSetRef))
 
         AddEmptyOption()
-        AddHeaderOption("Standalone (no LB)")
-        oidGpLockEnemy = AddMenuOption("Lock nearest enemy", GetGpButtonName(GpIdxLockEnemy))
+        AddHeaderOption("$MCM_HeaderOtherLB")
+        oidGpSneak = AddMenuOption("$MCM_GpSneak", GetGpButtonName(GpIdxSneak))
+        oidGpPOV = AddMenuOption("$MCM_GpLockOn", GetGpButtonName(GpIdxPOV))
+
+        AddEmptyOption()
+        AddHeaderOption("$MCM_HeaderStandalone")
+        oidGpLockEnemy = AddMenuOption("$MCM_GpLockEnemy", GetGpButtonName(GpIdxLockEnemy))
     endIf
 endEvent
 
@@ -252,7 +282,7 @@ event OnOptionSelect(int option)
         SkyrimTTS_MCM_Native.SetAutoAimEnabled(AutoAimEnabled)
 
     elseIf option == oidResetAll
-        bool confirm = ShowMessage("Reset all settings to defaults?")
+        bool confirm = ShowMessage("$MCM_ResetConfirm")
         if confirm
             StealthAnnounce = true
             TeleportEnabled = true
@@ -468,57 +498,57 @@ endEvent
 ; === Info bulles ===
 event OnOptionHighlight(int option)
     if option == oidStealthToggle
-        SetInfoText("Toggle Hidden / Detected / Caution announcements")
+        SetInfoText("$MCM_Info_StealthAnnouncements")
     elseIf option == oidTeleportToggle
-        SetInfoText("Enable or disable Alt+Announce teleportation")
+        SetInfoText("$MCM_Info_TeleportEnabled")
     elseIf option == oidAutoAimToggle
-        SetInfoText("Automatic bow aim lock when drawing a bow. Disable to use vanilla bow combat.")
+        SetInfoText("$MCM_Info_BowAutoAim")
     elseIf option == oidAimVolume
-        SetInfoText("Volume of the aiming feedback loop")
+        SetInfoText("$MCM_Info_AimSound")
     elseIf option == oidKillVolume
-        SetInfoText("Volume of the enemy death sound")
+        SetInfoText("$MCM_Info_KillSound")
     elseIf option == oidDragonHitVolume
-        SetInfoText("Volume of the dragon hit sound")
+        SetInfoText("$MCM_Info_DragonHitSound")
     elseIf option == oidScanRange
-        SetInfoText("Maximum scan distance. 0 = unlimited, 1000 = about 15 meters")
+        SetInfoText("$MCM_Info_ScanRange")
     elseIf option == oidTeleportRange
-        SetInfoText("Maximum teleport distance. Does not apply to quest targets")
+        SetInfoText("$MCM_Info_TeleportRange")
     elseIf option == oidKeyScan
-        SetInfoText("Key to scan nearby objects")
+        SetInfoText("$MCM_Info_KeyScan")
     elseIf option == oidKeyAnnounce
-        SetInfoText("Announce selected object. Shift = autowalk")
+        SetInfoText("$MCM_Info_KeyAnnounce")
     elseIf option == oidKeyNextObject
-        SetInfoText("Next object. Hold Shift for next category")
+        SetInfoText("$MCM_Info_KeyNextObject")
     elseIf option == oidKeyPrevObject
-        SetInfoText("Previous object. Hold Shift for previous category")
+        SetInfoText("$MCM_Info_KeyPrevObject")
     elseIf option == oidKeySubcategory
-        SetInfoText("Cycle through subcategories")
+        SetInfoText("$MCM_Info_KeySubcategory")
     elseIf option == oidKeyTeleport
-        SetInfoText("Teleport to selected object. Requires Alt + this key")
+        SetInfoText("$MCM_Info_KeyTeleport")
     elseIf option == oidResetAll
-        SetInfoText("Reset all settings, volumes, and keys to their default values")
+        SetInfoText("$MCM_Info_ResetAll")
     elseIf option == oidGpScanNext
-        SetInfoText("Button pressed with LB to scan the next object (or map marker).")
+        SetInfoText("$MCM_Info_GpScanNext")
     elseIf option == oidGpScanPrev
-        SetInfoText("Button pressed with LB to scan the previous object (or map marker).")
+        SetInfoText("$MCM_Info_GpScanPrev")
     elseIf option == oidGpScanAnnounce
-        SetInfoText("Button pressed with LB to announce the current target (Home equivalent).")
+        SetInfoText("$MCM_Info_GpScanAnnounce")
     elseIf option == oidGpMapSetRef
-        SetInfoText("Button pressed with LB on the map to set a reference point for distance calculation.")
+        SetInfoText("$MCM_Info_GpMapSetRef")
     elseIf option == oidGpPrimary
-        SetInfoText("Button pressed with LB to start autowalk (in game) or fast travel (on the map).")
+        SetInfoText("$MCM_Info_GpPrimary")
     elseIf option == oidGpRemoteActivate
-        SetInfoText("Button pressed with LB to remotely activate the current scanner target (G key equivalent).")
+        SetInfoText("$MCM_Info_GpRemoteActivate")
     elseIf option == oidGpTeleport
-        SetInfoText("Button pressed with LB to teleport to the current scanner target.")
+        SetInfoText("$MCM_Info_GpTeleport")
     elseIf option == oidGpVitals
-        SetInfoText("Button pressed with LB to announce health, magicka, and stamina.")
+        SetInfoText("$MCM_Info_GpVitals")
     elseIf option == oidGpSneak
-        SetInfoText("Button pressed with LB to toggle sneaking.")
+        SetInfoText("$MCM_Info_GpSneak")
     elseIf option == oidGpPOV
-        SetInfoText("Button pressed with LB to toggle first/third person view.")
+        SetInfoText("$MCM_Info_GpLockOn")
     elseIf option == oidGpLockEnemy
-        SetInfoText("Button pressed alone (no LB) to lock onto the nearest enemy.")
+        SetInfoText("$MCM_Info_GpLockEnemy")
     endIf
 endEvent
 
