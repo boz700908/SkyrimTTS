@@ -69,6 +69,7 @@ jobs:
           mkdir -p "$STAGING/Scripts"
           mkdir -p "$STAGING/Sound/fx/SkyrimTTS"
           mkdir -p "$STAGING/Root"
+          mkdir -p "$STAGING/Interface/Translations"
           mkdir -p "$STAGING/fomod"
 
           # Plugin DLL
@@ -77,6 +78,12 @@ jobs:
 
           # NVDA controller DLL -> Root (installed to game root via FOMOD)
           cp "lib/nvdaControllerClient.dll" "$STAGING/Root/"
+
+          # Plugin translation files (one per language). Loaded automatically
+          # based on sLanguage:General in Skyrim.ini. The English file is
+          # optional (English keys are the fallback baked in source) but kept
+          # as a translator reference.
+          cp Interface/Translations/SkyrimNVDA_*.txt "$STAGING/Interface/Translations/"
 
           # ESP + PEX scripts
           cp "autowalk/SkyrimTTS_AutoWalk.esp" "$STAGING/"

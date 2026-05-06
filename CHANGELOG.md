@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.6.0 (2026-05-06)
+
+### New features
+- **Plugin localisation** — every voice announcement scripted by the plugin (menu open/close, item details, scanner output, autowalk feedback, errors, etc.) now goes through a translation system that picks the right language automatically based on `sLanguage:General` in your `Skyrim.ini`. Players whose game runs in French immediately hear the announcements in French; players in English keep the existing English text. Around 300 strings are now translatable
+- **Full French translation included** — the package ships with `Interface/Translations/SkyrimNVDA_FRENCH.txt` covering both the spoken announcements and the entire SkyUI MCM (page names, option labels, tooltips). When playing in French, the MCM and the voice are now consistent and natural-sounding
+- **MCM is now translatable** — the SkyUI configuration menu has been refactored to use SkyUI's standard `$key` translation system. Translators can now adjust every label and tooltip simply by editing `Interface/Translations/SkyrimNVDA_<LANGUAGE>.txt` without touching any code or recompiling anything
+- **Translator-friendly English reference file** — `Interface/Translations/SkyrimNVDA_ENGLISH.txt` is shipped as a reference so anyone wanting to translate the plugin to a new language has a complete, sorted list of every string used by the plugin
+
+### Internal
+- Added a generic `TR("...")` helper in `src/common.h` that looks the English key up in `g_pluginTranslations` (loaded from `SkyrimNVDA_<LANG>.txt` at startup) and falls back on the English key as the spoken text if no translation is registered. Zero regression risk: a missing or empty translation file simply means the plugin keeps speaking English
+- The Stats Menu's pre-existing `FR()` / `FRn()` / `FRnn()` helpers (introduced for perk announcements) now delegate to `TR()` too, so the perk strings benefit from the same fallback chain
+- Added `LoadPluginTranslations()` to the plugin's `kDataLoaded` initialisation, right after `LoadTranslationFile()` so `g_currentLanguage` is already known
+- The CI workflow and FOMOD installer now copy `Interface/Translations/*` into the release zip and the installed package
+
 ## v1.5.2 (2026-05-04)
 
 ### New features

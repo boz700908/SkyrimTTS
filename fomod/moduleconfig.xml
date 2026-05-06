@@ -5,6 +5,7 @@
     <folder source="SKSE" destination="SKSE"/>
     <folder source="Scripts" destination="Scripts"/>
     <folder source="Sound" destination="Sound"/>
+    <folder source="Interface" destination="Interface"/>
     <file source="SkyrimTTS_AutoWalk.esp" destination="SkyrimTTS_AutoWalk.esp"/>
   </requiredInstallFiles>
 </config>
