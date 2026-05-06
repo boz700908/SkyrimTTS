@@ -259,7 +259,11 @@ static void HUDAdvanceMovie_Hook(RE::IMenu* a_this, float a_interval, std::uint3
                     g_hudPrevSubtitle.clear();
                 } else if (subtitle != g_hudPrevSubtitle) {
                     g_hudPrevSubtitle = subtitle;
-                    Speak(StripMarkupForSpeech(Utf8ToWString(subtitle)));
+                    // Utiliser SpeakQueue (pas Speak) : un long dialogue PNJ est decoupe
+                    // par Skyrim en plusieurs segments de sous-titres successifs. Avec Speak,
+                    // chaque nouveau segment coupait le precedent en plein mot et empechait
+                    // de finir certaines quetes (bug rapporte par les utilisateurs).
+                    SpeakQueue(StripMarkupForSpeech(Utf8ToWString(subtitle)));
                 }
             }
         }
