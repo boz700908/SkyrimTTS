@@ -1436,6 +1436,46 @@ public:
                 if (code == RE::BSKeyboardDevice::Keys::kNum4) { SkyUISortColumn(5, 1, L"Sort by value"); continue; }
             }
 
+            // Navigation logique dans l'arbre de perks (touches 1-4) en mode
+            // constellation 3D (zoomed=true). Ne déclenche que dans le menu
+            // Stats — sinon les touches numériques restent dispo pour autre
+            // chose (sorts favoris, etc.).
+            if (g_statsOpen.load(std::memory_order_relaxed)) {
+                auto* ui = RE::UI::GetSingleton();
+                if (ui) {
+                    auto menu = ui->GetMenu(RE::StatsMenu::MENU_NAME);
+                    if (menu) {
+                        auto* sm = static_cast<RE::StatsMenu*>(menu.get());
+                        if (sm && sm->GetRuntimeData().zoomed) {
+                            if (code == RE::BSKeyboardDevice::Keys::kNum1) {
+                                LOG("[stats] hotkey 1 -> AnnouncePerkChildren");
+                                auto* task = SKSE::GetTaskInterface();
+                                if (task) task->AddUITask([]() { AnnouncePerkChildren(); });
+                                continue;
+                            }
+                            if (code == RE::BSKeyboardDevice::Keys::kNum2) {
+                                LOG("[stats] hotkey 2 -> AnnouncePerkParents");
+                                auto* task = SKSE::GetTaskInterface();
+                                if (task) task->AddUITask([]() { AnnouncePerkParents(); });
+                                continue;
+                            }
+                            if (code == RE::BSKeyboardDevice::Keys::kNum3) {
+                                LOG("[stats] hotkey 3 -> AnnouncePerksBuyable");
+                                auto* task = SKSE::GetTaskInterface();
+                                if (task) task->AddUITask([]() { AnnouncePerksBuyable(); });
+                                continue;
+                            }
+                            if (code == RE::BSKeyboardDevice::Keys::kNum4) {
+                                LOG("[stats] hotkey 4 -> AnnouncePerksOwned");
+                                auto* task = SKSE::GetTaskInterface();
+                                if (task) task->AddUITask([]() { AnnouncePerksOwned(); });
+                                continue;
+                            }
+                        }
+                    }
+                }
+            }
+
             // Inventaire
             if (!g_invOpen.load(std::memory_order_relaxed)) continue;
 
