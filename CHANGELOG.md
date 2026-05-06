@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.5.2 (2026-05-04)
+
+### New features
+- Container and corpse menus now announce item descriptions and enchantment effects, the same way the inventory and barter menus already do — when you navigate items in a chest or on a body, you now hear weapon/armor enchantments (e.g. "Health 5%"), potion effects (e.g. "Restore 25 health for 1 second"), spell tome descriptions (e.g. "Teaches the Fireball spell"), scroll effects, ingredient effects, etc., right after the item name. Previously these only played in the inventory and barter menus, so you had to take the item to know what it actually was
+
+### Bug fixes
+- Forge crafting: required materials are now announced clearly as "X required, you have Y" instead of the ambiguous SkyUI default. Previously, a recipe needing 1 Leather while the player had 5 was announced as "Leather (5)", making it sound like 5 leathers were required when the (5) actually meant the player's owned count. The plugin now reformats the SkyUI string to always state the required count first, then the owned count separately
+
 ## v1.5.1 (2026-04-22)
 
 ### New features
