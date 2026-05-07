@@ -740,20 +740,20 @@ static void LoadPluginTranslations() {
         std::wstring line;
         int count = 0;
         while (std::getline(ss, line)) {
+            // CR final (Windows CRLF) retiré, mais on NE TRIM PAS les autres
+            // espaces : nos clés C++ peuvent contenir des espaces significatifs
+            // au début ou à la fin (ex: " perks: " pour
+            // "This perk leads to N" + " perks: " + liste).
+            // Trim côté valeur casserait l'espace final de " atouts : ", trim
+            // côté clé casserait la correspondance avec TR(" perks: ").
             if (!line.empty() && line.back() == L'\r') line.pop_back();
             if (line.empty()) continue;
             if (line.size() >= 2 && line[0] == L'/' && line[1] == L'/') continue;
-            // Format : "clé anglaise<TAB>traduction"
+            // Format strict : "clé<TAB>valeur" (zéro trim sur clé ou valeur).
             size_t tab = line.find(L'\t');
             if (tab == std::wstring::npos) continue;
             std::wstring key = line.substr(0, tab);
             std::wstring value = line.substr(tab + 1);
-            // trim whitespace
-            while (!key.empty() && (key.back() == L' ' || key.back() == L'\t')) key.pop_back();
-            while (!value.empty() && (value.back() == L' ' || value.back() == L'\t')) value.pop_back();
-            size_t valStart = 0;
-            while (valStart < value.size() && (value[valStart] == L' ' || value[valStart] == L'\t')) ++valStart;
-            value = value.substr(valStart);
             if (key.empty() || value.empty()) continue;
             g_pluginTranslations[WStringToUtf8(key)] = value;
             ++count;
