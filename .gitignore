@@ -21,8 +21,12 @@ build/
 # vcpkg
 vcpkg_installed/
 
-# Claude memory
-.claude/
+# Claude Code config
+# On versionne les agents et skills (utiles a partager sur plusieurs machines
+# et a un futur contributeur) mais pas la memoire perso ni les settings locaux.
+.claude/*
+!.claude/agents/
+!.claude/skills/
 
 # Logs
 *.log

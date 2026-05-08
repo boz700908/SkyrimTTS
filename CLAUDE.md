@@ -193,12 +193,52 @@ static void QueueXxxRead() {
 
 `NormalizeForSpeech()` convertit les caracteres typographiques (guillemets courbes, tirets longs, ellipses) en ASCII standard. Ne pas supprimer les apostrophes — NVDA les gere nativement en wchar_t.
 
-## Agents disponibles
+## Quand deleguer aux agents (REGLES IMPORTANTES)
 
-- **commonlibsse-api-analyst** : Utiliser quand on a besoin de comprendre une classe ou fonction de CommonLibSSE-NG (RE::, SKSE::). Fouille les headers dans `build/debug/vcpkg_installed/`.
-- **skyrim-ui-explorer** : Utiliser quand on doit trouver des chemins GFx dans un menu SWF. Analyse les fichiers ActionScript decompiles dans `UI/`.
-- **accessibility-reviewer** : Utiliser pour relire le code avant un commit ou apres avoir code un nouveau menu. Verifie les regles Speak/SpeakQueue, flood protection, GFx safety, etc.
-- **log-analyzer** : Utiliser pour analyser en profondeur le fichier `SkyrimNVDA.log` quand un probleme survient.
+Ce projet a 4 sous-agents specialises dans `.claude/agents/`. Les utiliser
+proactivement evite de gaspiller du contexte a fouiller manuellement et donne
+des reponses plus fiables. Voici les regles fermes :
+
+### log-analyzer — TOUJOURS en PREMIER quand quelque chose ne marche pas
+
+Lance log-analyzer **avant tout** quand l'utilisateur signale un probleme en
+jeu : "ya un bug", "ca parle plus", "regarde mes logs", "ca a casse depuis ma
+modif", "l'annonce X est en anglais", etc. Le log SkyrimNVDA.log contient les
+[SPEAK] lines qui montrent EXACTEMENT ce qui a ete envoye a NVDA — c'est la
+source de verite. Ne PAS commencer par lire le code source : on lit le code
+APRES avoir compris ce qui se passe via le log.
+
+### accessibility-reviewer — AVANT chaque commit qui touche un menu
+
+Lance accessibility-reviewer avant de proposer `git commit` quand le diff
+touche un fichier `src/menu_*.h` ou modifie 5+ appels `Speak/SpeakQueue/TR`.
+L'agent attrape les Speak vs SpeakQueue mal places, les flood protection
+manquants, les GFx sans null check, et les `L"..."` oublies non passes par
+TR(). Aussi quand l'utilisateur demande "relis mon code" / "verifie".
+
+### commonlibsse-api-analyst — DES qu'on touche du RE::
+
+Lance commonlibsse-api-analyst au lieu de fouiller a la main dans
+`build/debug/vcpkg_installed/x64-windows-static-md/include/RE/`. **Regle
+ferme** : si on s'apprete a Read/Grep plus de 2-3 fichiers dans ce dossier,
+**STOP et delegue**. L'agent fait la recherche recursive (heritage, vtables,
+membres) dans son contexte isole et retourne la signature exacte avec
+file:line. Indispensable pour tout nouveau RE:: ou tout besoin de hook.
+
+### skyrim-ui-explorer — pour chaque chemin GFx inconnu
+
+Lance skyrim-ui-explorer quand on a besoin d'un path Scaleform pour
+GetGFxString / GetGFxNumber et qu'on ne le connait pas. Idem si un path
+existant retourne vide (l'agent verifie SkyUI vs vanilla, suggere des
+alternatives). Ne PAS chercher manuellement dans `UI/` quand l'agent peut
+le faire mieux.
+
+### Si je viens de fouiller manuellement, c'est probablement une erreur
+
+Si je me retrouve a faire `tail`, `grep` recursif sur `vcpkg_installed/`,
+ou a lire 4+ fichiers `.h` ou `.as` a la suite, c'est probablement parce que
+j'ai oublie de deleguer. Reflexe : reculer d'un cran, lancer le bon agent,
+laisser la main au reste de la conversation pour le dialogue avec l'utilisateur.
 
 ## Regles de travail
 
