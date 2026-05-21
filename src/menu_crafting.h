@@ -119,15 +119,52 @@ static std::wstring ReformatCraftingIngredients(const std::wstring& raw) {
     return result;
 }
 
-// Lit le texte d'enchantement (effets) depuis l'ItemCard.
-// L'ItemCard du crafting bascule via gotoAndStop entre frames Apparel/Weapon/Apparel_Enchanted/Weapon_Enchanted.
-// On essaie les deux labels (armure/arme), htmlText puis text en fallback.
+// Lit le texte des effets/enchantements depuis l'ItemCard du crafting.
+// Couvre 3 cas : forge (enchantement de l'objet a ameliorer), hotel
+// d'enchantement (description de l'effet selectionne), table d'alchimie
+// (effets de la potion a fabriquer). Le snapshot stocke tout dans le meme
+// champ enchantmentText puisqu'on ne peut etre que sur un atelier a la fois.
+//
+// L'ItemCard du crafting bascule via gotoAndStop entre frames :
+//   - Apparel / Weapon / Apparel_Enchanted / Weapon_Enchanted (forge classique)
+//   - Craft_Enchanting / Craft_Enchanting_Enchantment / Craft_Enchanting_Weapon /
+//     Craft_Enchanting_Armor / Craft_Enchanting_SoulGem (hotel d'enchantement)
+//   - Potions_reg (table d'alchimie : reutilise la frame de l'item card de
+//     potion classique de l'inventaire, il n'existe pas de frame Craft_Alchemy_*)
+//
+// Pour la forge classique : labels ApparelEnchantedLabel / WeaponEnchantedLabel
+// (pour decrire l'enchantement deja present sur l'objet a ameliorer).
+//
+// Pour l'hotel d'enchantement : un seul label EnchantmentLabel partage entre
+// les 4 sous-frames Craft_Enchanting_*. Il contient :
+//   - sur la liste d'effets (ICT_CRAFT_ENCHANTING) : la description de
+//     l'enchantement selectionne (ex "Inflige 10 points de degats de feu")
+//   - sur l'arme/armure a enchanter : l'enchantement deja choisi a appliquer
+//   - sur la gemme spirituelle : description de la charge
+//
+// Pour l'alchimie : un seul label PotionsLabel contient TOUS les effets de la
+// potion concatenes en HTML avec <br/> comme separateur (ex "Restaure 25 PV
+// pendant 1s<br/>Restaure 50 PM pendant 5s"). Pas besoin d'iterer effet par
+// effet. StripMarkupForSpeech enleve les balises et garde le texte lisible.
+//
+// Verifie via decompilation de UI/bsa_scripts/craftingmenu/scripts/__Packages/
+// ItemCard.as (lignes 467-478 pour enchantement, 238-244 cas ICT_POTION pour
+// PotionsLabel) et UI/itemcard.swf. Cf rapports skyrim-ui-explorer 2026-05.
+//
+// On essaie sequentiellement, htmlText puis text en fallback. Premier non vide gagne.
 static void ReadCraftingEnchantment(RE::GFxMovieView* movie, std::wstring& out) {
     const char* paths[] = {
+        // Forge : objet a ameliorer deja enchante
         "_root.Menu.ItemInfoHolder.ItemInfo.ApparelEnchantedLabel.htmlText",
         "_root.Menu.ItemInfoHolder.ItemInfo.ApparelEnchantedLabel.text",
         "_root.Menu.ItemInfoHolder.ItemInfo.WeaponEnchantedLabel.htmlText",
         "_root.Menu.ItemInfoHolder.ItemInfo.WeaponEnchantedLabel.text",
+        // Hotel d'enchantement : description de l'effet selectionne
+        "_root.Menu.ItemInfoHolder.ItemInfo.EnchantmentLabel.htmlText",
+        "_root.Menu.ItemInfoHolder.ItemInfo.EnchantmentLabel.text",
+        // Alchimie : effets de la potion selectionnee (frame Potions_reg)
+        "_root.Menu.ItemInfoHolder.ItemInfo.PotionsLabel.htmlText",
+        "_root.Menu.ItemInfoHolder.ItemInfo.PotionsLabel.text",
     };
     std::string raw;
     for (auto* p : paths) {
@@ -435,6 +472,57 @@ static void StartCraftingPolling() {
 
 static void StopCraftingPolling() {
     if (g_craftingPollThread.joinable()) { g_craftingPollThread.request_stop(); g_craftingPollThread.join(); }
+}
+
+// --- Tri SkyUI dans le menu Crafting (touches 5 et 6) ---
+//
+// La forge utilise une layout SkyUI distincte de l'inventaire :
+//   path  : _root.Menu.CategoryList.itemList.layout
+//   colonnes : <equipColumn(0), iconColumn(1), craftNameColumn(2),
+//               subTypeColumn(3), damageColumn(4), arColumn(5),
+//               weightColumn(6), valueColumn(7), valueWeightColumn(8)>
+//
+// Note : ne s'applique qu'a la forge "complete" (categories actives). La
+// meule, la tannerie et l'etabli utilisent un mode simple sans categories
+// (g_craftingIsSimpleList == true) ou cette layout n'existe pas. Dans ce
+// cas, on annonce un feedback explicite et on n'envoie pas la commande GFx.
+//
+// Pattern copie de SkyUISortColumn (menu_inventory.h) pour rester coherent
+// avec le tri inventaire/conteneur/marchand.
+static void SkyUISortCraftingColumn(int columnIndex, int stateIndex, const std::wstring& label) {
+    if (!g_skyuiMode.load(std::memory_order_relaxed)) return;
+    if (!g_craftingOpen.load(std::memory_order_relaxed)) return;
+    // Mode simple (meule, tannerie, etabli) : pas de categories ni de tri
+    // SkyUI possible. Feedback explicite pour ne pas laisser l'utilisateur
+    // sans retour.
+    if (g_craftingIsSimpleList.load(std::memory_order_relaxed)) {
+        Speak(L"Tri indisponible sur cet etabli");
+        return;
+    }
+    auto* task = SKSE::GetTaskInterface();
+    if (!task) return;
+    Speak(label);
+    task->AddUITask([columnIndex, stateIndex]() {
+        auto ui = RE::UI::GetSingleton();
+        if (!ui) return;
+        auto menu = ui->GetMenu(RE::CraftingMenu::MENU_NAME);
+        if (!menu || !menu->uiMovie) {
+            LOG("SkyUI crafting sort: CraftingMenu non ouvert");
+            return;
+        }
+        auto* movie = menu->uiMovie.get();
+        const char* layoutPath = "_root.Menu.CategoryList.itemList.layout";
+        RE::GFxValue layout;
+        if (SafeGetVariable(movie, layout, layoutPath) && SafeIsObject(layout)) {
+            RE::GFxValue args[2];
+            args[0].SetNumber(static_cast<double>(columnIndex));
+            args[1].SetNumber(static_cast<double>(stateIndex));
+            layout.Invoke("restoreColumnState", nullptr, args, 2);
+            LOG("SkyUI crafting sort: column {} state {}", columnIndex, stateIndex);
+        } else {
+            LOG("SkyUI crafting sort: layout introuvable a {}", layoutPath);
+        }
+    });
 }
 
 // VOCALISATION MENU CRAFTING - FIN

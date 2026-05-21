@@ -38,6 +38,7 @@ struct InventorySnapshot {
     std::wstring soulLevelText;
     bool         favorite{false};
     bool         stolen{false};     // item appartenant a un PNJ/faction (pas au joueur)
+    int          chargePercent{-1}; // charge restante d'une arme enchantee [0..100], -1 si non applicable
     const void*  itemPtr{nullptr};  // RE::ItemList::Item* du ref selectionne — cf. g_lastInvItemPtr
 };
 
@@ -97,7 +98,8 @@ static bool ReadInventorySnapshot(InventorySnapshot& snap) {
                 auto* sel = rd.itemList->GetSelectedItem();
                 snap.itemPtr = sel;
                 if (sel && sel->data.objDesc) {
-                    snap.stolen = IsItemStolen(sel->data.objDesc);
+                    snap.stolen        = IsItemStolen(sel->data.objDesc);
+                    snap.chargePercent = GetEnchantmentChargePercent(sel->data.objDesc);
                 }
             }
         }
@@ -238,6 +240,12 @@ static std::wstring BuildItemAnnouncement(const InventorySnapshot& snap) {
         msg += L", " + TR("value") + L" " + snap.valueText;
     if (!snap.weightText.empty() && !isZero(snap.weightText))
         msg += L", " + TR("weight") + L" " + snap.weightText;
+    // Charge restante d'une arme enchantee (en %). -1 = non applicable
+    // (item pas enchante, potion, livre, etc.). On annonce meme a 100%
+    // pour que le joueur sache toujours qu'il tient une arme enchantee
+    // pleine, sans devoir deviner si le silence signifie "pas enchantee".
+    if (snap.chargePercent >= 0)
+        msg += L", " + TR("charge") + L" " + std::to_wstring(snap.chargePercent) + L"%";
     if (!snap.soulLevelText.empty())
         msg += L", " + snap.soulLevelText;
     if (snap.favorite)

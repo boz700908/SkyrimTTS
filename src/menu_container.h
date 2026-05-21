@@ -30,10 +30,78 @@ struct ContainerSnapshot {
     std::wstring soulLevelText;
     bool         isContainerSide{true};
     bool         atDivider{false};
-    bool         stolen{false};     // item appartenant a un PNJ/faction (pas au joueur)
-    const void*  itemPtr{nullptr};  // cf. g_lastContainerItemPtr
+    bool         stolen{false};        // item appartenant a un PNJ/faction (pas au joueur)
+    int          chargePercent{-1};    // charge restante d'une arme enchantee [0..100], -1 si non applicable
+    int          pickpocketChance{-1}; // % de reussite de vol a la tire [0..100], -1 si on n'est pas en mode pickpocket
+    const void*  itemPtr{nullptr};     // cf. g_lastContainerItemPtr
     std::wstring descText;          // description / effets / enchantements (depuis ItemCard.infoText)
 };
+
+// Pourcentage de reussite de vol a la tire pour l'item selectionne, ou -1 si
+// on n'est pas en mode pickpocket (= coffre ou cadavre normal, ou trade avec
+// un compagnon, etc.).
+//
+// On utilise la fonction native du moteur RE::AIFormulas::ComputePickpocketSuccess
+// (cf. RE/A/AIFormulas.h). Elle prend en compte AUTOMATIQUEMENT :
+//   - skill Pickpocket du joueur et du PNJ cible
+//   - poids et valeur totale de l'item (multiplies par la quantite)
+//   - perks du joueur (Light Fingers 1-5, Cutpurse, Night Thief, Misdirection,
+//     Perfect Touch) via le systeme d'EntryPoints
+//   - etat de detection du joueur (endormi, alerte, etc.)
+//   - GameSettings fPickPocketMinChance / fPickPocketMaxChance pour le clamp
+//
+// Resultat : entier deja borne [0..100], donc on peut le passer tel quel a NVDA.
+// C'est la MEME formule que celle qu'utilise le UI vanilla pour afficher le %.
+static int ComputePickpocketChanceForSelectedItem(RE::ContainerMenu* contMenu) {
+    if (!contMenu) return -1;
+    if (contMenu->GetContainerMode() != RE::ContainerMenu::ContainerMode::kPickpocket)
+        return -1;
+
+    auto& rd = contMenu->GetRuntimeData();
+    if (!rd.itemList) return -1;
+    auto* sel = rd.itemList->GetSelectedItem();
+    if (!sel || !sel->data.objDesc || !sel->data.objDesc->object) return -1;
+
+    auto* entry = sel->data.objDesc;
+    auto* item  = entry->object;
+    // sel->data.GetCount() retourne uint32_t. On force a un int >= 1 pour
+    // eviter un overflow lors du multiply value*count (rare, mais safe).
+    const std::uint32_t rawCount = sel->data.GetCount();
+    const std::int32_t  count    = rawCount > 1 ? static_cast<std::int32_t>(rawCount) : 1;
+
+    // Recuperer le PNJ cible. GetTargetRefHandle() retourne un RefHandle =
+    // std::uint32_t (BSCoreTypes.h:6) qu'on resout via LookupByHandle.
+    const RE::RefHandle targetHandle = RE::ContainerMenu::GetTargetRefHandle();
+    auto targetRefPtr = RE::TESObjectREFR::LookupByHandle(targetHandle);
+    auto* targetRef = targetRefPtr.get();
+    auto* target = targetRef ? targetRef->As<RE::Actor>() : nullptr;
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    if (!target || !player) return -1;
+
+    // GetActorValue n'est pas directement sur Actor : il vient de la classe de
+    // base ActorValueOwner, qu'on recupere via Actor::AsActorValueOwner().
+    auto* playerAV = player->AsActorValueOwner();
+    auto* targetAV = target->AsActorValueOwner();
+    if (!playerAV || !targetAV) return -1;
+
+    const float         thiefSkill   = playerAV->GetActorValue(RE::ActorValue::kPickpocket);
+    const float         targetSkill  = targetAV->GetActorValue(RE::ActorValue::kPickpocket);
+    const std::int32_t  unitValue    = entry->GetValue();
+    const std::uint32_t valueStolen  = static_cast<std::uint32_t>(
+        unitValue > 0 ? unitValue * count : 0);
+    const float         weightStolen = entry->GetWeight() * static_cast<float>(count);
+    const bool          isDetected   = player->RequestDetectionLevel(target) >= 0;
+
+    int chance = RE::AIFormulas::ComputePickpocketSuccess(
+        thiefSkill, targetSkill, valueStolen, weightStolen,
+        player, target, isDetected, item);
+
+    // Clamp defensif (la fonction le fait deja via les GameSettings, mais on
+    // verrouille au cas ou un mod aurait monte fPickPocketMaxChance > 100).
+    if (chance < 0)   chance = 0;
+    if (chance > 100) chance = 100;
+    return chance;
+}
 
 static bool ReadContainerSnapshot(ContainerSnapshot& snap) {
     snap = {};
@@ -157,9 +225,13 @@ static bool ReadContainerSnapshot(ContainerSnapshot& snap) {
                 auto* sel = rd.itemList->GetSelectedItem();
                 snap.itemPtr = sel;
                 if (sel && sel->data.objDesc) {
-                    snap.stolen = IsItemStolen(sel->data.objDesc);
+                    snap.stolen        = IsItemStolen(sel->data.objDesc);
+                    snap.chargePercent = GetEnchantmentChargePercent(sel->data.objDesc);
                 }
             }
+            // Mode pickpocket : annoncer le % de reussite. Retourne -1 hors
+            // pickpocket (coffre, cadavre, trade compagnon), aucune annonce alors.
+            snap.pickpocketChance = ComputePickpocketChanceForSelectedItem(contMenu);
         }
     }
 
@@ -184,6 +256,13 @@ static std::wstring BuildContainerItemAnnouncement(const ContainerSnapshot& snap
         msg += L", " + TR("value") + L" " + snap.valueText;
     if (!snap.weightText.empty() && !isZero(snap.weightText))
         msg += L", " + TR("weight") + L" " + snap.weightText;
+    // Charge restante d'une arme enchantee (en %). -1 = non applicable.
+    if (snap.chargePercent >= 0)
+        msg += L", " + TR("charge") + L" " + std::to_wstring(snap.chargePercent) + L"%";
+    // Pourcentage de reussite de vol a la tire (mode pickpocket uniquement).
+    // -1 = pas en mode pickpocket, donc silencieux dans les coffres / cadavres.
+    if (snap.pickpocketChance >= 0)
+        msg += L", " + TR("success") + L" " + std::to_wstring(snap.pickpocketChance) + L"%";
     if (!snap.soulLevelText.empty())
         msg += L", " + snap.soulLevelText;
     return msg;
