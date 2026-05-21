@@ -101,6 +101,7 @@ jobs:
           cp sounds/aim_loop.wav "$STAGING/Sound/fx/SkyrimTTS/"
           cp sounds/dragon_hit.wav "$STAGING/Sound/fx/SkyrimTTS/"
           cp sounds/enemy_death.wav "$STAGING/Sound/fx/SkyrimTTS/"
+          cp sounds/lockpick_bip.wav "$STAGING/Sound/fx/SkyrimTTS/"
 
           # Documentation (MD to TXT)
           cp CHANGELOG.md "$STAGING/CHANGELOG.txt"
