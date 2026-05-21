@@ -33,6 +33,7 @@ static std::wstring GetMapFilterName(MapFilter f) {
 enum class MapSubFilter : int {
     AllTypes = 0,
     Cities,
+    Castles,
     Towns,
     Dungeons,
     Forts,
@@ -45,6 +46,7 @@ static std::wstring GetMapSubFilterName(MapSubFilter f) {
     switch (f) {
         case MapSubFilter::AllTypes: return TR("All types");
         case MapSubFilter::Cities:   return TR("Cities");
+        case MapSubFilter::Castles:  return TR("Castles");
         case MapSubFilter::Towns:    return TR("Towns");
         case MapSubFilter::Dungeons: return TR("Dungeons");
         case MapSubFilter::Forts:    return TR("Forts");
@@ -129,8 +131,23 @@ static std::wstring GetMarkerTypeName(RE::MARKER_TYPE type) {
         case RE::MARKER_TYPE::kShrine:          return TR("Shrine");
         default: {
             int t = static_cast<int>(type);
-            if (t >= 35 && t <= 52) return TR("Castle");
-            if (t >= 53 && t <= 58) return TR("Solstheim");
+            // Grandes villes de Bordeciel (35-52) : chaque ville a deux markers
+            // distincts dans les donnees vanilla — un "Castle" (chateau du Jarl,
+            // numero impair) et un "Capitol" (la ville elle-meme, numero pair).
+            // Exemple : Whiterun = Fort Dragon (39, Castle) + Blanche-Rive (40, Capitol).
+            if (t >= 35 && t <= 52) {
+                return (t % 2 == 0) ? TR("Capitol") : TR("Castle");
+            }
+            // Lieux uniques de Solstheim (DLC Dragonborn)
+            switch (type) {
+                case RE::MARKER_TYPE::kDLC02_TempleOfMiraak: return TR("Temple");
+                case RE::MARKER_TYPE::kDLC02_RavenRock:      return TR("Town");
+                case RE::MARKER_TYPE::kDLC02_BeastStone:     return TR("Standing Stone");
+                case RE::MARKER_TYPE::kDLC02_TelMithryn:     return TR("Settlement");
+                case RE::MARKER_TYPE::kDLC02_ToSkyrim:       return TR("Docks");
+                case RE::MARKER_TYPE::kDLC02_ToSolstheim:    return TR("Docks");
+                default: break;
+            }
             return TR("Location");
         }
     }
@@ -472,16 +489,26 @@ static void BuildMapMarkerList() {
 // --- Appliquer le filtre ---
 static bool MatchesSubFilter(const MapMarkerInfo& m) {
     if (g_mapSubFilter == MapSubFilter::AllTypes) return true;
-    if (m.isQuestTarget) return true;  // les quêtes passent toujours
+    // Les cibles de quete n'ont pas de markerType (kNone), donc elles ne
+    // correspondent a aucun sous-filtre par type — elles ont leur propre
+    // categorie principale "QuestTargets" pour etre listees.
+    if (m.isQuestTarget) return false;
 
     int t = static_cast<int>(m.markerType);
     switch (g_mapSubFilter) {
         case MapSubFilter::Cities:
-            // kCity (1) + all Castle/Capitol types (35-58)
-            return m.markerType == RE::MARKER_TYPE::kCity || t >= 35;
+            // kCity (1) + Capitols pairs (36, 38, 40, 42, 44, 46, 48, 50, 52)
+            // + Raven Rock (54, ville de Solstheim).
+            return m.markerType == RE::MARKER_TYPE::kCity ||
+                   (t >= 35 && t <= 52 && t % 2 == 0) ||
+                   m.markerType == RE::MARKER_TYPE::kDLC02_RavenRock;
+        case MapSubFilter::Castles:
+            // Chateaux des Jarls (impairs 35, 37, 39, 41, 43, 45, 47, 49, 51).
+            return t >= 35 && t <= 52 && t % 2 == 1;
         case MapSubFilter::Towns:
             return m.markerType == RE::MARKER_TYPE::kTown ||
-                   m.markerType == RE::MARKER_TYPE::kSettlement;
+                   m.markerType == RE::MARKER_TYPE::kSettlement ||
+                   m.markerType == RE::MARKER_TYPE::kDLC02_TelMithryn;
         case MapSubFilter::Dungeons:
             return m.markerType == RE::MARKER_TYPE::kCave ||
                    m.markerType == RE::MARKER_TYPE::kNordicRuins ||
