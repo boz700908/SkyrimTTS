@@ -84,6 +84,11 @@ jobs:
           # optional (English keys are the fallback baked in source) but kept
           # as a translator reference.
           cp Interface/Translations/SkyrimNVDA_*.txt "$STAGING/Interface/Translations/"
+          # MCM translation files. SkyUI MCM looks up <ESP_name>_<LANG>.txt,
+          # so the MCM strings must live in SkyrimTTS_AutoWalk_<LANG>.txt
+          # (because that's the ESP that hosts the MCM script). These files
+          # mirror the $MCM_* keys from SkyrimNVDA_<LANG>.txt.
+          cp Interface/Translations/SkyrimTTS_AutoWalk_*.txt "$STAGING/Interface/Translations/"
 
           # ESP + PEX scripts
           cp "autowalk/SkyrimTTS_AutoWalk.esp" "$STAGING/"
