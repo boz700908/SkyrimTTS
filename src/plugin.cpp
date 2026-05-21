@@ -26,9 +26,12 @@
 #include "menu_training.h"
 #include "menu_console.h"
 #include "menu_character_sheet.h"
+#include "menu_lockpicking.h"
 #include "loot_tracker.h"
 #include "scanner.h"
 #include "autowalk.h"
+#include "cheat_gift.h"
+#include "puzzle_lexicon.h"
 
 #include <Xinput.h>  // pour lire l'etat physique du gamepad dans le stuck watcher
 
@@ -230,6 +233,16 @@ public:
             } else {
                 g_dialogueOpen.store(false);
                 StopDialoguePolling();
+            }
+        }
+
+        if (e->menuName == RE::LockpickingMenu::MENU_NAME) {
+            if (e->opening) {
+                LOG("MenuListener: Lockpicking Menu open");
+                OnLockpickMenuOpen();
+            } else {
+                LOG("MenuListener: Lockpicking Menu close");
+                OnLockpickMenuClose();
             }
         }
 
@@ -1016,6 +1029,17 @@ public:
                 }
             }
 
+            // TEST TEMPORAIRE : Shift+F1 = jouer le bip lockpicking (validation
+            // du SoundDescriptor 0x817 ajoute dans SkyrimTTS_AutoWalk.esp).
+            // A retirer une fois le menu de crochetage implemente.
+            if (code == RE::BSKeyboardDevice::Keys::kF1 &&
+                (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0) {
+                LOG("TEST: Shift+F1 -> PlaySoundOneShot lockpick bip (0x{:X})", g_soundLockpickBipID);
+                Speak(L"Test bip");
+                PlaySoundOneShot(g_soundLockpickBipID, 1.0f);
+                continue;
+            }
+
             // Main menu: any key press triggers a deferred read on the UI thread
             if (g_mainOpen.load(std::memory_order_relaxed)) {
                 QueueMainMenuRead();
@@ -1185,6 +1209,25 @@ public:
                 if (navKey) QueueGiftRead();
             }
 
+            // Touche K : fiche d'identite de l'item selectionne dans n'importe
+            // quel menu d'item (inventaire, conteneur, marchand, don). Lit le
+            // type d'arme/classe d'armure/slot/materiau ainsi que les types
+            // generaux (potion, livre, ingredient, ...). Ces infos ne sont PAS
+            // affichees dans la fiche detaillee vanilla (et SkyUI les met
+            // uniquement en colonne de la liste, invisible a NVDA via la fiche).
+            if (code == RE::BSKeyboardDevice::Keys::kK &&
+                (g_invOpen.load(std::memory_order_relaxed)       ||
+                 g_containerOpen.load(std::memory_order_relaxed) ||
+                 g_barterOpen.load(std::memory_order_relaxed)    ||
+                 g_giftOpen.load(std::memory_order_relaxed)))
+            {
+                // Doit tourner sur le thread UI car on lit le runtime data
+                // d'un menu (et notre Speak utilise wstring direct, safe).
+                auto* task = SKSE::GetTaskInterface();
+                if (task) task->AddUITask([]() { SpeakItemFactSheetForCurrentMenu(); });
+                continue;  // pas de propagation au reste du dispatcher
+            }
+
             // Crafting
             if (g_craftingOpen.load(std::memory_order_relaxed)) {
                 const bool navKey = (code == RE::BSKeyboardDevice::Keys::kUp)    ||
@@ -1349,6 +1392,14 @@ public:
                         else LockNearestEnemy();
                         continue;
                     }
+                    // Touche configurable (B par defaut) = pourcentage de vie
+                    // de l'ennemi verrouille (ou le plus proche si pas de lock).
+                    // Pratique pendant un combat pour savoir s'il faut continuer
+                    // ou changer de tactique. Configurable dans le MCM.
+                    if (dxCode == g_keyEnemyHealth.load()) {
+                        AnnounceLockedTargetHealth();
+                        continue;
+                    }
                     // G = activer/ramasser a distance l'objet courant du scanner
                     // (item -> ramassage, conteneur -> ouvre menu, porte -> teleporte
                     // a travers, activateur -> declenche script). Limite 2000 unites.
@@ -1436,6 +1487,20 @@ public:
                 if (code == RE::BSKeyboardDevice::Keys::kNum4) { SkyUISortColumn(5, 1, TR("Sort by value")); continue; }
             }
 
+            // Tri SkyUI dans la forge : touche 5 = armure, touche 6 = degats.
+            // Layout SkyUI Crafting :
+            //   col 4 = damageColumn, col 5 = arColumn (armor rating)
+            // Verifie empiriquement 2026-05 : pour ce menu Crafting, state 1
+            // donne les valeurs LES PLUS HAUTES en TETE de liste (descendant).
+            // C'est ce que l'utilisateur veut (commencer par les meilleurs
+            // objets craftables). Note : sens inverse de l'inventaire ou
+            // state 1 = croissant ; SkyUI Crafting a sa propre convention.
+            if (g_skyuiMode.load(std::memory_order_relaxed) &&
+                g_craftingOpen.load(std::memory_order_relaxed)) {
+                if (code == RE::BSKeyboardDevice::Keys::kNum5) { SkyUISortCraftingColumn(5, 1, TR("Sort by armor")); continue; }
+                if (code == RE::BSKeyboardDevice::Keys::kNum6) { SkyUISortCraftingColumn(4, 1, TR("Sort by damage")); continue; }
+            }
+
             // Navigation logique dans l'arbre de perks (touches 1-4) en mode
             // constellation 3D (zoomed=true). Ne déclenche que dans le menu
             // Stats — sinon les touches numériques restent dispo pour autre
@@ -1517,6 +1582,15 @@ public:
 
         auto* ref = e->objectActivated.get();
         if (!ref) return RE::BSEventNotifyControl::kContinue;
+
+        // Accessibilite : Receptacle du Lexique (Tour de Mzark, quete DA04).
+        // Si le joueur active ce receptacle, on enchaine automatiquement la
+        // sequence des 4 boutons du puzzle (inaccessible sans la vue car il
+        // faut observer l'alignement des anneaux pour savoir quel bouton
+        // presser). Cf puzzle_lexicon.h pour le detail.
+        if (PuzzleLexicon::TryHandleReceptacleActivate(ref)) {
+            return RE::BSEventNotifyControl::kContinue;
+        }
 
         // Vérifier si c'est un pilier ou anneau puzzle
         auto* vm = RE::SkyrimVM::GetSingleton();
@@ -1853,6 +1927,11 @@ namespace MCMNative {
         LOG("MCM: dragon hit volume = {:.2f}", g_volumeDragonHit);
     }
 
+    void SetLockpickBipVolume(RE::StaticFunctionTag*, float vol) {
+        g_volumeLockpickBip = std::clamp(vol, 0.0f, 2.0f);
+        LOG("MCM: lockpick bip volume = {:.2f}", g_volumeLockpickBip);
+    }
+
     void SetKeyScan(RE::StaticFunctionTag*, int keyCode) {
         g_keyScan.store(static_cast<uint32_t>(keyCode));
         LOG("MCM: key scan = {}", keyCode);
@@ -1881,6 +1960,11 @@ namespace MCMNative {
     void SetKeyTeleport(RE::StaticFunctionTag*, int keyCode) {
         g_keyTeleport.store(static_cast<uint32_t>(keyCode));
         LOG("MCM: key teleport = {}", keyCode);
+    }
+
+    void SetKeyEnemyHealth(RE::StaticFunctionTag*, int keyCode) {
+        g_keyEnemyHealth.store(static_cast<uint32_t>(keyCode));
+        LOG("MCM: key enemy health = {}", keyCode);
     }
 
     void SetScanRange(RE::StaticFunctionTag*, float range) {
@@ -1921,12 +2005,14 @@ namespace MCMNative {
         vm->RegisterFunction("SetAimVolume",         SCRIPT_NAME, SetAimVolume);
         vm->RegisterFunction("SetKillVolume",        SCRIPT_NAME, SetKillVolume);
         vm->RegisterFunction("SetDragonHitVolume",   SCRIPT_NAME, SetDragonHitVolume);
+        vm->RegisterFunction("SetLockpickBipVolume", SCRIPT_NAME, SetLockpickBipVolume);
         vm->RegisterFunction("SetKeyScan",           SCRIPT_NAME, SetKeyScan);
         vm->RegisterFunction("SetKeyAnnounce",       SCRIPT_NAME, SetKeyAnnounce);
         vm->RegisterFunction("SetKeyNextObject",     SCRIPT_NAME, SetKeyNextObject);
         vm->RegisterFunction("SetKeyPrevObject",     SCRIPT_NAME, SetKeyPrevObject);
         vm->RegisterFunction("SetKeySubcategory",    SCRIPT_NAME, SetKeySubcategory);
         vm->RegisterFunction("SetKeyTeleport",       SCRIPT_NAME, SetKeyTeleport);
+        vm->RegisterFunction("SetKeyEnemyHealth",    SCRIPT_NAME, SetKeyEnemyHealth);
         vm->RegisterFunction("SetScanRange",         SCRIPT_NAME, SetScanRange);
         vm->RegisterFunction("SetTeleportRange",     SCRIPT_NAME, SetTeleportRange);
         vm->RegisterFunction("SetAutoAimEnabled",    SCRIPT_NAME, SetAutoAimEnabled);
@@ -2059,6 +2145,10 @@ SKSEPluginLoad(const SKSE::LoadInterface* skse) {
             g_lbHeld.store(false);
             RegisterShoutListener();
             LOG("kPostLoadGame: autowalk safety reset, sprint remap reapplied, shout listener registered");
+            // Cheat gift : donne des items au joueur une fois par session, en
+            // contournant Papyrus (console additem est cassee dans le modpack
+            // a cause d'un hook OnItemAdded foireux). Cf src/cheat_gift.h.
+            CheatGift::OnPostLoadGame();
         }
     });
 

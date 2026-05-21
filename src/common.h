@@ -1081,6 +1081,333 @@ static bool IsItemStolen(RE::InventoryEntryData* entry) {
     return false;
 }
 
+// Pourcentage de charge restante d'une arme enchantee (0..100).
+// Retourne -1 si l'item n'est pas enchante ou n'a pas de charge associee
+// (potions, gemmes, etc.).
+//
+// Comment Skyrim stocke la charge :
+//   - Charge max (capacite totale) :
+//       * Si l'arme est enchantee au runtime (forge d'enchantement avec une
+//         gemme spirituelle), la max est stockee dans ExtraEnchantment.charge.
+//         Cette valeur depend de la gemme utilisee et des perks Enchantement.
+//       * Sinon (arme deja enchantee depuis le base form, ex : epee de feu
+//         lootee dans un coffre), la max est dans TESEnchantableForm
+//         (amountofEnchantment, champ ESM "EAMT").
+//   - Charge courante : geree par InventoryEntryData::GetEnchantmentCharge()
+//     qui retourne std::optional<double>. nullopt = arme jamais utilisee
+//     depuis qu'elle a ete enchantee/rechargee => on considere la charge
+//     pleine (= max).
+//
+// La methode IsEnchanted() prend en compte les deux cas (base form + runtime)
+// donc on l'utilise comme garde initial. Note : sur les items qui ne sont
+// pas des armes (potion, livre, etc.), IsEnchanted retourne false => -1.
+//
+// IMPORTANT : seules les ARMES consomment de la charge dans Skyrim.
+// Les armures, anneaux et amulettes enchantes restent permanents et n'ont
+// PAS de jauge de charge (le moteur ne decremente jamais leur valeur). Si on
+// faisait le calcul sur une armure enchantee, la charge courante stockee
+// resterait a la valeur de la gemme utilisee lors de l'enchantement (ou 0)
+// et le pourcentage afficherait un chiffre arbitraire (ex: "3%") qui n'a
+// aucun sens pour le joueur. On retourne donc -1 pour tout ce qui n'est pas
+// une arme.
+static int GetEnchantmentChargePercent(RE::InventoryEntryData* entry) {
+    if (!entry || !entry->IsEnchanted()) return -1;
+    // Limite aux armes uniquement (les armures/bijoux n'ont pas de charge).
+    if (!entry->object || !entry->object->As<RE::TESObjectWEAP>()) return -1;
+
+    // 1) Chercher la charge max : ExtraEnchantment (runtime) prioritaire,
+    //    sinon TESEnchantableForm.amountofEnchantment (base form).
+    std::uint16_t maxCharge = 0;
+    if (entry->extraLists) {
+        for (auto* xList : *entry->extraLists) {
+            if (!xList) continue;
+            auto* xEnch = xList->GetByType<RE::ExtraEnchantment>();
+            if (xEnch && xEnch->charge > 0) {
+                maxCharge = xEnch->charge;
+                break;
+            }
+        }
+    }
+    if (maxCharge == 0) {
+        auto* ench = entry->object ? entry->object->As<RE::TESEnchantableForm>()
+                                   : nullptr;
+        if (ench) maxCharge = ench->amountofEnchantment;
+    }
+    if (maxCharge == 0) return -1;  // pas de capacite definie
+
+    // 2) Charge courante : nullopt = jamais utilisee => pleine.
+    const auto cur     = entry->GetEnchantmentCharge();
+    const double currD = cur.value_or(static_cast<double>(maxCharge));
+    if (currD < 0.0) return 0;
+
+    // 3) Conversion en pourcentage entier [0..100], clamp pour securite.
+    int pct = static_cast<int>(std::round(currD / static_cast<double>(maxCharge) * 100.0));
+    if (pct < 0)   pct = 0;
+    if (pct > 100) pct = 100;
+    return pct;
+}
+
+// ----------------------------------------------------------------------------
+// FICHE D'IDENTITE D'UN ITEM (touche K dans les menus)
+// ----------------------------------------------------------------------------
+// Construit une chaine prete a vocaliser qui decrit l'item au-dela de ses
+// stats : type d'arme (epee 1H, dague, arc, ...), classe d'armure (lourde,
+// legere, vetement), slot d'equipement (torse, mains, ...) et materiau
+// (acier, daedrique, ...). Pour les items non-equipables (potion, livre,
+// ingredient, parchemin, gemme spirituelle, ...) retourne juste le type
+// general. Vide si l'item est null ou hors classification.
+//
+// Pourquoi cette fonction existe :
+// SkyUI affiche ces infos dans des COLONNES de la liste d'inventaire
+// (TYPE, CLASS, MAT) que les voyants voient mais que NVDA ne lit pas, parce
+// qu'on lit la fiche detaillee de droite (qui n'a PAS ces infos, ni en
+// vanilla ni en SkyUI). En vanilla c'est encore pire : aucune info textuelle
+// nulle part. La touche K dans le plugin appelle cette fonction et Speak() le
+// resultat.
+//
+// Sources d'API verifiees (CommonLibSSE-NG) :
+//   - WEAPON_TYPE             : RE/T/TESObjectWEAP.h (enum kHandToHandMelee..kCrossbow)
+//   - BIPED_MODEL::ArmorType  : RE/B/BGSBipedObjectForm.h (kLightArmor/kHeavyArmor/kClothing)
+//   - BipedObjectSlot         : RE/B/BGSBipedObjectForm.h (kHead, kBody, kHands, ...)
+//   - HasKeywordString        : RE/B/BGSKeywordForm.h (multi-heritage via WEAP/ARMO)
+//   - GetFormType             : RE/T/TESForm.h
+//
+// Mapping des keywords materiau base sur l'AS de SkyUI
+// (UI/skyui_decompiled/inventorymenu/scripts/__Packages/InventoryDataSetter.as
+// fonction processMaterialKeywords) — meme liste que la colonne MAT de SkyUI.
+
+// Materiau d'arme : retourne une cle TR ASCII ou nullptr si non trouve.
+// Recherche dans l'ordre de priorite (cf SkyUI), premier match gagne.
+static const char* GetWeaponMaterialKey(const RE::TESObjectWEAP* w) {
+    if (!w) return nullptr;
+    static const std::pair<const char*, const char*> kMats[] = {
+        { "WeapMaterialDaedric",        "material_daedric" },
+        { "DLC1WeapMaterialDragonbone", "material_dragonbone" },
+        { "WeapMaterialDwarven",        "material_dwarven" },
+        { "WeapMaterialEbony",          "material_ebony" },
+        { "WeapMaterialElven",          "material_elven" },
+        { "WeapMaterialGlass",          "material_glass" },
+        { "WeapMaterialOrcish",         "material_orcish" },
+        { "WeapMaterialSteel",          "material_steel" },
+        { "WeapMaterialDraugr",         "material_steel" },        // SkyUI groupe avec Steel
+        { "WeapMaterialDraugrHoned",    "material_steel" },
+        { "WeapMaterialIron",           "material_iron" },
+        { "WeapMaterialImperial",       "material_imperial" },
+        { "WeapMaterialSilver",         "material_silver" },
+        { "WeapMaterialFalmer",         "material_falmer" },
+        { "WeapMaterialFalmerHoned",    "material_falmer" },
+        { "DLC2WeaponMaterialNordic",   "material_nordic" },
+        { "DLC2WeaponMaterialStalhrim", "material_stalhrim" },
+        { "WeapMaterialWood",           "material_wood" },
+    };
+    for (auto& [edid, key] : kMats) {
+        if (w->HasKeywordString(edid)) return key;
+    }
+    return nullptr;
+}
+
+// Materiau d'armure : meme principe.
+static const char* GetArmorMaterialKey(const RE::TESObjectARMO* a) {
+    if (!a) return nullptr;
+    static const std::pair<const char*, const char*> kMats[] = {
+        { "ArmorMaterialDaedric",                 "material_daedric" },
+        { "ArmorMaterialDragonplate",             "material_dragon" },
+        { "ArmorMaterialDragonscale",             "material_dragon" },
+        { "ArmorMaterialDwarven",                 "material_dwarven" },
+        { "ArmorMaterialEbony",                   "material_ebony" },
+        { "ArmorMaterialElven",                   "material_elven" },
+        { "ArmorMaterialElvenGilded",             "material_elven" },
+        { "ArmorMaterialGlass",                   "material_glass" },
+        { "ArmorMaterialHide",                    "material_hide" },
+        { "ArmorMaterialScaled",                  "material_hide" },     // SkyUI groupe avec Hide
+        { "ArmorMaterialStormcloak",              "material_stormcloak" },
+        { "ArmorMaterialBearStormcloak",          "material_stormcloak" },
+        { "ArmorMaterialImperialHeavy",           "material_imperial" },
+        { "ArmorMaterialImperialLight",           "material_imperial" },
+        { "ArmorMaterialImperialStudded",         "material_imperial" },
+        { "ArmorMaterialStudded",                 "material_imperial" },
+        { "ArmorMaterialIron",                    "material_iron" },
+        { "ArmorMaterialIronBanded",              "material_iron" },
+        { "ArmorMaterialLeather",                 "material_leather" },
+        { "ArmorMaterialOrcish",                  "material_orcish" },
+        { "ArmorMaterialSteel",                   "material_steel" },
+        { "ArmorMaterialSteelPlate",              "material_steel" },
+        { "ArmorMaterialFalmer",                  "material_falmer" },
+        { "DLC1ArmorMaterialFalmerHardened",      "material_falmer" },
+        { "DLC1ArmorMaterielFalmerHeavy",         "material_falmer" },
+        { "DLC1ArmorMaterielFalmerHeavyOriginal", "material_falmer" },
+        { "DLC2ArmorMaterialBonemoldHeavy",       "material_bonemold" },
+        { "DLC2ArmorMaterialBonemoldLight",       "material_bonemold" },
+        { "DLC2ArmorMaterialChitinHeavy",         "material_chitin" },
+        { "DLC2ArmorMaterialChitinLight",         "material_chitin" },
+        { "DLC2ArmorMaterialMoragTong",           "material_chitin" },
+        { "DLC2ArmorMaterialNordicHeavy",         "material_nordic" },
+        { "DLC2ArmorMaterialNordicLight",         "material_nordic" },
+        { "DLC2ArmorMaterialStalhrimHeavy",       "material_stalhrim" },
+        { "DLC2ArmorMaterialStalhrimLight",       "material_stalhrim" },
+    };
+    for (auto& [edid, key] : kMats) {
+        if (a->HasKeywordString(edid)) return key;
+    }
+    return nullptr;
+}
+
+// Construit la fiche d'identite complete a vocaliser.
+// Retourne L"" si l'item est null ou n'a vraiment rien a dire.
+static std::wstring BuildItemFactSheet(RE::InventoryEntryData* entry) {
+    if (!entry || !entry->object) return L"";
+    auto* obj = entry->object;
+
+    // -------- Cas 1 : ARME --------
+    if (auto* weap = obj->As<RE::TESObjectWEAP>()) {
+        std::wstring out;
+        switch (weap->GetWeaponType()) {
+            case RE::WEAPON_TYPE::kHandToHandMelee: out = TR("weapon_hand_to_hand"); break;
+            case RE::WEAPON_TYPE::kOneHandSword:    out = TR("weapon_one_hand_sword"); break;
+            case RE::WEAPON_TYPE::kOneHandDagger:   out = TR("weapon_dagger"); break;
+            case RE::WEAPON_TYPE::kOneHandAxe:      out = TR("weapon_one_hand_axe"); break;
+            case RE::WEAPON_TYPE::kOneHandMace:     out = TR("weapon_one_hand_mace"); break;
+            case RE::WEAPON_TYPE::kTwoHandSword:    out = TR("weapon_two_hand_sword"); break;
+            case RE::WEAPON_TYPE::kTwoHandAxe:
+                // Le moteur regroupe haches 2H et marteaux 2H sous kTwoHandAxe.
+                // Le keyword WeapTypeWarhammer permet de distinguer.
+                if (weap->HasKeywordString("WeapTypeWarhammer"))
+                    out = TR("weapon_warhammer");
+                else
+                    out = TR("weapon_two_hand_axe");
+                break;
+            case RE::WEAPON_TYPE::kBow:             out = TR("weapon_bow"); break;
+            case RE::WEAPON_TYPE::kStaff:           out = TR("weapon_staff"); break;
+            case RE::WEAPON_TYPE::kCrossbow:        out = TR("weapon_crossbow"); break;
+            default:                                out = TR("weapon"); break;
+        }
+        if (const char* matKey = GetWeaponMaterialKey(weap))
+            out += L", " + TR(matKey);
+        return out;
+    }
+
+    // -------- Cas 2 : ARMURE --------
+    if (auto* armo = obj->As<RE::TESObjectARMO>()) {
+        std::wstring out;
+        // Bijou (anneau/collier) sont Clothing avec slot Ring/Amulet : on
+        // privilegie le mot "bijou" pour matcher la convention SkyUI ($Jewelry).
+        using Slot = RE::BIPED_MODEL::BipedObjectSlot;
+        const bool isJewelry = armo->HasPartOf(Slot::kRing) ||
+                               armo->HasPartOf(Slot::kAmulet);
+
+        if (isJewelry) {
+            out = TR("armor_jewelry");
+        } else {
+            switch (armo->GetArmorType()) {
+                case RE::BIPED_MODEL::ArmorType::kLightArmor: out = TR("armor_light"); break;
+                case RE::BIPED_MODEL::ArmorType::kHeavyArmor: out = TR("armor_heavy"); break;
+                case RE::BIPED_MODEL::ArmorType::kClothing:   out = TR("armor_clothing"); break;
+                default:                                       out = TR("armor"); break;
+            }
+        }
+
+        // Slot d'equipement (priorite : shield > head/circlet > body > ...).
+        const char* slotKey = nullptr;
+        if      (armo->HasPartOf(Slot::kShield))    slotKey = "slot_shield";
+        else if (armo->HasPartOf(Slot::kHead))      slotKey = "slot_head";
+        else if (armo->HasPartOf(Slot::kCirclet))   slotKey = "slot_head";
+        else if (armo->HasPartOf(Slot::kHair))      slotKey = "slot_head";
+        else if (armo->HasPartOf(Slot::kBody))      slotKey = "slot_body";
+        else if (armo->HasPartOf(Slot::kHands))     slotKey = "slot_hands";
+        else if (armo->HasPartOf(Slot::kForearms))  slotKey = "slot_hands";
+        else if (armo->HasPartOf(Slot::kFeet))      slotKey = "slot_feet";
+        else if (armo->HasPartOf(Slot::kCalves))    slotKey = "slot_feet";
+        else if (armo->HasPartOf(Slot::kAmulet))    slotKey = "slot_amulet";
+        else if (armo->HasPartOf(Slot::kRing))      slotKey = "slot_ring";
+
+        if (slotKey) out += L", " + TR(slotKey);
+
+        if (const char* matKey = GetArmorMaterialKey(armo))
+            out += L", " + TR(matKey);
+        return out;
+    }
+
+    // -------- Cas 3 : TYPE GENERAL (potion, livre, ...) --------
+    switch (obj->GetFormType()) {
+        case RE::FormType::AlchemyItem:  return TR("item_potion");
+        case RE::FormType::Book:         return TR("item_book");
+        case RE::FormType::Note:         return TR("item_note");
+        case RE::FormType::Ingredient:   return TR("item_ingredient");
+        case RE::FormType::SoulGem:      return TR("item_soul_gem");
+        case RE::FormType::Misc:         return TR("item_misc");
+        case RE::FormType::Scroll:       return TR("item_scroll");
+        case RE::FormType::Ammo:         return TR("item_ammo");
+        case RE::FormType::KeyMaster:    return TR("item_key");
+        case RE::FormType::Light:        return TR("item_torch");
+        default:                         return L"";
+    }
+}
+
+// Recupere l'item selectionne dans le menu d'inventaire ouvert (n'importe
+// lequel parmi InventoryMenu / ContainerMenu / BarterMenu / GiftMenu) et
+// vocalise sa fiche d'identite via BuildItemFactSheet.
+//
+// Appele par la touche K dans plugin.cpp. Annonce vide ou TR("no item") si
+// aucun menu actif ou aucun item selectionne, pour donner un retour audio
+// au joueur (sinon il ne sait pas si la touche a ete prise en compte).
+static void SpeakItemFactSheetForCurrentMenu() {
+    auto* ui = RE::UI::GetSingleton();
+    if (!ui) return;
+
+    // Cherche le 1er menu d'item ouvert. Un seul peut etre actif a la fois,
+    // donc l'ordre de check n'a pas d'importance fonctionnelle.
+    RE::InventoryEntryData* entry = nullptr;
+
+    if (auto m = ui->GetMenu(RE::InventoryMenu::MENU_NAME)) {
+        if (auto* im = static_cast<RE::InventoryMenu*>(m.get())) {
+            auto& rd = im->GetRuntimeData();
+            if (rd.itemList) {
+                if (auto* sel = rd.itemList->GetSelectedItem())
+                    entry = sel->data.objDesc;
+            }
+        }
+    }
+    else if (auto m = ui->GetMenu(RE::ContainerMenu::MENU_NAME)) {
+        if (auto* cm = static_cast<RE::ContainerMenu*>(m.get())) {
+            auto& rd = cm->GetRuntimeData();
+            if (rd.itemList) {
+                if (auto* sel = rd.itemList->GetSelectedItem())
+                    entry = sel->data.objDesc;
+            }
+        }
+    }
+    else if (auto m = ui->GetMenu(RE::BarterMenu::MENU_NAME)) {
+        if (auto* bm = static_cast<RE::BarterMenu*>(m.get())) {
+            auto& rd = bm->GetRuntimeData();
+            if (rd.itemList) {
+                if (auto* sel = rd.itemList->GetSelectedItem())
+                    entry = sel->data.objDesc;
+            }
+        }
+    }
+    else if (auto m = ui->GetMenu(RE::GiftMenu::MENU_NAME)) {
+        if (auto* gm = static_cast<RE::GiftMenu*>(m.get())) {
+            auto& rd = gm->GetRuntimeData();
+            if (rd.itemList) {
+                if (auto* sel = rd.itemList->GetSelectedItem())
+                    entry = sel->data.objDesc;
+            }
+        }
+    }
+
+    if (!entry) {
+        Speak(TR("no item selected"));
+        return;
+    }
+
+    const std::wstring sheet = BuildItemFactSheet(entry);
+    if (sheet.empty()) {
+        Speak(TR("no additional info"));
+    } else {
+        Speak(sheet);
+    }
+}
+
 // Formats a weight value with one decimal, comma as separator
 static std::wstring FormatWeight(double w) {
     const double rounded = std::round(w * 10.0) / 10.0;
@@ -1150,14 +1477,16 @@ static std::atomic<uint32_t> g_keyPrevObject{201};    // Page Up
 static std::atomic<uint32_t> g_keyAnnounce{199};      // Home
 static std::atomic<uint32_t> g_keySubcategory{207};   // End
 static std::atomic<uint32_t> g_keyTeleport{199};      // Home (+ Alt)
+static std::atomic<uint32_t> g_keyEnemyHealth{48};    // B (annonce vie ennemi)
 static std::atomic<float> g_mcmScanRange{0.0f};       // 0 = illimité
 static std::atomic<float> g_mcmTeleportRange{5000.0f}; // distance max de téléportation
 
 // ---------------- INI settings ----------------
 
-static float g_volumeAim       = 1.0f;
-static float g_volumeKill      = 1.0f;
-static float g_volumeDragonHit = 1.0f;
+static float g_volumeAim         = 1.0f;
+static float g_volumeKill        = 1.0f;
+static float g_volumeDragonHit   = 1.0f;
+static float g_volumeLockpickBip = 1.0f;
 
 static void LoadINISettings() {
     // Chemin : Data/SKSE/Plugins/SkyrimNVDA.ini (à côté du DLL)
@@ -1174,19 +1503,22 @@ static void LoadINISettings() {
         try { return std::stof(buf); } catch (...) { return def; }
     };
 
-    g_volumeAim       = readFloat("Sounds", "AimVolume", 1.0f);
-    g_volumeKill      = readFloat("Sounds", "KillVolume", 1.0f);
-    g_volumeDragonHit = readFloat("Sounds", "DragonHitVolume", 1.0f);
+    g_volumeAim         = readFloat("Sounds", "AimVolume", 1.0f);
+    g_volumeKill        = readFloat("Sounds", "KillVolume", 1.0f);
+    g_volumeDragonHit   = readFloat("Sounds", "DragonHitVolume", 1.0f);
+    g_volumeLockpickBip = readFloat("Sounds", "LockpickBipVolume", 1.0f);
 
-    LOG("INI loaded: aim={:.2f} kill={:.2f} dragonHit={:.2f}", g_volumeAim, g_volumeKill, g_volumeDragonHit);
+    LOG("INI loaded: aim={:.2f} kill={:.2f} dragonHit={:.2f} lockpickBip={:.2f}",
+        g_volumeAim, g_volumeKill, g_volumeDragonHit, g_volumeLockpickBip);
 }
 
 // ---------------- Custom sounds via Papyrus ----------------
 
 // FormIDs locaux SOUN dans SkyrimTTS_AutoWalk.esp (le script Papyrus résout le load order)
-static constexpr RE::FormID g_soundAimLoopID   = 0x806;
-static constexpr RE::FormID g_soundEnemyDeathID = 0x807;
-static constexpr RE::FormID g_soundDragonHitID  = 0x808;
+static constexpr RE::FormID g_soundAimLoopID     = 0x806;
+static constexpr RE::FormID g_soundEnemyDeathID  = 0x807;
+static constexpr RE::FormID g_soundDragonHitID   = 0x808;
+static constexpr RE::FormID g_soundLockpickBipID = 0x817;
 
 // Appelle une fonction son sur le script Papyrus SkyrimTTS_AutoWalk
 static void CallSoundPapyrus(const char* funcName, RE::FormID soundFormID = 0, float volume = 1.0f) {

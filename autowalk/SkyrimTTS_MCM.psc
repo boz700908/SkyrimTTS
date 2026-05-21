@@ -20,6 +20,7 @@ bool property AutoAimEnabled = true auto
 float property AimVolume = 0.2 auto
 float property KillVolume = 0.4 auto
 float property DragonHitVolume = 1.0 auto
+float property LockpickBipVolume = 1.0 auto
 float property ScanRange = 0.0 auto    ; 0 = unlimited
 float property TeleportRange = 5000.0 auto
 
@@ -30,6 +31,7 @@ int property KeyPrevObject = 201 auto   ; Page Up
 int property KeyAnnounce = 199 auto     ; Home (+ Shift = autowalk)
 int property KeySubcategory = 207 auto  ; End
 int property KeyTeleport = 199 auto     ; Home (+ Alt)
+int property KeyEnemyHealth = 48 auto   ; B (annonce vie ennemi)
 
 ; Gamepad button indexes (index dans la liste partagée, voir C++ g_gamepadButtonCodes)
 ; 0=DpadUp 1=DpadDown 2=DpadLeft 3=DpadRight 4=A 5=B 6=X 7=Y 8=LSclick 9=RSclick 10=RB 11=Start 12=Back 13=None
@@ -52,6 +54,7 @@ int oidAutoAimToggle
 int oidAimVolume
 int oidKillVolume
 int oidDragonHitVolume
+int oidLockpickBipVolume
 int oidScanRange
 int oidTeleportRange
 int oidKeyScan
@@ -60,6 +63,7 @@ int oidKeyPrevObject
 int oidKeyAnnounce
 int oidKeySubcategory
 int oidKeyTeleport
+int oidKeyEnemyHealth
 int oidResetAll
 
 ; Gamepad OIDs
@@ -232,6 +236,7 @@ event OnPageReset(string page)
         oidAimVolume = AddSliderOption("$MCM_AimSound", AimVolume, "{2}")
         oidKillVolume = AddSliderOption("$MCM_KillSound", KillVolume, "{2}")
         oidDragonHitVolume = AddSliderOption("$MCM_DragonHitSound", DragonHitVolume, "{2}")
+        oidLockpickBipVolume = AddSliderOption("$MCM_LockpickBipSound", LockpickBipVolume, "{2}")
 
     elseIf page == "$MCM_PageControls"
         AddHeaderOption("$MCM_HeaderScannerKeys")
@@ -241,6 +246,7 @@ event OnPageReset(string page)
         oidKeyPrevObject = AddKeyMapOption("$MCM_KeyPrevObject", KeyPrevObject)
         oidKeySubcategory = AddKeyMapOption("$MCM_KeySubcategory", KeySubcategory)
         oidKeyTeleport = AddKeyMapOption("$MCM_KeyTeleport", KeyTeleport)
+        oidKeyEnemyHealth = AddKeyMapOption("$MCM_KeyEnemyHealth", KeyEnemyHealth)
 
     elseIf page == "$MCM_PageGamepad"
         AddHeaderOption("$MCM_HeaderLBCombos")
@@ -290,6 +296,7 @@ event OnOptionSelect(int option)
             AimVolume = 0.2
             KillVolume = 0.4
             DragonHitVolume = 1.0
+            LockpickBipVolume = 1.0
             ScanRange = 0.0
             TeleportRange = 5000.0
             KeyScan = 76
@@ -298,6 +305,7 @@ event OnOptionSelect(int option)
             KeyAnnounce = 199
             KeySubcategory = 207
             KeyTeleport = 199
+            KeyEnemyHealth = 48
             GpIdxScanNext = 1
             GpIdxScanPrev = 0
             GpIdxScanAnnounce = 2
@@ -335,6 +343,12 @@ event OnOptionSliderOpen(int option)
         SetSliderDialogRange(0.0, 2.0)
         SetSliderDialogInterval(0.1)
 
+    elseIf option == oidLockpickBipVolume
+        SetSliderDialogStartValue(LockpickBipVolume)
+        SetSliderDialogDefaultValue(1.0)
+        SetSliderDialogRange(0.0, 2.0)
+        SetSliderDialogInterval(0.1)
+
     elseIf option == oidScanRange
         SetSliderDialogStartValue(ScanRange)
         SetSliderDialogDefaultValue(0.0)
@@ -365,6 +379,11 @@ event OnOptionSliderAccept(int option, float value)
         DragonHitVolume = value
         SetSliderOptionValue(option, value, "{2}")
         SkyrimTTS_MCM_Native.SetDragonHitVolume(value)
+
+    elseIf option == oidLockpickBipVolume
+        LockpickBipVolume = value
+        SetSliderOptionValue(option, value, "{2}")
+        SkyrimTTS_MCM_Native.SetLockpickBipVolume(value)
 
     elseIf option == oidScanRange
         ScanRange = value
@@ -492,6 +511,11 @@ event OnOptionKeyMapChange(int option, int keyCode, string conflictControl, stri
         KeyTeleport = keyCode
         SetKeyMapOptionValue(option, keyCode)
         SkyrimTTS_MCM_Native.SetKeyTeleport(keyCode)
+
+    elseIf option == oidKeyEnemyHealth
+        KeyEnemyHealth = keyCode
+        SetKeyMapOptionValue(option, keyCode)
+        SkyrimTTS_MCM_Native.SetKeyEnemyHealth(keyCode)
     endIf
 endEvent
 
@@ -509,6 +533,8 @@ event OnOptionHighlight(int option)
         SetInfoText("$MCM_Info_KillSound")
     elseIf option == oidDragonHitVolume
         SetInfoText("$MCM_Info_DragonHitSound")
+    elseIf option == oidLockpickBipVolume
+        SetInfoText("$MCM_Info_LockpickBipSound")
     elseIf option == oidScanRange
         SetInfoText("$MCM_Info_ScanRange")
     elseIf option == oidTeleportRange
@@ -525,6 +551,8 @@ event OnOptionHighlight(int option)
         SetInfoText("$MCM_Info_KeySubcategory")
     elseIf option == oidKeyTeleport
         SetInfoText("$MCM_Info_KeyTeleport")
+    elseIf option == oidKeyEnemyHealth
+        SetInfoText("$MCM_Info_KeyEnemyHealth")
     elseIf option == oidResetAll
         SetInfoText("$MCM_Info_ResetAll")
     elseIf option == oidGpScanNext
@@ -560,6 +588,7 @@ function SyncAllToNative()
     SkyrimTTS_MCM_Native.SetAimVolume(AimVolume)
     SkyrimTTS_MCM_Native.SetKillVolume(KillVolume)
     SkyrimTTS_MCM_Native.SetDragonHitVolume(DragonHitVolume)
+    SkyrimTTS_MCM_Native.SetLockpickBipVolume(LockpickBipVolume)
     SkyrimTTS_MCM_Native.SetScanRange(ScanRange)
     SkyrimTTS_MCM_Native.SetKeyScan(KeyScan)
     SkyrimTTS_MCM_Native.SetKeyAnnounce(KeyAnnounce)
@@ -567,6 +596,7 @@ function SyncAllToNative()
     SkyrimTTS_MCM_Native.SetKeyPrevObject(KeyPrevObject)
     SkyrimTTS_MCM_Native.SetKeySubcategory(KeySubcategory)
     SkyrimTTS_MCM_Native.SetKeyTeleport(KeyTeleport)
+    SkyrimTTS_MCM_Native.SetKeyEnemyHealth(KeyEnemyHealth)
     SkyrimTTS_MCM_Native.SetScanRange(ScanRange)
     SkyrimTTS_MCM_Native.SetTeleportRange(TeleportRange)
     ; Gamepad
