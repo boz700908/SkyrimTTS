@@ -79,6 +79,7 @@ struct ScannedObject {
     bool        dead{false};
     bool        isCellDoor{false};     // porte avec chargement de cellule
     bool        isFurniture{false};    // meuble (chaise, lit, etc.)
+    bool        isCraftingStation{false};  // forge, enchanteur, alchimie, meule, tannerie, four, cookpot, atelier d'armurier
     RE::FormType formType{RE::FormType::None};  // type Bethesda du base form (Weapon, Armor, AlchemyItem, etc.)
     std::wstring doorDestination;   // destination d'une porte (nom de la cellule)
     // Obstacles destructibles (toiles d'araignée, barricades, racines, portes
@@ -261,6 +262,42 @@ static bool IsDragon(RE::Actor* actor) {
     return actor && actor->HasKeywordString("ActorTypeDragon");
 }
 
+// --- Detection station de craft ---
+// Une station de craft est techniquement une Furniture avec :
+//   - soit workBenchData.benchType != kNone (couvre meule, atelier d'armurier,
+//     enchanteur, alchimie, et leurs variantes "experiment")
+//   - soit un keyword vanilla : CraftingSmithingForge, CraftingCookpot,
+//     CraftingSmelter, CraftingTanningRack (couvre forge, cookpot, smelter,
+//     tanning rack — vanilla et Hearthfire/Dragonborn confondus).
+//
+// On detecte les keywords via HasKeywordString sur le base form : c'est
+// l'API native du moteur, marche partout, et evite l'assertion buggee dans
+// BGSDefaultObjectManager::GetObject(DefaultObjectID) qui plante en debug
+// multi-target (l'assert verifie la valeur encodee SE|VR au lieu de l'index
+// decode, donc tout DefaultObjectID > 183 fait sauter l'assertion).
+static bool IsCraftingStation(RE::TESObjectREFR& ref) {
+    auto* base = ref.GetBaseObject();
+    if (!base) return false;
+    auto* furn = base->As<RE::TESFurniture>();
+    if (!furn) return false;
+
+    // 1) Workbench data (meule, atelier d'armurier, enchanteur, alchimie et
+    //    leurs variantes Experiment).
+    if (furn->workBenchData.benchType.get() != RE::TESFurniture::WorkBenchData::BenchType::kNone) {
+        return true;
+    }
+
+    // 2) Keywords vanilla (forge, cookpot, smelter, tanning rack). Les editor
+    //    IDs sont stables entre toutes les versions de Skyrim et Hearthfire/
+    //    Dragonborn reutilisent les memes.
+    if (furn->HasKeywordString("CraftingSmithingForge")) return true;
+    if (furn->HasKeywordString("CraftingCookpot"))       return true;
+    if (furn->HasKeywordString("CraftingSmelter"))       return true;
+    if (furn->HasKeywordString("CraftingTanningRack"))   return true;
+
+    return false;
+}
+
 // --- Déterminer la catégorie d'une référence ---
 static ScanCategory CategorizeRef(RE::TESObjectREFR& ref) {
     // Acteur ?
@@ -278,6 +315,12 @@ static ScanCategory CategorizeRef(RE::TESObjectREFR& ref) {
     if (type == RE::FormType::Door) return kCatDoors;
     if (type == RE::FormType::Container) return kCatContainers;
     if (type == RE::FormType::Furniture || type == RE::FormType::Activator)
+        return kCatActivators;
+
+    // Cas particulier : "Pousse du Primarbor" (Eldergleam root, base 0x1CB81)
+    // est un FormType::Tree (32) en vanilla. On la categorise comme Activator
+    // pour qu'elle apparaisse dans le sous-filtre Destructibles du scanner.
+    if (base->GetFormID() == 0x0001CB81)
         return kCatActivators;
 
     // Items au sol
@@ -359,7 +402,7 @@ static std::wstring GetSubcategoryName(ScanSubcategory sub) {
     } else if (g_scanCategory == kCatActivators) {
         switch (sub) {
             case ScanSubcategory::All: return TR("All");
-            case ScanSubcategory::TypeA: return TR("Furniture");
+            case ScanSubcategory::TypeA: return TR("Crafting");
             case ScanSubcategory::TypeB: return TR("Other");
             case ScanSubcategory::ActivatorDestructible: return TR("Destructible");
             default: return L"?";
@@ -406,8 +449,10 @@ static bool MatchesSubcategory(const ScannedObject& obj) {
         if (g_scanSubcategory == ScanSubcategory::TypeA) return !looted;  // Unlooted
         if (g_scanSubcategory == ScanSubcategory::TypeB) return looted;   // Looted
     } else if (g_scanCategory == kCatActivators) {
-        if (g_scanSubcategory == ScanSubcategory::TypeA) return obj.isFurniture;
-        if (g_scanSubcategory == ScanSubcategory::TypeB) return !obj.isFurniture;
+        if (g_scanSubcategory == ScanSubcategory::TypeA) return obj.isCraftingStation;
+        // "Other" : tout ce qui n'est PAS une station de craft (leviers, chaines,
+        // mais aussi les meubles ordinaires : chaises, lits, etabli a cire, etc.).
+        if (g_scanSubcategory == ScanSubcategory::TypeB) return !obj.isCraftingStation;
         if (g_scanSubcategory == ScanSubcategory::ActivatorDestructible) return obj.isDestructible;
     } else if (g_scanCategory == kCatItems || g_scanCategory == kCatAll) {
         // Sous-filtres items communs a kCatItems et kCatAll.
@@ -717,7 +762,12 @@ static ScriptTypeKind GetScriptTypeCached(RE::TESObjectREFR& ref) {
                     result = ScriptTypeKind::WebEggSac;
                 } else if (try2("CWBarricadeScript", "cwbarricadescript")) {
                     result = ScriptTypeKind::Barricade;
-                } else if (try2("DA16EldergleamRootScript", "DA16EldergleamRootsScript")) {
+                } else if (try2("T03EldergleamRootScript", "t03eldergleamrootscript")) {
+                    // Nom de script vanilla CONFIRME : T03EldergleamRootScript
+                    // (le prefixe T03 vient du nom interne du donjon Eldergleam
+                    // Sanctuary, pas de DA16 qui etait une erreur). Cf script
+                    // T03EldergleamRootScript.psc dans Skyrim.esm scripts.
+                    // Verifie via repo digital-apple/TESVScripts 2026-05.
                     result = ScriptTypeKind::EldergleamRoot;
                 } else if (try2("defaultBreakableDoorSCRIPT", "defaultBreakableDoorScript")) {
                     result = ScriptTypeKind::BreakableDoor;
@@ -842,7 +892,67 @@ static void ScanCell(RE::TESObjectCELL* cell, RE::PlayerCharacter* player, const
 
         try {
             if (&ref == player) continue;
-            if (ref.IsDisabled() || ref.IsDeleted()) continue;
+
+            // DEBUG TEMPORAIRE : log toute ref avec root/racine/primarbor/
+            // eldergleam/t03 dans son nom, AVANT le filtre disabled, pour
+            // diagnostiquer la quete T03 chez l'utilisateur. A retirer apres.
+            {
+                auto* base_dbg = ref.GetBaseObject();
+                if (base_dbg) {
+                    const char* dn = ref.GetDisplayFullName();
+                    const char* be = base_dbg->GetFormEditorID();
+                    const char* bn = base_dbg->GetName();
+                    auto contains_ci = [](const char* hay, const char* needle) {
+                        if (!hay || !*hay) return false;
+                        std::string h = hay;
+                        for (auto& c : h) c = static_cast<char>(std::tolower(c));
+                        return h.find(needle) != std::string::npos;
+                    };
+                    bool match = false;
+                    for (const char* s : {dn, be, bn}) {
+                        if (contains_ci(s, "root") || contains_ci(s, "racine") ||
+                            contains_ci(s, "primarbor") || contains_ci(s, "eldergleam") ||
+                            contains_ci(s, "t03"))
+                        { match = true; break; }
+                    }
+                    if (match) {
+                        auto p = ref.GetPosition();
+                        auto d = playerPos - p;
+                        LOG("ELDERGLEAM-DEBUG refID=0x{:08X} baseID=0x{:08X} type={} "
+                            "name='{}' base.name='{}' base.editorID='{}' "
+                            "disabled={} deleted={} dist={:.0f} pos=({:.0f},{:.0f},{:.0f})",
+                            ref.GetFormID(),
+                            base_dbg->GetFormID(),
+                            static_cast<int>(base_dbg->GetFormType()),
+                            dn ? dn : "",
+                            bn ? bn : "",
+                            be ? be : "",
+                            ref.IsDisabled(),
+                            ref.IsDeleted(),
+                            d.Length(),
+                            p.x, p.y, p.z);
+                    }
+                }
+            }
+
+            // Exception : on laisse passer les Pousses du Primarbor (racines
+            // de la quete T03 "Les Bienfaits de la Nature") meme si elles
+            // sont disabled. Le moteur les laisse parfois disabled jusqu'a
+            // ce que le joueur s'approche d'un trigger qui les enable, mais
+            // l'utilisateur veut pouvoir les reperer a l'avance pour s'y
+            // diriger. FormID base 0x0001CB81 (verifie via log capture).
+            {
+                auto* base_pre = ref.GetBaseObject();
+                bool isEldergleamRoot =
+                    base_pre && base_pre->GetFormID() == 0x0001CB81;
+                if (!isEldergleamRoot) {
+                    if (ref.IsDisabled() || ref.IsDeleted()) continue;
+                } else {
+                    // Pour une racine, on accepte disabled mais on skip
+                    // tout de meme deleted (cadavre vraiment supprime).
+                    if (ref.IsDeleted()) continue;
+                }
+            }
 
             auto* base = ref.GetBaseObject();
             if (!base) continue;
@@ -1035,6 +1145,11 @@ static void ScanCell(RE::TESObjectCELL* cell, RE::PlayerCharacter* player, const
             // Détection meuble (Furniture)
             bool isFurniture = (base->GetFormType() == RE::FormType::Furniture);
 
+            // Détection station de craft (sous-ensemble de Furniture) : forge,
+            // enchanteur, alchimie, meule, atelier d'armurier, four, cookpot,
+            // tannerie. Seules les Furniture peuvent l'etre.
+            bool isCraftingStation = isFurniture && IsCraftingStation(ref);
+
             // Détection destructible (Tier 1 : DEST record sur le base form,
             // Tier 2 : script Papyrus connu pour donner un label précis).
             // Filtre de type : seulement Activator / Door / MovableStatic — les
@@ -1044,6 +1159,35 @@ static void ScanCell(RE::TESObjectCELL* cell, RE::PlayerCharacter* player, const
             bool isDestructible = false;
             int  destructibleHealthPercent = 100;
             const wchar_t* destructibleLabel = nullptr;
+
+            // CAS SPECIAL : "Pousses du Primarbor" (Eldergleam Roots en VO),
+            // quete T03 "Les Bienfaits de la Nature". Ces racines bloquent
+            // le chemin spiralé qui mene a l'arbre Primarbor (Eldergleam) et
+            // doivent etre coupees avec Bouillure (Nettlebane).
+            //
+            // Confirme via log capture en jeu (FormID + base + type) :
+            //   refID=0x0001CB83 base=0x0001CB81 type=Tree (32)
+            //   name='Pousse du Primarbor' (FR) / 'Eldergleam Root' (EN)
+            //
+            // ATTENTION : ce sont des FormType::Tree (pas Activator comme
+            // documente initialement). Et le base FormID est 0x1CB81 (pas
+            // 0x1CD1A qui etait une fausse info).
+            //
+            // Pas de DEST record : la pousse fait juste Disable() quand le
+            // joueur l'active avec Bouillure (script T03EldergleamRootScript).
+            {
+                if (base->GetFormID() == 0x0001CB81 &&
+                    !(ref.GetFormFlags() & RE::TESForm::RecordFlags::kDestroyed))
+                {
+                    isDestructible = true;
+                    destructibleLabel = L"Eldergleam root";
+                    destructibleHealthPercent = 100;
+                }
+            }
+
+            // Bloc destructible standard (DEST record requis). Skip si on a
+            // deja flag comme racine Eldergleam ci-dessus.
+            if (!isDestructible)
             {
                 auto ft = base->GetFormType();
                 bool candidateType = (ft == RE::FormType::Activator ||
@@ -1140,6 +1284,7 @@ static void ScanCell(RE::TESObjectCELL* cell, RE::PlayerCharacter* player, const
             obj.dead = (cat == kCatCorpses);
             obj.isCellDoor = isCellDoor;
             obj.isFurniture = isFurniture;
+            obj.isCraftingStation = isCraftingStation;
             obj.formType = base->GetFormType();
             obj.doorDestination = std::move(doorDest);
             obj.isDestructible = isDestructible;
@@ -1195,6 +1340,74 @@ static void DoScanInternal() {
             // Fallback : cellule du joueur uniquement
             ScanCell(playerCell, player, playerPos);
             LOG("Scanner: exterior fallback, single cell");
+        }
+    }
+
+    // Passage supplementaire pour les acteurs hors-cellule (dragons en vol,
+    // notamment Parturnax au sommet de la Gorge du Monde qui vole avant
+    // l'interaction). Ces acteurs ne sont pas dans cell->references car ils
+    // ne sont rattaches a aucune cellule pendant le vol. On les trouve via
+    // ProcessLists, le meme mecanisme que Shift+X utilise.
+    {
+        std::set<RE::FormID> alreadyScanned;
+        for (auto& obj : g_scannedAll) {
+            if (obj.formID != 0) alreadyScanned.insert(obj.formID);
+        }
+
+        auto* procLists = RE::ProcessLists::GetSingleton();
+        if (procLists) {
+            int procAdded = 0;
+            float maxRange = g_mcmScanRange.load();
+
+            auto addFromProcess = [&](RE::Actor* actor) {
+                if (!actor) return;
+                if (actor == player) return;
+                if (actor->IsDeleted()) return;
+                if (actor->IsDisabled()) return;
+                if (!actor->Is3DLoaded()) return;
+                RE::FormID fid = actor->GetFormID();
+                if (alreadyScanned.count(fid)) return;  // deja capte par la boucle cellule
+
+                auto refPos = actor->GetPosition();
+                auto diff = playerPos - refPos;
+                float dist = diff.Length();
+                if (maxRange > 0.0f && dist > maxRange) return;
+
+                const char* rawName = actor->GetDisplayFullName();
+                if (!rawName || !*rawName) return;
+
+                ScannedObject obj;
+                obj.formID = fid;
+                obj.name = Utf8ToWString(rawName);
+                obj.distance = dist;
+                obj.zDiff = refPos.z - playerPos.z;
+                obj.lastKnownPos = refPos;
+                obj.category = CategorizeRef(*actor);
+                obj.dead = actor->IsDead();
+                auto* base = actor->GetBaseObject();
+                obj.formType = base ? base->GetFormType() : RE::FormType::None;
+
+                if (IsDragon(actor)) {
+                    LOG("Scanner: DRAGON via ProcessLists '{}' FormID={:08X} dist={:.0f} z={:.0f}",
+                        rawName, fid, dist, refPos.z - playerPos.z);
+                }
+
+                g_scannedAll.push_back(std::move(obj));
+                alreadyScanned.insert(fid);
+                procAdded++;
+            };
+
+            for (auto& handle : procLists->highActorHandles) {
+                auto p = handle.get();
+                if (p) addFromProcess(p.get());
+            }
+            for (auto& handle : procLists->middleHighActorHandles) {
+                auto p = handle.get();
+                if (p) addFromProcess(p.get());
+            }
+            if (procAdded > 0) {
+                LOG("Scanner: ProcessLists added {} actors not in cells (flying dragons, etc.)", procAdded);
+            }
         }
     }
 
@@ -1795,11 +2008,26 @@ static void RefreshFilteredList() {
         // - Quêtes : cible cross-cell souvent dans une cellule non chargée
         // - Locations : markers de carte distants (villes, donjons à 8000+ unites)
         //   par essence non-3D-loaded, on garde leur position via lastKnownPos.
+        // - Pousses du Primarbor (0x1CB81) : disabled jusqu'a ce que le
+        //   joueur s'approche d'un trigger (script T03), mais on veut que
+        //   le joueur puisse s'y diriger a l'avance via le scanner.
         if (obj.category != kCatQuests && obj.category != kCatLocations) {
-            if (ref->IsDisabled() || ref->IsDeleted() || !ref->Is3DLoaded()) {
-                obj.category = kCatAll;
-                obj.formID = 0;
-                continue;
+            const auto* base = ref->GetBaseObject();
+            const bool isEldergleamRoot =
+                base && base->GetFormID() == 0x0001CB81;
+            if (!isEldergleamRoot) {
+                if (ref->IsDisabled() || ref->IsDeleted() || !ref->Is3DLoaded()) {
+                    obj.category = kCatAll;
+                    obj.formID = 0;
+                    continue;
+                }
+            } else {
+                // Pour les racines Eldergleam, on tolere disabled.
+                if (ref->IsDeleted()) {
+                    obj.category = kCatAll;
+                    obj.formID = 0;
+                    continue;
+                }
             }
         }
 
@@ -3209,6 +3437,14 @@ static bool FindNearestQuestTarget(RE::PlayerCharacter* player, RE::NiPoint3& ou
     return found;
 }
 
+// Cible "sticky dragon" : si le verrouillage continu Maj+X tombe sur un
+// dragon, on reste colle dessus peu importe sa distance (au lieu de basculer
+// sur le plus proche a chaque tick). Reset si le dragon meurt, devient
+// invalide, ou si on arrete le lock manuellement.
+// Declaration AVANT LockNearestEnemy car X seul consulte ce handle pour
+// rediriger sa visee sur le dragon locke quand un sticky est actif.
+static RE::ActorHandle g_lockedDragon;
+
 // Verrouiller l'ennemi le plus proche (touche X) — tir unique
 // Fallback : cible de quête proche si pas d'ennemi
 static void LockNearestEnemy() {
@@ -3216,6 +3452,34 @@ static void LockNearestEnemy() {
     if (!player) {
         Speak(TR("No enemy nearby"));
         return;
+    }
+
+    // Si un dragon est actuellement verrouille (mode sticky via Maj+X), on
+    // vise CE dragon plutot que l'ennemi le plus proche. Ainsi X seul reste
+    // coherent avec le lock sticky : pas de bascule sur un loup qui passe a
+    // cote pendant qu'on combat un dragon. Si le dragon est mort/perdu, on
+    // ne nettoie pas ici (la boucle StartToggleLockOn s'en occupe) — on
+    // retombe juste sur le comportement standard pour cet appui.
+    {
+        auto dragonPtr = g_lockedDragon.get();
+        if (dragonPtr) {
+            auto* dragon = dragonPtr.get();
+            if (dragon && !dragon->IsDead() && !dragon->IsDeleted() && !dragon->IsDisabled()) {
+                auto targetCenter = GetActorCenter(dragon);
+                AimAtPosition(player, targetCenter);
+
+                const char* rawName = dragon->GetDisplayFullName();
+                std::wstring name = rawName ? Utf8ToWString(rawName) : TR("Enemy");
+                float distD = (player->GetPosition() - dragon->GetPosition()).Length();
+                float zDiff = targetCenter.z - player->GetPosition().z;
+                std::wstring msg = name + L", " + std::to_wstring(static_cast<int>(distD)) +
+                                   L" units" + FormatElevationSuffix(zDiff);
+                Speak(msg);
+                LOG("AutoAim: X redirected to sticky dragon '{}' dist={:.0f}",
+                    rawName ? rawName : "?", distD);
+                return;
+            }
+        }
     }
 
     // Chercher l'ennemi le plus proche
@@ -3264,6 +3528,7 @@ static std::jthread g_toggleLockThread;
 
 static void StopToggleLockOn() {
     g_toggleLockOn.store(false);
+    g_lockedDragon.reset();
     LOG("ToggleLock: stopped");
 }
 
@@ -3289,7 +3554,34 @@ static void StartToggleLockOn() {
                     auto* player = RE::PlayerCharacter::GetSingleton();
                     if (!player) return;
 
-                    // Toujours chercher l'ennemi le plus proche (bascule auto)
+                    // Mode "sticky dragon" : si on a un dragon verrouille,
+                    // on reste dessus peu importe la distance, tant qu'il vit
+                    // et qu'il existe dans le monde.
+                    auto dragonPtr = g_lockedDragon.get();
+                    if (dragonPtr) {
+                        auto* dragon = dragonPtr.get();
+                        if (!dragon || dragon->IsDeleted() || dragon->IsDisabled()) {
+                            // Dragon hors zone / supprime → annoncer + retour normal
+                            Speak(TR("Target lost"));
+                            g_lockedDragon.reset();
+                            LOG("ToggleLock: locked dragon lost (deleted/disabled)");
+                            // On garde le lock actif → la prochaine iteration
+                            // basculera sur l'ennemi le plus proche.
+                            return;
+                        }
+                        if (dragon->IsDead()) {
+                            Speak(TR("Dragon dead"));
+                            g_lockedDragon.reset();
+                            LOG("ToggleLock: locked dragon died");
+                            return;
+                        }
+                        // Dragon vivant et present → on reste colle dessus.
+                        auto targetCenter = GetActorCenter(dragon);
+                        AimAtPosition(player, targetCenter);
+                        return;
+                    }
+
+                    // Comportement standard : ennemi le plus proche (bascule auto)
                     float dist = 0;
                     auto* nearest = FindNearestEnemy(player, dist);
                     if (!nearest) {
@@ -3336,10 +3628,73 @@ static void ToggleLockOnEnemy() {
     Speak(TR("Lock on") + L", " + name);
     LOG("ToggleLock: locked {} at distance {}", rawName ? rawName : "?", dist);
 
-    // Démarrer la surveillance vol/sol si c'est un dragon
-    if (IsDragon(nearest)) StartDragonFlightWatch();
+    // Si la cible initiale est un dragon → mode sticky : on memorise son
+    // handle pour rester colle dessus quelle que soit la distance dans la
+    // boucle StartToggleLockOn (au lieu de basculer sur le plus proche).
+    if (IsDragon(nearest)) {
+        g_lockedDragon = nearest->GetHandle();
+        LOG("ToggleLock: sticky dragon mode ON for '{}'", rawName ? rawName : "?");
+        // Démarrer la surveillance vol/sol
+        StartDragonFlightWatch();
+    } else {
+        // Pas de dragon → on s'assure que le mode sticky est OFF
+        g_lockedDragon.reset();
+    }
 
     StartToggleLockOn();
+}
+
+// --- Annonce de la vie d'un ennemi locke ou le plus proche (Maj+V) ---
+// Priorite au dragon sticky (Maj+X sur un dragon = g_lockedDragon memorise).
+// Sinon ennemi le plus proche, ce qui couvre les autres cas (lock continu sur
+// un non-dragon, ou pas de lock du tout : Maj+V reste utile en combat).
+static void AnnounceLockedTargetHealth() {
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    if (!player) return;
+
+    RE::Actor* target = nullptr;
+
+    // 1) Sticky dragon prioritaire (s'il existe et est valide)
+    if (auto dragonPtr = g_lockedDragon.get()) {
+        auto* d = dragonPtr.get();
+        if (d && !d->IsDead() && !d->IsDeleted() && !d->IsDisabled())
+            target = d;
+    }
+
+    // 2) Sinon, ennemi le plus proche (couvre lock non-dragon et hors-lock)
+    if (!target) {
+        float dist = 0;
+        target = FindNearestEnemy(player, dist);
+    }
+
+    if (!target) {
+        Speak(TR("No enemy nearby"));
+        return;
+    }
+
+    auto* av = target->AsActorValueOwner();
+    if (!av) {
+        Speak(TR("No enemy nearby"));
+        return;
+    }
+
+    const float currentHp = av->GetActorValue(RE::ActorValue::kHealth);
+    const float maxHp     = av->GetPermanentActorValue(RE::ActorValue::kHealth);
+    if (maxHp <= 0.0f) {
+        Speak(TR("No enemy nearby"));
+        return;
+    }
+
+    int pct = static_cast<int>(std::round(currentHp / maxHp * 100.0f));
+    if (pct < 0)   pct = 0;
+    if (pct > 100) pct = 100;
+
+    const char* rawName = target->GetDisplayFullName();
+    std::wstring name = rawName ? Utf8ToWString(rawName) : TR("Enemy");
+    std::wstring msg = name + L", " + std::to_wstring(pct) + L"%";
+    Speak(msg);
+    LOG("LockedHealth: {} = {}% ({}/{})", rawName ? rawName : "?", pct,
+        static_cast<int>(currentHp), static_cast<int>(maxHp));
 }
 
 // --- Surveillance de l'état de vol des dragons ---

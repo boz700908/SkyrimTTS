@@ -590,19 +590,94 @@ static void StartRemoteActivate(RE::FormID targetFormID) {
     });
 }
 
+// Retire l'objet ramasse de la liste du scanner et restaure la position du
+// curseur sur l'objet precedent (continuite de navigation quand on ramasse en
+// serie). Doit etre appele depuis le thread principal.
+static void InvalidateScannedObject(RE::FormID targetID) {
+    RE::FormID neighborFormID = 0;
+    if (g_scanIndex > 0 && g_scanIndex < static_cast<int>(g_scannedFiltered.size())) {
+        if (g_scannedFiltered[g_scanIndex]->formID == targetID) {
+            neighborFormID = g_scannedFiltered[g_scanIndex - 1]->formID;
+        }
+    }
+
+    bool invalidated = false;
+    for (auto& o : g_scannedAll) {
+        if (o.formID == targetID) {
+            LOG("RemoteActivate: post-pickup invalidate FormID={:08X}", targetID);
+            o.formID = 0;
+            o.category = kCatAll;
+            invalidated = true;
+        }
+    }
+
+    if (invalidated) {
+        ApplyCategoryFilter();
+        if (neighborFormID != 0) {
+            for (int i = 0; i < static_cast<int>(g_scannedFiltered.size()); i++) {
+                if (g_scannedFiltered[i]->formID == neighborFormID) {
+                    g_scanIndex = i;
+                    LOG("RemoteActivate: scanner cursor restored to neighbor idx={} formID={:08X}",
+                        i, neighborFormID);
+                    break;
+                }
+            }
+        }
+    }
+}
+
+// Vrai si le ref est un item d'inventaire ramassable via Actor::PickUpObject.
+// Couvre :
+//   - les bases items classiques (Weapon, Armor, AlchemyItem, Ingredient, Book,
+//     Key, Scroll, Ammo, Misc, SoulGem, Light)
+//   - les ArrowProjectile au sol : leur base est un BGSProjectile (FormType
+//     Projectile), pas un TESAmmo, donc on detecte via le FormType du ref
+//     lui-meme (ProjectileArrow = 0x40). PickUpObject gere le pickup natif
+//     des fleches plantees (appel interne TurnOff + AddItem ammo + clean).
+static bool IsPickupableInventoryItem(RE::TESObjectREFR* ref) {
+    if (!ref) return false;
+
+    using FT = RE::FormType;
+
+    // Fleche tiree au sol ou plantee dans un mur : ref = ArrowProjectile.
+    if (ref->GetFormType() == FT::ProjectileArrow) {
+        return true;
+    }
+
+    auto* base = ref->GetBaseObject();
+    if (!base) return false;
+    switch (base->GetFormType()) {
+        case FT::Weapon:
+        case FT::Armor:
+        case FT::AlchemyItem:
+        case FT::Ingredient:
+        case FT::Book:
+        case FT::KeyMaster:
+        case FT::Scroll:
+        case FT::Ammo:
+        case FT::Misc:
+        case FT::SoulGem:
+        case FT::Light:
+            return true;
+        default:
+            return false;
+    }
+}
+
 // Touche G hors menus : prend l'objet courant du scanner et l'active a distance.
 // Verifications : objet selectionne, lookup ref valide, ref pas supprimee,
 // distance <= 2000 unites. Logs verbeux pour diagnostiquer les echecs.
 //
-// Invalidation post-pickup : pour les items ramassables (kCatItems), on schedule
-// un check differe 800ms apres dispatch qui re-verifie l'etat de la ref. Si elle
-// est deleted/disabled/!Is3DLoaded (le moteur a fini le pickup), on met
-// formID=0 pour la sortir definitivement de la liste — sinon le scanner garde
-// l'objet visible meme apres ramassage car RefreshFilteredList pouvait passer
-// pile entre Activate() et le cleanup engine. Pour les autres categories
-// (conteneurs, portes, activateurs), on ne touche a rien : un coffre activable
-// a distance reste dans la cellule, une porte aussi, et c'est correct qu'ils
-// restent dans la liste.
+// Deux routes selon la nature de l'objet :
+//   - Items d'inventaire (armes, armures, potions, ingredients, fleches au sol,
+//     objets droppes...) : appel direct a Actor::PickUpObject — l'API native
+//     du moteur qui marche aussi sur les refs dynamiques (FormID 0xFFxxxxxx),
+//     contrairement a Activate() qui echoue sur les fleches tirees et les
+//     objets sortis de l'inventaire. Invalidation immediate post-pickup.
+//   - Tout le reste (conteneurs, portes, leviers, PNJ, activateurs scriptes) :
+//     dispatch Papyrus OnRemoteActivate -> targetRef.Activate(player). Pour
+//     les ingredients ramasses sur une plante (kCatItems mais base = Flora),
+//     check differe 800ms qui invalide si la ref est consumed.
 static void ScannerActivateCurrent() {
     LOG("InputDiag: ScannerActivateCurrent ENTRY");
 
@@ -669,14 +744,28 @@ static void ScannerActivateCurrent() {
             return;
         }
 
-        LOG("RemoteActivate: activating '{}' FormID={:08X} dist={:.0f} cat={}",
-            WStringToUtf8(targetName), targetID, dist, static_cast<int>(targetCategory));
+        bool isItem = IsPickupableInventoryItem(targetRef);
+        LOG("RemoteActivate: activating '{}' FormID={:08X} dist={:.0f} cat={} route={}",
+            WStringToUtf8(targetName), targetID, dist, static_cast<int>(targetCategory),
+            isItem ? "PickUpObject" : "Activate");
+
+        if (isItem) {
+            // Route native : Actor::PickUpObject. Marche sur les refs dynamiques
+            // (fleches tirees FF..., objets droppes FF...) la ou Activate() echoue
+            // silencieusement. Le moteur fait : retire la ref du monde, ajoute
+            // l'item a l'inventaire, joue le son de pickup, nettoie les pointeurs.
+            player->PickUpObject(targetRef, 1, false, true);
+            InvalidateScannedObject(targetID);
+            return;
+        }
+
+        // Route Papyrus pour conteneurs, portes, leviers, activateurs, PNJ.
         StartRemoteActivate(targetID);
 
-        // Invalidation differee pour les items ramassables uniquement.
-        // 800ms : laisse le temps au moteur de faire Disable() + Delete() apres
-        // le Activate() Papyrus. Marche aussi pour les ingredients ramasses
-        // depuis une plante (la ref est consumed apres pickup).
+        // Cas particulier : un ingredient ramasse sur une plante (Flora) reste
+        // dans la categorie kCatItems mais sa base n'est pas un item d'inventaire,
+        // donc il passe par Activate(). Verifier 800ms apres si la ref a ete
+        // consumed et l'invalider si oui.
         if (targetCategory == kCatItems) {
             std::thread([targetID]() {
                 std::this_thread::sleep_for(std::chrono::milliseconds(800));
@@ -691,49 +780,7 @@ static void ScannerActivateCurrent() {
                                 !ref2->Is3DLoaded() ||
                                 !ref2->GetParentCell();
                     if (gone) {
-                        // Capturer le formID du voisin (objet PRECEDENT dans la liste
-                        // filtree) AVANT invalidation : permet de restaurer la position
-                        // du scanner apres rebuild. Sinon ApplyCategoryFilter perd la
-                        // position courante (le formID courant devient 0 -> il retombe
-                        // a l'index 0 = retour en haut de la liste, tres frustrant
-                        // quand on ramasse en serie).
-                        // On vise PRECEDENT pour que le prochain Right donne l'objet
-                        // juste apres l'objet ramasse (continuite de navigation).
-                        RE::FormID neighborFormID = 0;
-                        if (g_scanIndex > 0 && g_scanIndex < static_cast<int>(g_scannedFiltered.size())) {
-                            // L'item a l'index courant est celui qu'on vient de ramasser
-                            // (formID == targetID). On prend l'index-1 comme ancre.
-                            if (g_scannedFiltered[g_scanIndex]->formID == targetID) {
-                                neighborFormID = g_scannedFiltered[g_scanIndex - 1]->formID;
-                            }
-                        }
-
-                        // Invalider dans g_scannedAll : la prochaine ApplyCategoryFilter
-                        // sautera l'entree (formID == 0 -> continue).
-                        bool invalidated = false;
-                        for (auto& o : g_scannedAll) {
-                            if (o.formID == targetID) {
-                                LOG("RemoteActivate: post-pickup invalidate FormID={:08X}", targetID);
-                                o.formID = 0;
-                                o.category = kCatAll;
-                                invalidated = true;
-                            }
-                        }
-
-                        // Rebuild la liste filtree + restaurer la position sur le voisin.
-                        if (invalidated) {
-                            ApplyCategoryFilter();
-                            if (neighborFormID != 0) {
-                                for (int i = 0; i < static_cast<int>(g_scannedFiltered.size()); i++) {
-                                    if (g_scannedFiltered[i]->formID == neighborFormID) {
-                                        g_scanIndex = i;
-                                        LOG("RemoteActivate: scanner cursor restored to neighbor idx={} formID={:08X}",
-                                            i, neighborFormID);
-                                        break;
-                                    }
-                                }
-                            }
-                        }
+                        InvalidateScannedObject(targetID);
                     } else {
                         LOG("RemoteActivate: post-pickup check FormID={:08X} still present (activate refused?)", targetID);
                     }
