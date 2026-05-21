@@ -45,5 +45,5 @@
       "displayName": "CI Release",
       "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
     }
-  ]
-}
+]     
+}                                   
