@@ -12,6 +12,12 @@ static std::atomic_bool g_craftingFirstReadDone{false};
 // Mis à true par l'input handler clavier (Up/Down/W/S etc.) pour forcer la relecture
 // même quand l'item résultant est textuellement identique (recettes dupliquées).
 static std::atomic_bool g_craftingForceAnnounce{false};
+// Slider d'equilibrage a l'autel d'enchantement : equilibre nombre de charges
+// utilisables vs duree/magnitude de l'effet. Visible UNIQUEMENT a l'autel
+// quand on confectionne un enchantement (apres avoir choisi arme + effet +
+// gemme). Detecte via EnchantingSlider_mc._alpha > 0.
+static bool             g_craftingEnchantSliderOpen{false};
+static int              g_lastEnchantSliderValue{-1};
 
 struct CraftingSnapshot {
     std::wstring itemText;
@@ -344,6 +350,71 @@ static void DetectCraftingMode() {
 
 static void AnnounceCraftingChangeImpl() {
     if (!g_craftingOpen.load()) return;
+
+    // Slider d'enchantement (autel d'enchantement uniquement). Quand il est
+    // visible, on n'annonce que la valeur du slider et son impact (nombre de
+    // charges produites + cout par utilisation). Pendant ce temps on stoppe
+    // la lecture normale du Crafting pour ne pas la noyer.
+    {
+        auto ui = RE::UI::GetSingleton();
+        auto menu = ui ? ui->GetMenu(RE::CraftingMenu::MENU_NAME) : nullptr;
+        auto* movie = (menu && menu->uiMovie) ? menu->uiMovie.get() : nullptr;
+        if (movie) {
+            double alpha = 0.0;
+            const bool alphaOk = GetGFxNumber(movie,
+                "_root.Menu_mc.ItemInfoHolder.ItemInfo.EnchantingSlider_mc._alpha",
+                alpha);
+            const bool sliderVisible = alphaOk && alpha > 50.0;
+
+            if (sliderVisible) {
+                double valD = 0.0;
+                GetGFxNumber(movie,
+                    "_root.Menu_mc.ItemInfoHolder.ItemInfo.QuantitySlider_mc.value", valD);
+                std::string chargesS, costS;
+                GetGFxString(movie,
+                    "_root.Menu_mc.ItemInfoHolder.ItemInfo.TotalChargesValue.text", chargesS);
+                GetGFxString(movie,
+                    "_root.Menu_mc.ItemInfoHolder.ItemInfo.MagicCostValue.text", costS);
+
+                const int val = static_cast<int>(valD);
+
+                // Premiere fois qu'on voit le slider : annoncer le contexte + valeurs.
+                if (!g_craftingEnchantSliderOpen) {
+                    g_craftingEnchantSliderOpen = true;
+                    g_lastEnchantSliderValue = val;
+                    std::wstring msg = TR("Charges slider");
+                    if (!chargesS.empty()) {
+                        msg += L", " + TR("uses") + L" "
+                             + Utf8ToWString(chargesS);
+                    }
+                    if (!costS.empty()) {
+                        msg += L", " + TR("cost") + L" "
+                             + Utf8ToWString(costS);
+                    }
+                    Speak(msg);
+                } else if (val != g_lastEnchantSliderValue) {
+                    // Le joueur a bouge le slider : annoncer juste les nouveaux
+                    // chiffres (uses + cost), pas le label "Charges slider".
+                    g_lastEnchantSliderValue = val;
+                    std::wstring msg;
+                    if (!chargesS.empty()) {
+                        msg += TR("uses") + L" " + Utf8ToWString(chargesS);
+                    }
+                    if (!costS.empty()) {
+                        if (!msg.empty()) msg += L", ";
+                        msg += TR("cost") + L" " + Utf8ToWString(costS);
+                    }
+                    if (!msg.empty()) Speak(msg);
+                }
+                return;  // ne pas faire la lecture crafting normale tant que le slider est actif
+            } else if (g_craftingEnchantSliderOpen) {
+                // Slider ferme (joueur a confirme ou annule). Reset.
+                g_craftingEnchantSliderOpen = false;
+                g_lastEnchantSliderValue = -1;
+                g_lastCraftingItemAnnounce.clear();  // forcer relecture de l'item
+            }
+        }
+    }
 
     // Détecter le mode si pas encore fait
     if (!g_craftingModeDetected) DetectCraftingMode();

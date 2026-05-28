@@ -26,6 +26,37 @@
 
 #define LOG(...) SKSE::log::info(__VA_ARGS__)
 
+// --- Verifie si deux worldspaces partagent un meme repere de coordonnees ---
+// Skyrim a deux types de "sub-worldspaces" :
+//   1. Les vrais sub-worldspaces (Solitude, Whiterun, Riften...) ont le flag
+//      ParentUseFlag::kUseLandData et heritent du systeme de coords du parent.
+//      Leur position est coherente avec celle du parent : un PNJ dans Solitude
+//      a des coords directement comparables avec un marker dans Bordeciel.
+//   2. Les pseudo-worldspaces isoles (Entrepot, Solitude Docks, etc.) ont
+//      parentWorld != null pour des raisons d'organisation MAIS PAS le flag
+//      kUseLandData. Leurs coords sont locales (origin proche de 0,0) et NE
+//      SONT PAS comparables avec celles du parent.
+//
+// Helper : remonte la chaine parentWorld d'un worldspace jusqu'au premier
+// ancetre qui n'herite PAS du land data du suivant. Ce dernier est la
+// "racine de coordonnees".
+static RE::TESWorldSpace* GetCoordinateRoot(RE::TESWorldSpace* ws) {
+    if (!ws) return nullptr;
+    while (ws->parentWorld &&
+           ws->parentUseFlags.any(RE::TESWorldSpace::ParentUseFlag::kUseLandData)) {
+        ws = ws->parentWorld;
+    }
+    return ws;
+}
+
+// Deux worldspaces partagent le meme systeme de coords si leurs racines de
+// coordonnees sont identiques.
+static bool AreWorldspacesCompatible(RE::TESWorldSpace* a, RE::TESWorldSpace* b) {
+    if (!a || !b) return false;
+    if (a == b) return true;
+    return GetCoordinateRoot(a) == GetCoordinateRoot(b);
+}
+
 // ---------------- nvdaController ----------------
 
 // Normalise les caractères typographiques en équivalents ASCII standard
@@ -1108,43 +1139,75 @@ static bool IsItemStolen(RE::InventoryEntryData* entry) {
 // faisait le calcul sur une armure enchantee, la charge courante stockee
 // resterait a la valeur de la gemme utilisee lors de l'enchantement (ou 0)
 // et le pourcentage afficherait un chiffre arbitraire (ex: "3%") qui n'a
-// aucun sens pour le joueur. On retourne donc -1 pour tout ce qui n'est pas
-// une arme.
-static int GetEnchantmentChargePercent(RE::InventoryEntryData* entry) {
-    if (!entry || !entry->IsEnchanted()) return -1;
-    // Limite aux armes uniquement (les armures/bijoux n'ont pas de charge).
-    if (!entry->object || !entry->object->As<RE::TESObjectWEAP>()) return -1;
+// aucun sens pour le joueur. On retourne donc {-1,-1} pour tout ce qui n'est
+// pas une arme.
+//
+// On retourne la charge en valeurs ENTIERES (current/max) plutot qu'en
+// pourcentage : feedback Dio Kyrie (Discord 2026-05-22) — les integers
+// disent au joueur combien de "lancers de sort" il lui reste vraiment, alors
+// que "3%" est ambigu (peut etre 1 lancer comme 12). Les menus formattent
+// ensuite "charge X sur Y" pour l'annonce vocale.
+struct EnchantmentCharge {
+    int current{-1};
+    int max{-1};
+    bool valid() const { return current >= 0 && max > 0; }
+};
 
-    // 1) Chercher la charge max : ExtraEnchantment (runtime) prioritaire,
-    //    sinon TESEnchantableForm.amountofEnchantment (base form).
-    std::uint16_t maxCharge = 0;
+static EnchantmentCharge GetEnchantmentCharge(RE::InventoryEntryData* entry) {
+    EnchantmentCharge result;
+    if (!entry || !entry->IsEnchanted()) return result;
+    // Limite aux armes uniquement (les armures/bijoux n'ont pas de charge).
+    if (!entry->object || !entry->object->As<RE::TESObjectWEAP>()) return result;
+
+    // ATTENTION : NE PAS utiliser InventoryEntryData::GetEnchantmentCharge() :
+    // elle retourne un POURCENTAGE (0..100), pas une valeur en unites. Sur
+    // une arme magistral neuve (3000), elle renvoie 100.0 (qui signifie
+    // "100%") et on l'annoncait "100 sur 3000" — bug rapporte le 28 mai 2026.
+    // Voir CommonLibSSE-NG src/RE/I/InventoryEntryData.cpp:74-108 pour l'impl.
+    //
+    // Approche correcte : lire ExtraEnchantment.charge (uint16, max) et
+    // ExtraCharge.charge (float, courant en unites) directement dans les
+    // extraLists. Si ExtraCharge absent : arme jamais utilisee, charge pleine.
+    std::uint16_t extraMax       = 0;
+    float         extraCur       = 0.0f;
+    bool          hasExtraCharge = false;
     if (entry->extraLists) {
         for (auto* xList : *entry->extraLists) {
             if (!xList) continue;
-            auto* xEnch = xList->GetByType<RE::ExtraEnchantment>();
-            if (xEnch && xEnch->charge > 0) {
-                maxCharge = xEnch->charge;
-                break;
+            if (extraMax == 0) {
+                auto* xEnch = xList->GetByType<RE::ExtraEnchantment>();
+                if (xEnch && xEnch->charge > 0) extraMax = xEnch->charge;
             }
+            if (!hasExtraCharge) {
+                auto* xCharge = xList->GetByType<RE::ExtraCharge>();
+                if (xCharge) {
+                    extraCur = xCharge->charge;
+                    hasExtraCharge = true;
+                }
+            }
+            if (extraMax > 0 && hasExtraCharge) break;
         }
     }
-    if (maxCharge == 0) {
-        auto* ench = entry->object ? entry->object->As<RE::TESEnchantableForm>()
-                                   : nullptr;
-        if (ench) maxCharge = ench->amountofEnchantment;
+    std::uint16_t baseMax = 0;
+    if (auto* ench = entry->object ? entry->object->As<RE::TESEnchantableForm>() : nullptr) {
+        baseMax = ench->amountofEnchantment;
     }
-    if (maxCharge == 0) return -1;  // pas de capacite definie
+    std::uint16_t maxCharge = extraMax > 0 ? extraMax : baseMax;
+    if (maxCharge == 0) return result;  // pas de capacite definie
 
-    // 2) Charge courante : nullopt = jamais utilisee => pleine.
-    const auto cur     = entry->GetEnchantmentCharge();
-    const double currD = cur.value_or(static_cast<double>(maxCharge));
-    if (currD < 0.0) return 0;
+    int currI;
+    if (hasExtraCharge) {
+        currI = static_cast<int>(std::round(extraCur));
+        if (currI < 0)                            currI = 0;
+        if (currI > static_cast<int>(maxCharge))  currI = static_cast<int>(maxCharge);
+    } else {
+        // Arme jamais utilisee depuis l'enchantement/recharge => pleine.
+        currI = static_cast<int>(maxCharge);
+    }
 
-    // 3) Conversion en pourcentage entier [0..100], clamp pour securite.
-    int pct = static_cast<int>(std::round(currD / static_cast<double>(maxCharge) * 100.0));
-    if (pct < 0)   pct = 0;
-    if (pct > 100) pct = 100;
-    return pct;
+    result.current = currI;
+    result.max     = static_cast<int>(maxCharge);
+    return result;
 }
 
 // ----------------------------------------------------------------------------

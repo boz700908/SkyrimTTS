@@ -30,7 +30,7 @@ struct GiftSnapshot {
     std::wstring catText;
     std::wstring soulLevelText;
     bool         stolen{false};     // item appartenant a un PNJ/faction (pas au joueur)
-    int          chargePercent{-1}; // charge restante d'une arme enchantee [0..100], -1 si non applicable
+    EnchantmentCharge charge{};     // charge actuelle/max d'une arme enchantee, invalid() si non applicable
     const void*  itemPtr{nullptr};
 };
 
@@ -103,7 +103,7 @@ static bool ReadGiftSnapshot(GiftSnapshot& snap) {
                 snap.itemPtr = sel;
                 if (sel && sel->data.objDesc) {
                     snap.stolen        = IsItemStolen(sel->data.objDesc);
-                    snap.chargePercent = GetEnchantmentChargePercent(sel->data.objDesc);
+                    snap.charge        = GetEnchantmentCharge(sel->data.objDesc);
                 }
             }
         }
@@ -130,9 +130,10 @@ static std::wstring BuildGiftItemAnnouncement(const GiftSnapshot& snap) {
         msg += L", " + TR("value") + L" " + snap.valueText;
     if (!snap.weightText.empty() && !isZero(snap.weightText))
         msg += L", " + TR("weight") + L" " + snap.weightText;
-    // Charge restante d'une arme enchantee (en %). -1 = non applicable.
-    if (snap.chargePercent >= 0)
-        msg += L", " + TR("charge") + L" " + std::to_wstring(snap.chargePercent) + L"%";
+    // Charge restante d'une arme enchantee : "charge X sur Y" (valeurs entieres).
+    if (snap.charge.valid())
+        msg += L", " + TR("charge") + L" " + std::to_wstring(snap.charge.current)
+             + L" " + TR("out_of") + L" " + std::to_wstring(snap.charge.max);
     if (!snap.soulLevelText.empty())
         msg += L", " + snap.soulLevelText;
     return msg;

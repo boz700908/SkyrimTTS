@@ -23,6 +23,13 @@ static int              g_lastInvQuantity{0};
 // ne dereference pas, on compare juste les adresses — le jeu recycle les
 // memes Item* tant que la liste n'est pas reconstruite.
 static const void*      g_lastInvItemPtr = nullptr;
+// Mode "ChargeItem" (touche T sur arme enchantee) : l'ItemCard affiche une
+// sous-liste de gemmes spirituelles utilisables pour recharger. Pas de menu
+// Scaleform separe — c'est l'InventoryMenu qui change d'etat (itemInfo.type
+// passe a 14 = ICT_LIST). Le polling lit la gemme selectionnee dans la liste
+// et annonce capacite + count.
+static bool             g_invChargeMode{false};
+static std::wstring     g_lastInvChargeGem;
 
 // --- Inventory snapshot data ---
 struct InventorySnapshot {
@@ -38,7 +45,7 @@ struct InventorySnapshot {
     std::wstring soulLevelText;
     bool         favorite{false};
     bool         stolen{false};     // item appartenant a un PNJ/faction (pas au joueur)
-    int          chargePercent{-1}; // charge restante d'une arme enchantee [0..100], -1 si non applicable
+    EnchantmentCharge charge{}; // charge actuelle/max d'une arme enchantee, invalid() si non applicable
     const void*  itemPtr{nullptr};  // RE::ItemList::Item* du ref selectionne — cf. g_lastInvItemPtr
 };
 
@@ -99,7 +106,7 @@ static bool ReadInventorySnapshot(InventorySnapshot& snap) {
                 snap.itemPtr = sel;
                 if (sel && sel->data.objDesc) {
                     snap.stolen        = IsItemStolen(sel->data.objDesc);
-                    snap.chargePercent = GetEnchantmentChargePercent(sel->data.objDesc);
+                    snap.charge        = GetEnchantmentCharge(sel->data.objDesc);
                 }
             }
         }
@@ -240,12 +247,13 @@ static std::wstring BuildItemAnnouncement(const InventorySnapshot& snap) {
         msg += L", " + TR("value") + L" " + snap.valueText;
     if (!snap.weightText.empty() && !isZero(snap.weightText))
         msg += L", " + TR("weight") + L" " + snap.weightText;
-    // Charge restante d'une arme enchantee (en %). -1 = non applicable
-    // (item pas enchante, potion, livre, etc.). On annonce meme a 100%
-    // pour que le joueur sache toujours qu'il tient une arme enchantee
-    // pleine, sans devoir deviner si le silence signifie "pas enchantee".
-    if (snap.chargePercent >= 0)
-        msg += L", " + TR("charge") + L" " + std::to_wstring(snap.chargePercent) + L"%";
+    // Charge restante d'une arme enchantee : "charge X sur Y" (valeurs entieres).
+    // On annonce meme charge pleine pour que le joueur sache toujours qu'il
+    // tient une arme enchantee sans devoir deviner si le silence signifie
+    // "pas enchantee".
+    if (snap.charge.valid())
+        msg += L", " + TR("charge") + L" " + std::to_wstring(snap.charge.current)
+             + L" " + TR("out_of") + L" " + std::to_wstring(snap.charge.max);
     if (!snap.soulLevelText.empty())
         msg += L", " + snap.soulLevelText;
     if (snap.favorite)
@@ -294,6 +302,65 @@ static void AnnounceInventoryChangeImpl() {
             } else if (g_invQuantityOpen) {
                 g_invQuantityOpen = false;
                 g_lastInvQuantity = 0;
+            }
+        }
+    }
+
+    // Detecter le mode "recharge d'arme" (touche T) : l'ItemCard repeuple une
+    // sous-liste avec les gemmes spirituelles remplies disponibles. Tant qu'on
+    // est dans ce mode on lit la gemme selectionnee plutot que l'inventaire.
+    {
+        auto ui = RE::UI::GetSingleton();
+        auto menu = ui ? ui->GetMenu(RE::InventoryMenu::MENU_NAME) : nullptr;
+        auto* movie = (menu && menu->uiMovie) ? menu->uiMovie.get() : nullptr;
+        if (movie) {
+            const bool skyui = g_skyuiMode.load(std::memory_order_relaxed);
+            const char* typePath = skyui
+                ? "_root.Menu_mc.itemCardFadeHolder.ItemCard_mc.itemInfo.type"
+                : "_root.Menu_mc.ItemCardFadeHolder_mc.ItemCard_mc.itemInfo.type";
+            double typeVal = 0.0;
+            const bool typeOk = GetGFxNumber(movie, typePath, typeVal);
+            // ICT_LIST = 14 (InventoryDefines.as) — sous-liste affichee.
+            const bool inChargeMode = typeOk && static_cast<int>(typeVal) == 14;
+
+            if (inChargeMode) {
+                const bool firstReadCharge = !g_invChargeMode;
+                if (firstReadCharge) {
+                    g_invChargeMode = true;
+                    g_lastInvChargeGem.clear();
+                    Speak(TR("Select soul gem"));
+                }
+                // Lire la gemme actuellement selectionnee dans la sous-liste.
+                const char* gemPaths[] = {
+                    skyui
+                        ? "_root.Menu_mc.itemCardFadeHolder.ItemCard_mc.CardList_mc.List_mc.selectedEntry.text"
+                        : "_root.Menu_mc.ItemCardFadeHolder_mc.ItemCard_mc.CardList_mc.List_mc.selectedEntry.text",
+                    skyui
+                        ? "_root.Menu_mc.itemCardFadeHolder.ItemCard_mc.ItemList.selectedEntry.text"
+                        : "_root.Menu_mc.ItemCardFadeHolder_mc.ItemCard_mc.ItemList.selectedEntry.text",
+                };
+                std::string gemText;
+                for (auto p : gemPaths) {
+                    if (GetGFxString(movie, p, gemText) && !gemText.empty()) break;
+                }
+                if (!gemText.empty()) {
+                    std::wstring gemW = StripMarkupForSpeech(ResolveUIString(movie, gemText));
+                    if (gemW != g_lastInvChargeGem) {
+                        // Premiere lecture : SpeakQueue pour s'enchainer apres
+                        // "Choisir une gemme spirituelle" sans le couper.
+                        if (firstReadCharge) SpeakQueue(gemW); else Speak(gemW);
+                        g_lastInvChargeGem = gemW;
+                    }
+                }
+                return;  // reste en mode recharge, on ne fait pas la lecture inventaire normale
+            } else if (g_invChargeMode) {
+                // On vient de sortir du mode recharge (gemme choisie ou annulee).
+                // Reset pour que la prochaine lecture relise l'arme rechargee.
+                g_invChargeMode = false;
+                g_lastInvChargeGem.clear();
+                g_lastInvItemAnnounce.clear();
+                g_lastInvItemName.clear();
+                g_lastInvItemPtr = nullptr;
             }
         }
     }

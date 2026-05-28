@@ -31,7 +31,7 @@ struct ContainerSnapshot {
     bool         isContainerSide{true};
     bool         atDivider{false};
     bool         stolen{false};        // item appartenant a un PNJ/faction (pas au joueur)
-    int          chargePercent{-1};    // charge restante d'une arme enchantee [0..100], -1 si non applicable
+    EnchantmentCharge charge{};        // charge actuelle/max d'une arme enchantee, invalid() si non applicable
     int          pickpocketChance{-1}; // % de reussite de vol a la tire [0..100], -1 si on n'est pas en mode pickpocket
     const void*  itemPtr{nullptr};     // cf. g_lastContainerItemPtr
     std::wstring descText;          // description / effets / enchantements (depuis ItemCard.infoText)
@@ -226,7 +226,7 @@ static bool ReadContainerSnapshot(ContainerSnapshot& snap) {
                 snap.itemPtr = sel;
                 if (sel && sel->data.objDesc) {
                     snap.stolen        = IsItemStolen(sel->data.objDesc);
-                    snap.chargePercent = GetEnchantmentChargePercent(sel->data.objDesc);
+                    snap.charge        = GetEnchantmentCharge(sel->data.objDesc);
                 }
             }
             // Mode pickpocket : annoncer le % de reussite. Retourne -1 hors
@@ -256,9 +256,10 @@ static std::wstring BuildContainerItemAnnouncement(const ContainerSnapshot& snap
         msg += L", " + TR("value") + L" " + snap.valueText;
     if (!snap.weightText.empty() && !isZero(snap.weightText))
         msg += L", " + TR("weight") + L" " + snap.weightText;
-    // Charge restante d'une arme enchantee (en %). -1 = non applicable.
-    if (snap.chargePercent >= 0)
-        msg += L", " + TR("charge") + L" " + std::to_wstring(snap.chargePercent) + L"%";
+    // Charge restante d'une arme enchantee : "charge X sur Y" (valeurs entieres).
+    if (snap.charge.valid())
+        msg += L", " + TR("charge") + L" " + std::to_wstring(snap.charge.current)
+             + L" " + TR("out_of") + L" " + std::to_wstring(snap.charge.max);
     // Pourcentage de reussite de vol a la tire (mode pickpocket uniquement).
     // -1 = pas en mode pickpocket, donc silencieux dans les coffres / cadavres.
     if (snap.pickpocketChance >= 0)
