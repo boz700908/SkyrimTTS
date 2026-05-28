@@ -219,15 +219,54 @@ static void HUDAdvanceMovie_Hook(RE::IMenu* a_this, float a_interval, std::uint3
         }
     }
 
-    // Statut furtivité (Hidden / Detected / Caution) — suspendre pendant le crafting, désactivable via MCM
+    // Statut furtivité (Hidden / Detected / Caution) — suspendre pendant le
+    // crafting, désactivable via MCM. Gating sur _alpha du StealthMeterInstance :
+    // ce sprite a des frames labellisés "FadedOut" / "FadeIn" / "FadeOut" que
+    // le moteur appelle via gotoAndPlay quand le joueur s'accroupit/se relève.
+    // Pendant qu'il est "FadedOut", _alpha == 0 mais le SneakTextInstance.text
+    // peut rester rempli avec "Hidden"/"Detected" du dernier état. Sans ce
+    // gating on annonce le statut alors qu'on est debout et que les voyants
+    // ne voient rien. Source : UI/_tmp_hud_vanilla/scripts/__Packages/HUDMenu.as
+    // ligne 152 (init "FadedOut") et 156 (RegisterHUDComponents).
     if (g_mcmStealthAnnounce.load() && !RE::UI::GetSingleton()->IsMenuOpen(RE::CraftingMenu::MENU_NAME)) {
-        std::string stealth;
-        if (GetGFxString(movie, "_root.HUDMovieBaseInstance.StealthMeterInstance.SneakTextHolder.SneakTextClip.SneakTextInstance.text", stealth)) {
-            if (!stealth.empty() && stealth != g_hudPrevStealth) {
-                g_hudPrevStealth = stealth;
-                Speak(Utf8ToWString(stealth));
+        double meterAlpha = 0.0;
+        const bool alphaOk = GetGFxNumber(movie,
+            "_root.HUDMovieBaseInstance.StealthMeterInstance._alpha", meterAlpha);
+        // Si le path n'existe pas (HUD modé / SkyHUD avec arborescence
+        // differente), on tombe en fallback : pas de gating, on garde le
+        // comportement historique. Mieux vaut annoncer trop que plus rien.
+        const bool meterVisible = !alphaOk || meterAlpha > 5.0;
+
+        // DEBUG : log TOUS les changements de SneakText, meme quand on
+        // n'annonce pas (icone cachee). Permet de voir si l'etat "Caution"
+        // arrive vraiment dans le SneakText et s'il est juste filtre par le
+        // gating alpha, ou s'il n'est jamais ecrit par le moteur.
+        {
+            std::string stealthRaw;
+            const bool sneakTextReadable = GetGFxString(movie,
+                "_root.HUDMovieBaseInstance.StealthMeterInstance.SneakTextHolder.SneakTextClip.SneakTextInstance.text",
+                stealthRaw);
+            static std::string lastDiagStealth;
+            if (sneakTextReadable && stealthRaw != lastDiagStealth) {
+                LOG("HUD SneakText DIAG: text='{}' alpha={:.1f} (visible={})",
+                    stealthRaw, meterAlpha, meterVisible);
+                lastDiagStealth = stealthRaw;
+            }
+        }
+
+        if (meterVisible) {
+            std::string stealth;
+            if (GetGFxString(movie, "_root.HUDMovieBaseInstance.StealthMeterInstance.SneakTextHolder.SneakTextClip.SneakTextInstance.text", stealth)) {
+                if (!stealth.empty() && stealth != g_hudPrevStealth) {
+                    g_hudPrevStealth = stealth;
+                    Speak(Utf8ToWString(stealth));
+                }
+            } else if (!g_hudPrevStealth.empty()) {
+                g_hudPrevStealth.clear();
             }
         } else if (!g_hudPrevStealth.empty()) {
+            // Icone cachée : on reset le dernier statut connu pour qu'au
+            // retour en mode furtif, le premier statut soit re-annoncé.
             g_hudPrevStealth.clear();
         }
     }
