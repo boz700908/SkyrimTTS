@@ -63,6 +63,10 @@ enum class ScanSubcategory : int {
     ItemMisc,
     // Activators — sous-types spécifiques
     ActivatorDestructible,  // toiles d'araignée, barricades, racines, portes fragiles
+    // NPCs — sous-types spécifiques
+    NpcDialogue,   // PNJ avec qui on peut ouvrir le menu de dialogue
+    NpcHostile,    // PNJ qui veulent nous tuer
+    NpcMerchant,   // PNJ marchands actuellement en service
     COUNT
 };
 
@@ -80,6 +84,10 @@ struct ScannedObject {
     bool        isCellDoor{false};     // porte avec chargement de cellule
     bool        isFurniture{false};    // meuble (chaise, lit, etc.)
     bool        isCraftingStation{false};  // forge, enchanteur, alchimie, meule, tannerie, four, cookpot, atelier d'armurier
+    // PNJ — flags pour le filtrage de la categorie NPCs.
+    bool        npcCanTalk{false};     // CanTalkToPlayer() : ouvre une boite de dialogue
+    bool        npcHostile{false};     // IsHostileToActor(player) : veut nous tuer
+    bool        npcMerchant{false};    // GetVendorFaction() != null : marchand en service
     RE::FormType formType{RE::FormType::None};  // type Bethesda du base form (Weapon, Armor, AlchemyItem, etc.)
     std::wstring doorDestination;   // destination d'une porte (nom de la cellule)
     // Obstacles destructibles (toiles d'araignée, barricades, racines, portes
@@ -338,7 +346,8 @@ static ScanCategory CategorizeRef(RE::TESObjectREFR& ref) {
 // --- Sous-catégories : quelles catégories en ont ---
 static bool HasSubcategories(ScanCategory cat) {
     return cat == kCatAll || cat == kCatActivators || cat == kCatContainers ||
-           cat == kCatDoors || cat == kCatCorpses || cat == kCatItems;
+           cat == kCatDoors || cat == kCatCorpses || cat == kCatItems ||
+           cat == kCatNPCs;
 }
 
 // --- Liste ordonnée des sous-catégories applicables à une catégorie ---
@@ -353,6 +362,12 @@ static const std::vector<ScanSubcategory>& GetSubcategoriesFor(ScanCategory cat)
         ScanSubcategory::TypeA,
         ScanSubcategory::TypeB,
         ScanSubcategory::ActivatorDestructible
+    };
+    static const std::vector<ScanSubcategory> npcTypes = {
+        ScanSubcategory::All,
+        ScanSubcategory::NpcDialogue,
+        ScanSubcategory::NpcHostile,
+        ScanSubcategory::NpcMerchant
     };
     static const std::vector<ScanSubcategory> items = {
         ScanSubcategory::All,
@@ -371,6 +386,7 @@ static const std::vector<ScanSubcategory>& GetSubcategoriesFor(ScanCategory cat)
     // alors que dans kCatItems il n'y a que des items de toute facon.
     if (cat == kCatItems || cat == kCatAll) return items;
     if (cat == kCatActivators) return activatorTypes;
+    if (cat == kCatNPCs) return npcTypes;
     if (cat == kCatContainers || cat == kCatDoors || cat == kCatCorpses)
         return twoTypes;
     return empty;
@@ -405,6 +421,14 @@ static std::wstring GetSubcategoryName(ScanSubcategory sub) {
             case ScanSubcategory::TypeA: return TR("Crafting");
             case ScanSubcategory::TypeB: return TR("Other");
             case ScanSubcategory::ActivatorDestructible: return TR("Destructible");
+            default: return L"?";
+        }
+    } else if (g_scanCategory == kCatNPCs) {
+        switch (sub) {
+            case ScanSubcategory::All:         return TR("All");
+            case ScanSubcategory::NpcDialogue: return TR("Dialogue");
+            case ScanSubcategory::NpcHostile:  return TR("Hostile");
+            case ScanSubcategory::NpcMerchant: return TR("Merchants");
             default: return L"?";
         }
     } else if (g_scanCategory == kCatItems || g_scanCategory == kCatAll) {
@@ -454,6 +478,10 @@ static bool MatchesSubcategory(const ScannedObject& obj) {
         // mais aussi les meubles ordinaires : chaises, lits, etabli a cire, etc.).
         if (g_scanSubcategory == ScanSubcategory::TypeB) return !obj.isCraftingStation;
         if (g_scanSubcategory == ScanSubcategory::ActivatorDestructible) return obj.isDestructible;
+    } else if (g_scanCategory == kCatNPCs) {
+        if (g_scanSubcategory == ScanSubcategory::NpcDialogue) return obj.npcCanTalk;
+        if (g_scanSubcategory == ScanSubcategory::NpcHostile)  return obj.npcHostile;
+        if (g_scanSubcategory == ScanSubcategory::NpcMerchant) return obj.npcMerchant;
     } else if (g_scanCategory == kCatItems || g_scanCategory == kCatAll) {
         // Sous-filtres items communs a kCatItems et kCatAll.
         // Dans kCatAll + sous-filtre item : seuls les items correspondants sont
@@ -553,37 +581,79 @@ static void ApplyCategoryFilter() {
 }
 
 // --- Résoudre les <Alias=XXX> dans le texte d'un objectif de quête ---
+// Remplace les balises d'alias d'une quete par le nom reel du PNJ/lieu/item.
+// Le moteur Skyrim utilise plusieurs formats dans le displayText des objectifs :
+//   <Alias=Name>             : alias standard, on remplace par le nom complet
+//   <alias=Name>             : meme chose en minuscules (utilise par certaines
+//                              quetes modees, ex "La soeur de Belethor")
+//   <Alias.ShortName=Name>   : variante "nom court" (vanilla, ex "Sels de givre
+//                              de Dravynea"). On utilise le meme nom — le
+//                              moteur, lui, extrait probablement le prenom.
+//   <Alias.X=Name>           : autres suffixes (.Race, .Type, etc.) — meme
+//                              traitement, on prend le nom du ref.
+//
+// L'ancienne implementation cherchait litteralement "<Alias=" (case-sensitive,
+// sans suffixe), donc tous les autres formats laissaient un texte brut comme
+// "Tuez <Alias.ShortName=QuestGiver>" en sortie — d'ou les annonces foireuses
+// du scanner ("apportez machin truc alias short name questgiver").
 static std::string ResolveQuestAliases(const std::string& text, RE::TESQuest* quest) {
     std::string result = text;
     size_t pos = 0;
-    while ((pos = result.find("<Alias=", pos)) != std::string::npos) {
-        size_t end = result.find('>', pos);
-        if (end == std::string::npos) break;
-
-        // Extraire le nom de l'alias (ex: "RiverwoodFriend")
-        std::string aliasName = result.substr(pos + 7, end - pos - 7);
-
-        // Chercher l'alias dans la quête
-        std::string replacement = aliasName;  // fallback : le nom de l'alias brut
-        for (auto* alias : quest->aliases) {
-            if (!alias) continue;
-            if (alias->aliasName == RE::BSFixedString(aliasName.c_str())) {
-                auto* refAlias = skyrim_cast<RE::BGSRefAlias*>(alias);
-                if (refAlias) {
-                    auto* ref = refAlias->GetReference();
-                    if (ref) {
-                        const char* name = ref->GetDisplayFullName();
-                        if (name && *name) {
-                            replacement = name;
-                        }
-                    }
-                }
+    while (pos < result.size()) {
+        // Cherche le prochain "<Alias" ou "<alias" (case-insensitive sur le mot
+        // "Alias", mais on garde la position de "<").
+        size_t openPos = std::string::npos;
+        for (size_t i = pos; i + 6 < result.size(); ++i) {
+            if (result[i] != '<') continue;
+            char c1 = result[i + 1];
+            if (c1 != 'A' && c1 != 'a') continue;
+            // Comparer "lias" en case-insensitive
+            if ((result[i + 2] == 'l' || result[i + 2] == 'L') &&
+                (result[i + 3] == 'i' || result[i + 3] == 'I') &&
+                (result[i + 4] == 'a' || result[i + 4] == 'A') &&
+                (result[i + 5] == 's' || result[i + 5] == 'S')) {
+                openPos = i;
                 break;
             }
         }
+        if (openPos == std::string::npos) break;
 
-        result.replace(pos, end - pos + 1, replacement);
-        pos += replacement.size();
+        size_t end = result.find('>', openPos);
+        if (end == std::string::npos) break;
+
+        // Trouver le '=' a l'interieur de la balise. Tout ce qui est apres
+        // est le nom de l'alias ; ce qui est entre "Alias" et "=" est un
+        // eventuel suffixe (.ShortName, .Race, etc.) qu'on ignore pour le
+        // remplacement.
+        size_t eq = result.find('=', openPos);
+        std::string aliasName;
+        if (eq != std::string::npos && eq < end) {
+            aliasName = result.substr(eq + 1, end - eq - 1);
+        }
+
+        // Chercher l'alias dans la quete
+        std::string replacement = aliasName;  // fallback : nom brut de l'alias
+        if (!aliasName.empty() && quest) {
+            for (auto* alias : quest->aliases) {
+                if (!alias) continue;
+                if (alias->aliasName == RE::BSFixedString(aliasName.c_str())) {
+                    auto* refAlias = skyrim_cast<RE::BGSRefAlias*>(alias);
+                    if (refAlias) {
+                        auto* ref = refAlias->GetReference();
+                        if (ref) {
+                            const char* name = ref->GetDisplayFullName();
+                            if (name && *name) {
+                                replacement = name;
+                            }
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+
+        result.replace(openPos, end - openPos + 1, replacement);
+        pos = openPos + replacement.size();
     }
     return result;
 }
@@ -1285,6 +1355,15 @@ static void ScanCell(RE::TESObjectCELL* cell, RE::PlayerCharacter* player, const
             obj.isCellDoor = isCellDoor;
             obj.isFurniture = isFurniture;
             obj.isCraftingStation = isCraftingStation;
+            // Flags PNJ pour le filtrage de la categorie NPCs. Calcules
+            // uniquement si l'objet est un acteur vivant non-compagnon.
+            if (cat == kCatNPCs) {
+                if (auto* actor = ref.As<RE::Actor>()) {
+                    obj.npcCanTalk  = actor->CanTalkToPlayer();
+                    obj.npcHostile  = actor->IsHostileToActor(player);
+                    obj.npcMerchant = (actor->GetVendorFaction() != nullptr);
+                }
+            }
             obj.formType = base->GetFormType();
             obj.doorDestination = std::move(doorDest);
             obj.isDestructible = isDestructible;
@@ -1348,11 +1427,21 @@ static void DoScanInternal() {
     // l'interaction). Ces acteurs ne sont pas dans cell->references car ils
     // ne sont rattaches a aucune cellule pendant le vol. On les trouve via
     // ProcessLists, le meme mecanisme que Shift+X utilise.
-    {
+    //
+    // IMPORTANT : on ne fait ce passage QU'EN EXTERIEUR. ProcessLists
+    // contient tous les acteurs actifs du worldspace courant (et parfois
+    // des worldspaces voisins), donc en interieur on verrait apparaitre
+    // les PNJ qui sont dehors. Les dragons sont des creatures exterieures,
+    // ils ne peuvent jamais voler dans une maison/donjon de toute facon.
+    if (!isInterior) {
         std::set<RE::FormID> alreadyScanned;
         for (auto& obj : g_scannedAll) {
             if (obj.formID != 0) alreadyScanned.insert(obj.formID);
         }
+
+        // Worldspace courant : on filtre les acteurs ProcessLists qui sont
+        // dans un autre worldspace (peut arriver pres des bordures de zone).
+        auto* playerWorldSpace = player->GetWorldspace();
 
         auto* procLists = RE::ProcessLists::GetSingleton();
         if (procLists) {
@@ -1367,6 +1456,12 @@ static void DoScanInternal() {
                 if (!actor->Is3DLoaded()) return;
                 RE::FormID fid = actor->GetFormID();
                 if (alreadyScanned.count(fid)) return;  // deja capte par la boucle cellule
+
+                // Filtre worldspace : exclure les acteurs d'un autre monde.
+                // GetWorldspace() retourne null pour les acteurs en interieur,
+                // donc on les exclut aussi (on est en exterieur dans cette branche).
+                auto* actorWorld = actor->GetWorldspace();
+                if (actorWorld != playerWorldSpace) return;
 
                 auto refPos = actor->GetPosition();
                 auto diff = playerPos - refPos;
@@ -1386,6 +1481,12 @@ static void DoScanInternal() {
                 obj.dead = actor->IsDead();
                 auto* base = actor->GetBaseObject();
                 obj.formType = base ? base->GetFormType() : RE::FormType::None;
+                // Flags PNJ : memes que pour la boucle cellule.
+                if (obj.category == kCatNPCs) {
+                    obj.npcCanTalk  = actor->CanTalkToPlayer();
+                    obj.npcHostile  = actor->IsHostileToActor(player);
+                    obj.npcMerchant = (actor->GetVendorFaction() != nullptr);
+                }
 
                 if (IsDragon(actor)) {
                     LOG("Scanner: DRAGON via ProcessLists '{}' FormID={:08X} dist={:.0f} z={:.0f}",
@@ -1624,10 +1725,19 @@ static void DoScanInternal() {
                     // === 2. worldLocMarker : fallback quand la porte cible n'est pas chargée ===
                     // Utilisé quand le joueur est loin (ex: hors Whiterun, cible Jarl). Remonte
                     // la hiérarchie parentLoc jusqu'à un marker extérieur (ex: porte de Whiterun).
-                    // On skip les markers interior (ex: marker de Fort-Dragon interne) qui ne
-                    // servent à rien pour naviguer depuis l'extérieur.
+                    // On skip :
+                    //   - les markers dans une cellule interieure (ex: marker de Fort-Dragon
+                    //     interne)
+                    //   - les markers dans un worldspace DIFFERENT du joueur (ex: marker des
+                    //     quais de Solitude qui sont dans le sub-worldspace "Solitude Docks"
+                    //     avec coords (1128,3014) au lieu du worldspace principal Tamriel)
+                    //     -> sinon la distance calculee est gigantesque (~120000 unites).
                     if (!resolvedPos && !isInterior) {
+                        auto* playerWS = player->GetWorldspace();
                         auto* targetLocation = refCell->GetLocation();
+                        LOG("Scanner: DIAG worldLocMarker phase playerWS='{}' targetLocation='{}'",
+                            playerWS ? (playerWS->GetName() ? playerWS->GetName() : "?") : "NULL",
+                            targetLocation ? (targetLocation->GetFullName() ? targetLocation->GetFullName() : "?") : "NULL");
                         for (auto* loc = targetLocation; loc && !resolvedPos; loc = loc->parentLoc) {
                             if (loc->worldLocMarker) {
                                 auto markerPtr = loc->worldLocMarker.get();
@@ -1641,7 +1751,42 @@ static void DoScanInternal() {
                                             markerCell->GetName() ? markerCell->GetName() : "?");
                                         continue;
                                     }
-                                    actualPos = markerPtr->GetPosition();
+                                    auto markerCandidatePos = markerPtr->GetPosition();
+                                    auto* markerWS = markerPtr->GetWorldspace();
+                                    // DIAG : tracer chaque candidat worldLocMarker
+                                    LOG("Scanner: DIAG candidate loc='{}' pos=({:.0f},{:.0f},{:.0f}) markerWS='{}' playerWS='{}' compatible={}",
+                                        loc->GetFullName() ? loc->GetFullName() : "?",
+                                        markerCandidatePos.x, markerCandidatePos.y, markerCandidatePos.z,
+                                        markerWS ? (markerWS->GetName() ? markerWS->GetName() : "?") : "NULL",
+                                        playerWS ? (playerWS->GetName() ? playerWS->GetName() : "?") : "NULL",
+                                        (playerWS && markerWS) ? (AreWorldspacesCompatible(markerWS, playerWS) ? "YES" : "NO") : "skip");
+                                    // Verifier que le marker est dans un worldspace
+                                    // compatible avec celui du joueur. Si markerWS
+                                    // est null (marker dans une cellule non chargee
+                                    // dont le worldspace n'est pas resolu), on rejette
+                                    // par defaut pour eviter d'accepter des coordonnees
+                                    // dans un repere inconnu (cas Gulum-Ei dans
+                                    // l'Entrepot apres teleportation hors Solitude).
+                                    if (playerWS) {
+                                        if (!markerWS) {
+                                            LOG("Scanner: skip worldLocMarker loc='{}' has null worldspace (player in '{}')",
+                                                loc->GetFullName() ? loc->GetFullName() : "?",
+                                                playerWS->GetName() ? playerWS->GetName() : "?");
+                                            continue;
+                                        }
+                                        if (!AreWorldspacesCompatible(markerWS, playerWS)) {
+                                            auto* mRoot = GetCoordinateRoot(markerWS);
+                                            auto* pRoot = GetCoordinateRoot(playerWS);
+                                            LOG("Scanner: skip worldLocMarker loc='{}' in incompatible worldspace ('{}' root='{}' vs player '{}' root='{}')",
+                                                loc->GetFullName() ? loc->GetFullName() : "?",
+                                                markerWS->GetName() ? markerWS->GetName() : "?",
+                                                (mRoot && mRoot->GetName()) ? mRoot->GetName() : "?",
+                                                playerWS->GetName() ? playerWS->GetName() : "?",
+                                                (pRoot && pRoot->GetName()) ? pRoot->GetName() : "?");
+                                            continue;
+                                        }
+                                    }
+                                    actualPos = markerCandidatePos;
                                     resolvedPos = true;
                                     LOG("Scanner: quest resolved via worldLocMarker loc='{}' FormID={:08X} pos=({:.0f},{:.0f},{:.0f})",
                                         loc->GetFullName() ? loc->GetFullName() : "?",
@@ -2372,6 +2517,34 @@ static void RefreshQuestTarget(ScannedObject& obj) {
             auto* refCell = targetRef->GetParentCell();
             RE::NiPoint3 actualPos = refPos;
 
+            // Cas piege : parentCell null quand la cellule du PNJ n'est pas
+            // attachee cote joueur (PNJ dans un interieur lointain). Sans cellule,
+            // on saute la resolution interior->worldLocMarker et on garde des
+            // coordonnees locales aberrantes. Fix : utiliser GetEditorLocation
+            // pour recuperer la cellule editeur du ref independamment de parentCell.
+            if (!refCell) {
+                RE::NiPoint3 edPos{}, edRot{};
+                RE::TESForm* worldOrCell = nullptr;
+                if (targetRef->GetEditorLocation(edPos, edRot, worldOrCell, nullptr)) {
+                    if (worldOrCell) {
+                        if (auto* ws = worldOrCell->As<RE::TESWorldSpace>()) {
+                            // Position editeur deja en worldspace exterieur :
+                            // utilisable directement.
+                            actualPos = edPos;
+                            (void)ws;
+                            LOG("Scanner: refresh editor location in worldspace, pos=({:.0f},{:.0f},{:.0f})",
+                                actualPos.x, actualPos.y, actualPos.z);
+                        } else if (auto* cell = worldOrCell->As<RE::TESObjectCELL>()) {
+                            // Cellule editeur trouvee : on l'utilise pour la
+                            // resolution worldLocMarker ci-dessous.
+                            refCell = cell;
+                            LOG("Scanner: refresh parentCell null, using editor cell '{}'",
+                                cell->GetName() ? cell->GetName() : "?");
+                        }
+                    }
+                }
+            }
+
             // Si la cible est dans une cellule différente, résoudre via la même logique
             // que le scan principal : PASS 1 door search → PASS 2 worldLocMarker.
             // On ne fait pas le compass fallback ici (seulement dans le scan principal).
@@ -2433,6 +2606,7 @@ static void RefreshQuestTarget(ScannedObject& obj) {
 
                     // === PASS 2 : worldLocMarker (fallback quand porte pas chargée) ===
                     if (!resolved) {
+                        auto* playerWS = player->GetWorldspace();
                         auto* targetLocation = refCell->GetLocation();
                         for (auto* loc = targetLocation; loc && !resolved; loc = loc->parentLoc) {
                             if (loc->worldLocMarker) {
@@ -2444,6 +2618,29 @@ static void RefreshQuestTarget(ScannedObject& obj) {
                                             loc->GetFullName() ? loc->GetFullName() : "?",
                                             markerCell->GetName() ? markerCell->GetName() : "?");
                                         continue;
+                                    }
+                                    // Skip si worldspace incompatible avec le joueur,
+                                    // ou si le marker n'a pas de worldspace (cellule
+                                    // non chargee : on ne peut pas valider la coherence
+                                    // des coordonnees).
+                                    auto* markerWS = markerPtr->GetWorldspace();
+                                    if (playerWS) {
+                                        if (!markerWS) {
+                                            LOG("Scanner: refresh skip worldLocMarker loc='{}' has null worldspace",
+                                                loc->GetFullName() ? loc->GetFullName() : "?");
+                                            continue;
+                                        }
+                                        if (!AreWorldspacesCompatible(markerWS, playerWS)) {
+                                            auto* mRoot = GetCoordinateRoot(markerWS);
+                                            auto* pRoot = GetCoordinateRoot(playerWS);
+                                            LOG("Scanner: refresh skip worldLocMarker loc='{}' in incompatible worldspace ('{}' root='{}' vs '{}' root='{}')",
+                                                loc->GetFullName() ? loc->GetFullName() : "?",
+                                                markerWS->GetName() ? markerWS->GetName() : "?",
+                                                (mRoot && mRoot->GetName()) ? mRoot->GetName() : "?",
+                                                playerWS->GetName() ? playerWS->GetName() : "?",
+                                                (pRoot && pRoot->GetName()) ? pRoot->GetName() : "?");
+                                            continue;
+                                        }
                                     }
                                     actualPos = markerPtr->GetPosition();
                                     resolved = true;
@@ -3098,7 +3295,13 @@ static RE::Actor* FindNearestEnemy(RE::PlayerCharacter* player, float& outDist, 
         if (actor->IsPlayerTeammate()) return;
         if (!actor->IsHostileToActor(player)) return;
 
-        auto diff = playerPos - actor->GetPosition();
+        // Distance vers le centre de la bounding box 3D (meme reference que
+        // le scanner d'objets), pas les pieds. Pour un dragon en vol ou un
+        // geant en hauteur ca fait une difference notable : la distance
+        // annoncee correspond au centre du corps visible, comme dans le
+        // scanner — l'utilisateur entend la meme valeur via X et via le
+        // scanner pour le meme ennemi.
+        auto diff = playerPos - GetStablePosition(actor);
         float dist = diff.Length();
 
         bool isDragonActor = IsDragon(actor);
@@ -3470,7 +3673,11 @@ static void LockNearestEnemy() {
 
                 const char* rawName = dragon->GetDisplayFullName();
                 std::wstring name = rawName ? Utf8ToWString(rawName) : TR("Enemy");
-                float distD = (player->GetPosition() - dragon->GetPosition()).Length();
+                // Distance vers le centre de la bounding box (coherent avec le
+                // scanner). Pour un dragon en vol c'est important — GetPosition
+                // donne les "pieds" du squelette ce qui sous-estime nettement
+                // la distance reelle vers le corps du dragon.
+                float distD = (player->GetPosition() - GetStablePosition(dragon)).Length();
                 float zDiff = targetCenter.z - player->GetPosition().z;
                 std::wstring msg = name + L", " + std::to_wstring(static_cast<int>(distD)) +
                                    L" units" + FormatElevationSuffix(zDiff);
