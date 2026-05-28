@@ -241,24 +241,137 @@ static void AddQuestTargetsToMap(RE::PlayerCharacter* player, const RE::NiPoint3
 
             auto rp = ref->GetPosition();
 
-            // Si la cible est dans un intérieur, trouver la position extérieure
+            // Cas piege : un PNJ dans un interieur non charge cote joueur (joueur
+            // en exterieur loin) peut avoir ref->GetParentCell() == nullptr. Dans
+            // ce cas notre ancien code skippait la resolution worldLocMarker et
+            // placait le marqueur a la position brute interior (coords locales
+            // comme 1422,2858 alors que le worldspace de Tamriel utilise des
+            // coords > 100000). Resultat : marqueur aberrant a 100k+ unites.
+            //
+            // Fix : utiliser TESObjectREFR::GetEditorLocation(pos, rot, worldOrCell)
+            // qui retourne la position editeur du ref + son worldspace/cellule,
+            // independamment de parentCell. Si le worldOrCell est un worldspace,
+            // pos est deja en coordonnees world utilisables. Sinon (cellule
+            // interieure), on remonte via BGSLocation::worldLocMarker.
             auto* refCell = ref->GetParentCell();
-            if (refCell && refCell->IsInteriorCell()) {
+            auto* playerWSForCheck = player->GetWorldspace();
+            auto* refWSForCheck = ref->GetWorldspace();
+
+            // Quand faut-il declencher la resolution worldLocMarker ?
+            //   - parentCell null (PNJ dans interieur non charge)
+            //   - parentCell interieure classique
+            //   - parentCell existe MAIS le ref est dans un worldspace
+            //     incompatible avec le joueur (cas Gulum-Ei a Solitude :
+            //     son worldspace est l'Entrepot isole)
+            //   - position du ref incompatible avec le repere du joueur :
+            //     |pos| < 10000 alors que le joueur est dans un worldspace
+            //     ou les coords sont > 10000 typiquement (Bordeciel). Cela
+            //     attrape le cas ou ref->GetWorldspace() retourne null
+            //     apres teleportation hors de la zone de la cible.
+            bool refPosLooksLocal =
+                playerWSForCheck &&
+                std::abs(rp.x) < 10000.0f &&
+                std::abs(rp.y) < 10000.0f &&
+                (std::abs(playerPos.x) > 10000.0f || std::abs(playerPos.y) > 10000.0f);
+
+            bool needLocationFallback =
+                (!refCell) ||
+                (refCell && refCell->IsInteriorCell()) ||
+                (playerWSForCheck && refWSForCheck &&
+                 !AreWorldspacesCompatible(refWSForCheck, playerWSForCheck)) ||
+                refPosLooksLocal;
+
+            // DIAG : tracer toutes les conditions pour comprendre les decisions
+            LOG("MapMenu: DIAG quest '{}' refCell={} interior={} refWS='{}' playerWS='{}' refPos=({:.0f},{:.0f},{:.0f}) playerPos=({:.0f},{:.0f},{:.0f}) refPosLooksLocal={} needFallback={}",
+                objText,
+                refCell ? "OK" : "NULL",
+                (refCell && refCell->IsInteriorCell()) ? "yes" : "no",
+                refWSForCheck ? (refWSForCheck->GetName() ? refWSForCheck->GetName() : "?") : "NULL",
+                playerWSForCheck ? (playerWSForCheck->GetName() ? playerWSForCheck->GetName() : "?") : "NULL",
+                rp.x, rp.y, rp.z,
+                playerPos.x, playerPos.y, playerPos.z,
+                refPosLooksLocal,
+                needLocationFallback);
+
+            if (needLocationFallback && !refCell) {
+                // ParentCell null : tenter GetEditorLocation pour recuperer
+                // la cellule editeur du PNJ.
+                RE::NiPoint3 edPos{}, edRot{};
+                RE::TESForm* worldOrCell = nullptr;
+                if (ref->GetEditorLocation(edPos, edRot, worldOrCell, nullptr)) {
+                    if (worldOrCell) {
+                        if (auto* ws = worldOrCell->As<RE::TESWorldSpace>()) {
+                            rp = edPos;
+                            (void)ws;
+                            LOG("MapMenu: quest '{}' editor location in worldspace, pos=({:.0f},{:.0f},{:.0f})",
+                                objText, rp.x, rp.y, rp.z);
+                        } else if (auto* cell = worldOrCell->As<RE::TESObjectCELL>()) {
+                            refCell = cell;
+                            LOG("MapMenu: quest '{}' parentCell was null, using editor cell '{}'",
+                                objText, cell->GetName() ? cell->GetName() : "?");
+                        }
+                    }
+                }
+            }
+            if (needLocationFallback && refCell) {
                 bool foundExit = false;
 
                 // 1. worldLocMarker : position exacte de l'entrée du lieu sur la carte
+                auto* playerWS = player->GetWorldspace();
                 auto* targetLocation = refCell->GetLocation();
                 for (auto* loc = targetLocation; loc && !foundExit; loc = loc->parentLoc) {
                     if (loc->worldLocMarker) {
                         auto markerPtr = loc->worldLocMarker.get();
                         if (markerPtr) {
-                            // Vérifier que le marqueur est dans un worldspace extérieur
-                            // sinon GetPosition() retourne des coordonnées intérieures inutilisables
+                            // Skip si le marker est dans une cellule interieure
                             auto* markerCell = markerPtr->GetParentCell();
                             if (markerCell && markerCell->IsInteriorCell()) {
                                 LOG("MapMenu: quest '{}' worldLocMarker for '{}' is in interior cell, skipping",
                                     objText, loc->GetFullName() ? loc->GetFullName() : "?");
                                 continue;
+                            }
+                            // Verifier la compatibilite des worldspaces entre marker et
+                            // joueur. Pourquoi : on veut comparer la distance entre la
+                            // pos du marker et celle du joueur — si les deux ne sont pas
+                            // dans le meme systeme de coordonnees, la soustraction donne
+                            // un nombre sans signification (genre 180000 unites pour un
+                            // PNJ qui est en realite a 7000 unites).
+                            //
+                            // GetCoordinateRoot remonte parentWorld tant que kUseLandData
+                            // est set : Markarth-cite remonte a Bordeciel si elle herite
+                            // du land data, sinon elle reste isolee. Si on ne trouve PAS
+                            // de racine commune, on accepte quand meme le marker QUAND la
+                            // position du moteur (refPosLooksLocal=true) est manifestement
+                            // bidon (coords locales d'un interieur). Mieux vaut un marker
+                            // dans une worldspace "imparfaite" que pos=(1812,-290,0) qui
+                            // pointe nulle part sur la carte.
+                            auto* markerWS = markerPtr->GetWorldspace();
+                            if (playerWS) {
+                                if (!markerWS) {
+                                    LOG("MapMenu: quest '{}' worldLocMarker for '{}' has null worldspace, skipping",
+                                        objText, loc->GetFullName() ? loc->GetFullName() : "?");
+                                    continue;
+                                }
+                                if (!AreWorldspacesCompatible(markerWS, playerWS)) {
+                                    auto* mRoot = GetCoordinateRoot(markerWS);
+                                    auto* pRoot = GetCoordinateRoot(playerWS);
+                                    if (refPosLooksLocal) {
+                                        LOG("MapMenu: quest '{}' worldLocMarker for '{}' worldspace mismatch ('{}' root='{}' vs '{}' root='{}'), but refPos is local — accepting marker as best-effort",
+                                            objText, loc->GetFullName() ? loc->GetFullName() : "?",
+                                            markerWS->GetName() ? markerWS->GetName() : "?",
+                                            (mRoot && mRoot->GetName()) ? mRoot->GetName() : "?",
+                                            playerWS->GetName() ? playerWS->GetName() : "?",
+                                            (pRoot && pRoot->GetName()) ? pRoot->GetName() : "?");
+                                    } else {
+                                        LOG("MapMenu: quest '{}' worldLocMarker for '{}' in incompatible worldspace ('{}' root='{}' vs '{}' root='{}'), skipping",
+                                            objText, loc->GetFullName() ? loc->GetFullName() : "?",
+                                            markerWS->GetName() ? markerWS->GetName() : "?",
+                                            (mRoot && mRoot->GetName()) ? mRoot->GetName() : "?",
+                                            playerWS->GetName() ? playerWS->GetName() : "?",
+                                            (pRoot && pRoot->GetName()) ? pRoot->GetName() : "?");
+                                        continue;
+                                    }
+                                }
                             }
                             rp = markerPtr->GetPosition();
                             foundExit = true;
